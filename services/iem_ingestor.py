@@ -101,23 +101,14 @@ class IEMIngestor:
             if station_id not in AWC_STATIONS:
                 continue
 
-            report_time = obs.get("reportTime", "")
-            if not report_time:
+            # Use obsTime (Unix epoch) — the actual observation time.
+            # reportTime rounds hourly METARs to :00, which creates
+            # phantom duplicates alongside Synoptic's real timestamps.
+            obs_time = obs.get("obsTime")
+            if obs_time is None:
                 continue
 
-            try:
-                # AWC returns ISO format: "2026-02-23T21:08:00.000Z"
-                observed_at = datetime.strptime(
-                    report_time, "%Y-%m-%dT%H:%M:%S.%fZ"
-                )
-            except ValueError:
-                try:
-                    observed_at = datetime.strptime(
-                        report_time, "%Y-%m-%dT%H:%M:%SZ"
-                    )
-                except ValueError:
-                    logger.debug(f"AWC: skipping unparseable timestamp: {report_time}")
-                    continue
+            observed_at = datetime.utcfromtimestamp(obs_time)
 
             raw_ob = obs.get("rawOb", "").strip()
 

@@ -16,7 +16,8 @@ TEST_DB = "data/test_iem.duckdb"
 AWC_JSON_METAR = [
     {
         "icaoId": "KNYC",
-        "reportTime": "2026-02-23T19:51:00.000Z",
+        "obsTime": 1771876260,  # 2026-02-23T19:51:00Z
+        "reportTime": "2026-02-23T20:00:00.000Z",  # AWC rounds to :00
         "temp": 0.0,
         "dewp": -1.1,
         "wdir": "VRB",
@@ -32,6 +33,7 @@ AWC_JSON_METAR = [
 AWC_JSON_SPECI = [
     {
         "icaoId": "KNYC",
+        "obsTime": 1771880880,  # 2026-02-23T21:08:00Z
         "reportTime": "2026-02-23T21:08:00.000Z",
         "temp": 0.6,
         "dewp": -1.1,
@@ -49,6 +51,7 @@ AWC_JSON_SPECI = [
 AWC_JSON_STUB = [
     {
         "icaoId": "KMIA",
+        "obsTime": 1771848000,  # 2026-02-23T12:00:00Z
         "reportTime": "2026-02-23T12:00:00.000Z",
         "temp": 22.5,
         "dewp": 18.0,
