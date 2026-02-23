@@ -3,6 +3,7 @@
 
 import asyncio
 import os
+import sys
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -26,11 +27,20 @@ async def main():
     fetcher = HRRRFetcher()
     engine = BiasEngine()
 
-    await asyncio.gather(
+    tasks = [
         ingestor.run(),
         fetcher.run(),
         engine.run(),
-    )
+    ]
+
+    if "--dashboard" in sys.argv:
+        import uvicorn
+        config = uvicorn.Config("ui.web_dashboard:app", host="0.0.0.0", port=8050)
+        server = uvicorn.Server(config)
+        tasks.append(server.serve())
+        logger.info("Dashboard will be available at http://localhost:8050")
+
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

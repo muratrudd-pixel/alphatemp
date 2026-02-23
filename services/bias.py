@@ -7,7 +7,7 @@ import duckdb
 from loguru import logger
 from scipy import stats
 
-from core.constants import CITIES, MAGNETS, STATION_COORDS
+from core.constants import CITIES, STATION_COORDS
 from core.db import get_connection
 
 
@@ -32,12 +32,6 @@ def compute_slope_divergence(
     diffs = [o - f for o, f in zip(obs_temps, fcst_temps)]
     slope, _, _, _, _ = stats.linregress(hours, diffs)
     return float(slope)
-
-
-def find_nearest_magnet(temp_f: float) -> tuple:
-    """Find the nearest magnet number and distance from a temperature."""
-    nearest = min(MAGNETS, key=lambda m: abs(temp_f - m))
-    return nearest, round(temp_f - nearest, 1)
 
 
 class BiasEngine:
@@ -185,7 +179,6 @@ class BiasEngine:
             hours_remaining = max(0, (fc_end_ts - ref_ts) / 3600.0)
             projected_high = round(fcst_high + drift_score + slope_div * hours_remaining, 1)
 
-            magnet, magnet_dist = find_nearest_magnet(projected_high)
             drift_values = [o - f for o, f in paired]
             confidence = self._compute_confidence(len(observations), drift_values)
 
@@ -194,8 +187,6 @@ class BiasEngine:
                 "drift_score": round(drift_score, 2),
                 "slope_divergence": round(slope_div, 3),
                 "forecast_trend": round(forecast_trend, 2),
-                "magnet_proximity": magnet,
-                "magnet_distance": magnet_dist,
                 "confidence": confidence,
                 "projected_high": projected_high,
             }
@@ -217,13 +208,11 @@ class BiasEngine:
                 con.execute(
                     """INSERT INTO drift_signals
                        (city, calculated_at, model_run, drift_score, slope_divergence,
-                        forecast_trend, magnet_proximity, magnet_distance, confidence,
-                        projected_high)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        forecast_trend, confidence, projected_high)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     [city_name, ref_time.replace(tzinfo=None), report["model_run"],
                      report["drift_score"], report["slope_divergence"],
-                     report["forecast_trend"], report["magnet_proximity"],
-                     report["magnet_distance"], report["confidence"],
+                     report["forecast_trend"], report["confidence"],
                      report["projected_high"]],
                 )
                 stored += 1

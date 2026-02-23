@@ -125,7 +125,6 @@ def test_bias_engine_produces_drift_report(seeded_db):
     report = reports["NYC"]
     assert report["drift_score"] > 0  # Obs are warmer
     assert report["projected_high"] is not None
-    assert report["magnet_proximity"] is not None
     assert 0.0 <= report["confidence"] <= 1.0
 
 

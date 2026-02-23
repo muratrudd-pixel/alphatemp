@@ -23,7 +23,6 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         )
     """)
 
-    con.execute("DROP TABLE IF EXISTS forecasts")
     con.execute("""
         CREATE TABLE IF NOT EXISTS forecasts (
             station_id  VARCHAR NOT NULL,
@@ -58,11 +57,20 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             drift_score      DOUBLE,
             slope_divergence DOUBLE,
             forecast_trend   DOUBLE,
-            magnet_proximity INTEGER,
-            magnet_distance  DOUBLE,
             confidence       DOUBLE,
             projected_high   DOUBLE,
             UNIQUE (city, calculated_at, model_run)
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS station_bias (
+            station_id   VARCHAR NOT NULL,
+            calculated_at TIMESTAMP NOT NULL,
+            mean_bias    DOUBLE,
+            std_error    DOUBLE,
+            sample_days  INTEGER,
+            UNIQUE (station_id, calculated_at)
         )
     """)
 

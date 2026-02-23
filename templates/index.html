@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-slate-900">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlphaTemp Command Center</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-deep: #0f172a;
+            --bg-panel: #1e293b;
+            --bg-card: #1e293b;
+            --text-primary: #f1f5f9;
+            --text-muted: #94a3b8;
+            --blue-line: #3b82f6;
+            --amber-obs: #f59e0b;
+            --emerald-bell: #10b981;
+            --alpha-bg: rgba(6, 78, 59, 0.5);
+            --overpriced-bg: rgba(127, 29, 29, 0.5);
+        }
+        body { font-family: 'Outfit', sans-serif; background: var(--bg-deep); color: var(--text-primary); }
+        .mono { font-family: 'Space Mono', monospace; }
+        .panel {
+            background: var(--bg-panel);
+            border: 1px solid rgba(148, 163, 184, 0.1);
+            border-radius: 0.5rem;
+        }
+        .city-card {
+            background: var(--bg-card);
+            border: 1px solid rgba(148, 163, 184, 0.08);
+            border-radius: 0.5rem;
+            transition: border-color 0.2s, transform 0.15s;
+            cursor: pointer;
+        }
+        .city-card:hover { border-color: rgba(59, 130, 246, 0.4); transform: translateY(-1px); }
+        .city-card.active { border-color: var(--blue-line); box-shadow: 0 0 20px rgba(59, 130, 246, 0.15); }
+        .glow-dot {
+            width: 6px; height: 6px; border-radius: 50%; background: var(--emerald-bell);
+            box-shadow: 0 0 6px var(--emerald-bell);
+            animation: pulse-glow 2s ease-in-out infinite;
+        }
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        select {
+            background: var(--bg-panel);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            color: var(--text-primary);
+            font-family: 'Space Mono', monospace;
+            border-radius: 0.375rem;
+            padding: 0.375rem 0.75rem;
+            outline: none;
+        }
+        select:focus { border-color: var(--blue-line); }
+        .signal-alpha { background: var(--alpha-bg); }
+        .signal-overpriced { background: var(--overpriced-bg); }
+        .confidence-bar {
+            height: 4px; border-radius: 2px; background: rgba(148, 163, 184, 0.15);
+            overflow: hidden;
+        }
+        .confidence-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
+        .fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        /* Plotly container sizing */
+        .chart-container { width: 100%; min-height: 340px; }
+        @media (max-width: 1023px) {
+            .chart-container { min-height: 280px; }
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+    <!-- Header -->
+    <header class="px-4 lg:px-6 py-3 flex items-center justify-between border-b border-slate-700/50">
+        <div class="flex items-center gap-3">
+            <div class="glow-dot"></div>
+            <h1 class="text-lg lg:text-xl font-semibold tracking-tight">
+                AlphaTemp <span class="text-slate-400 font-light">Command Center</span>
+            </h1>
+        </div>
+        <div class="flex items-center gap-4">
+            <select id="city-select" class="text-sm">
+                <option value="NYC">NYC</option>
+                <option value="PHL">PHL</option>
+                <option value="CHI">CHI</option>
+                <option value="MIA">MIA</option>
+                <option value="LA">LA</option>
+            </select>
+            <div id="clock" class="mono text-sm text-slate-400"></div>
+        </div>
+    </header>
+
+    <main class="p-4 lg:p-6 space-y-4 lg:space-y-5 max-w-[1600px] mx-auto">
+        <!-- Charts Row -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-5">
+            <!-- Ribbon Chart -->
+            <div class="lg:col-span-8 panel p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Forecast Ribbon</h2>
+                    <span id="ribbon-model-run" class="mono text-xs text-slate-500"></span>
+                </div>
+                <div id="ribbon-chart" class="chart-container"></div>
+            </div>
+            <!-- Bell Curve -->
+            <div class="lg:col-span-4 panel p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Distribution</h2>
+                    <span id="bell-stats" class="mono text-xs text-slate-500"></span>
+                </div>
+                <div id="bell-chart" class="chart-container"></div>
+            </div>
+        </div>
+
+        <!-- City Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 lg:gap-4">
+            <div class="city-card p-4 fade-in active" data-city="NYC" onclick="selectCity('NYC')">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-semibold text-slate-300">NYC</span>
+                    <span class="mono text-xs text-slate-500" id="card-drift-NYC">--</span>
+                </div>
+                <div class="mono text-2xl font-bold mb-2" id="card-temp-NYC">--°F</div>
+                <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
+                    <span>90% CI</span>
+                    <span class="mono" id="card-ci-NYC">--</span>
+                </div>
+                <div class="confidence-bar"><div class="confidence-fill bg-blue-500" id="card-conf-NYC" style="width:0%"></div></div>
+            </div>
+            <div class="city-card p-4 fade-in" data-city="PHL" onclick="selectCity('PHL')">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-semibold text-slate-300">PHL</span>
+                    <span class="mono text-xs text-slate-500" id="card-drift-PHL">--</span>
+                </div>
+                <div class="mono text-2xl font-bold mb-2" id="card-temp-PHL">--°F</div>
+                <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
+                    <span>90% CI</span>
+                    <span class="mono" id="card-ci-PHL">--</span>
+                </div>
+                <div class="confidence-bar"><div class="confidence-fill bg-blue-500" id="card-conf-PHL" style="width:0%"></div></div>
+            </div>
+            <div class="city-card p-4 fade-in" data-city="CHI" onclick="selectCity('CHI')">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-semibold text-slate-300">CHI</span>
+                    <span class="mono text-xs text-slate-500" id="card-drift-CHI">--</span>
+                </div>
+                <div class="mono text-2xl font-bold mb-2" id="card-temp-CHI">--°F</div>
+                <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
+                    <span>90% CI</span>
+                    <span class="mono" id="card-ci-CHI">--</span>
+                </div>
+                <div class="confidence-bar"><div class="confidence-fill bg-blue-500" id="card-conf-CHI" style="width:0%"></div></div>
+            </div>
+            <div class="city-card p-4 fade-in" data-city="MIA" onclick="selectCity('MIA')">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-semibold text-slate-300">MIA</span>
+                    <span class="mono text-xs text-slate-500" id="card-drift-MIA">--</span>
+                </div>
+                <div class="mono text-2xl font-bold mb-2" id="card-temp-MIA">--°F</div>
+                <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
+                    <span>90% CI</span>
+                    <span class="mono" id="card-ci-MIA">--</span>
+                </div>
+                <div class="confidence-bar"><div class="confidence-fill bg-blue-500" id="card-conf-MIA" style="width:0%"></div></div>
+            </div>
+            <div class="city-card p-4 fade-in" data-city="LA" onclick="selectCity('LA')">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-semibold text-slate-300">LA</span>
+                    <span class="mono text-xs text-slate-500" id="card-drift-LA">--</span>
+                </div>
+                <div class="mono text-2xl font-bold mb-2" id="card-temp-LA">--°F</div>
+                <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
+                    <span>90% CI</span>
+                    <span class="mono" id="card-ci-LA">--</span>
+                </div>
+                <div class="confidence-bar"><div class="confidence-fill bg-blue-500" id="card-conf-LA" style="width:0%"></div></div>
+            </div>
+        </div>
+
+        <!-- Market Intelligence -->
+        <div class="panel p-4">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Market Intelligence</h2>
+                <span id="market-status" class="text-xs text-slate-500"></span>
+            </div>
+            <div id="market-table-wrap" class="overflow-x-auto">
+                <p id="market-pending" class="text-sm text-slate-500 py-6 text-center">Market data pending</p>
+                <table id="market-table" class="w-full text-sm hidden">
+                    <thead>
+                        <tr class="border-b border-slate-700/50 text-left text-xs uppercase tracking-wider text-slate-400">
+                            <th class="pb-2 pr-4">Bracket</th>
+                            <th class="pb-2 pr-4">Model Prob</th>
+                            <th class="pb-2 pr-4">Market Mid</th>
+                            <th class="pb-2 pr-4">Edge</th>
+                            <th class="pb-2 pr-4">Bid</th>
+                            <th class="pb-2">Ask</th>
+                        </tr>
+                    </thead>
+                    <tbody id="market-body" class="mono text-xs"></tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <script>
+    // -----------------------------------------------------------------------
+    // State
+    // -----------------------------------------------------------------------
+    let selectedCity = 'NYC';
+    const PLOT_BG = '#1e293b';
+    const GRID_COLOR = 'rgba(148,163,184,0.08)';
+    const FONT_COLOR = '#94a3b8';
+
+    const basePlotLayout = {
+        paper_bgcolor: PLOT_BG,
+        plot_bgcolor: PLOT_BG,
+        font: { family: 'Space Mono, monospace', color: FONT_COLOR, size: 11 },
+        margin: { t: 10, r: 20, b: 40, l: 50 },
+        xaxis: { gridcolor: GRID_COLOR, zeroline: false },
+        yaxis: { gridcolor: GRID_COLOR, zeroline: false },
+    };
+
+    const plotConfig = {
+        displayModeBar: false,
+        scrollZoom: false,
+        responsive: true,
+    };
+
+    // -----------------------------------------------------------------------
+    // Clock
+    // -----------------------------------------------------------------------
+    function updateClock() {
+        const now = new Date();
+        const et = now.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        document.getElementById('clock').textContent = et + ' ET';
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // -----------------------------------------------------------------------
+    // City Selection
+    // -----------------------------------------------------------------------
+    function selectCity(city) {
+        selectedCity = city;
+        document.getElementById('city-select').value = city;
+        document.querySelectorAll('.city-card').forEach(c => {
+            c.classList.toggle('active', c.dataset.city === city);
+        });
+        refreshSelectedCity();
+    }
+
+    document.getElementById('city-select').addEventListener('change', (e) => {
+        selectCity(e.target.value);
+    });
+
+    // -----------------------------------------------------------------------
+    // API Fetchers
+    // -----------------------------------------------------------------------
+    async function fetchJSON(url) {
+        try {
+            const r = await fetch(url);
+            return await r.json();
+        } catch (e) {
+            console.error('Fetch error:', url, e);
+            return null;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Ribbon Chart
+    // -----------------------------------------------------------------------
+    async function renderRibbon(city) {
+        const data = await fetchJSON(`/api/forecast-curve/${city}`);
+        if (!data || !data.forecasts.length) {
+            Plotly.react('ribbon-chart', [], {
+                ...basePlotLayout,
+                annotations: [{ text: 'No forecast data', showarrow: false, font: { size: 14, color: FONT_COLOR }, xref: 'paper', yref: 'paper', x: 0.5, y: 0.5 }]
+            }, plotConfig);
+            document.getElementById('ribbon-model-run').textContent = '';
+            return;
+        }
+
+        const fcstX = data.forecasts.map(p => p.valid_at);
+        const fcstY = data.forecasts.map(p => p.temp_f);
+        const upperY = data.ribbon.map(p => p.upper_90);
+        const lowerY = data.ribbon.map(p => p.lower_90);
+        const ribbonX = data.ribbon.map(p => p.valid_at);
+        const obsX = data.observations.map(p => p.observed_at);
+        const obsY = data.observations.map(p => p.temp_f);
+
+        // Upper bound (invisible line — anchor for fill)
+        const traceUpper = {
+            x: ribbonX, y: upperY,
+            type: 'scatter', mode: 'lines',
+            line: { width: 0 },
+            showlegend: false, hoverinfo: 'skip',
+        };
+        // Lower bound (fill to upper)
+        const traceLower = {
+            x: ribbonX, y: lowerY,
+            type: 'scatter', mode: 'lines',
+            fill: 'tonexty',
+            fillcolor: 'rgba(59,130,246,0.12)',
+            line: { width: 0 },
+            showlegend: false, hoverinfo: 'skip',
+        };
+        // Forecast center line
+        const traceFcst = {
+            x: fcstX, y: fcstY,
+            type: 'scatter', mode: 'lines',
+            line: { color: '#3b82f6', width: 2, dash: 'dot' },
+            name: 'HRRR Forecast',
+            hovertemplate: '%{y:.1f}°F<extra></extra>',
+        };
+        // Observed actuals
+        const traceObs = {
+            x: obsX, y: obsY,
+            type: 'scatter', mode: 'lines+markers',
+            line: { color: '#f59e0b', width: 2 },
+            marker: { size: 5, color: '#f59e0b' },
+            name: 'Observed',
+            hovertemplate: '%{y:.1f}°F<extra></extra>',
+        };
+
+        const layout = {
+            ...basePlotLayout,
+            showlegend: true,
+            legend: { x: 0, y: 1.02, orientation: 'h', font: { size: 10 } },
+            yaxis: { ...basePlotLayout.yaxis, title: { text: '°F', standoff: 8, font: { size: 10 } } },
+            xaxis: { ...basePlotLayout.xaxis, type: 'date' },
+        };
+
+        Plotly.react('ribbon-chart', [traceUpper, traceLower, traceFcst, traceObs], layout, plotConfig);
+        document.getElementById('ribbon-model-run').textContent = city;
+    }
+
+    // -----------------------------------------------------------------------
+    // Gaussian Bell Curve
+    // -----------------------------------------------------------------------
+    function gaussianPDF(x, mu, sigma) {
+        const coeff = 1.0 / (sigma * Math.sqrt(2 * Math.PI));
+        const exp = -0.5 * Math.pow((x - mu) / sigma, 2);
+        return coeff * Math.exp(exp);
+    }
+
+    async function renderBell(city) {
+        const data = await fetchJSON(`/api/probability/${city}`);
+        if (!data || data.available === false || !data.center) {
+            Plotly.react('bell-chart', [], {
+                ...basePlotLayout,
+                annotations: [{ text: 'No distribution data', showarrow: false, font: { size: 14, color: FONT_COLOR }, xref: 'paper', yref: 'paper', x: 0.5, y: 0.5 }]
+            }, plotConfig);
+            document.getElementById('bell-stats').textContent = '';
+            return;
+        }
+
+        const { center, std, bracket_probs } = data;
+        document.getElementById('bell-stats').textContent = `μ=${center.toFixed(1)} σ=${std.toFixed(2)}`;
+
+        // PDF curve over ±4σ
+        const xMin = center - 4 * std;
+        const xMax = center + 4 * std;
+        const step = (xMax - xMin) / 200;
+        const curveX = [], curveY = [];
+        for (let x = xMin; x <= xMax; x += step) {
+            curveX.push(x);
+            curveY.push(gaussianPDF(x, center, std));
+        }
+
+        const traceCurve = {
+            x: curveX, y: curveY,
+            type: 'scatter', mode: 'lines',
+            fill: 'tozeroy',
+            fillcolor: 'rgba(16,185,129,0.15)',
+            line: { color: '#10b981', width: 2 },
+            name: 'PDF',
+            hovertemplate: '%{x:.1f}°F: %{y:.4f}<extra></extra>',
+            yaxis: 'y',
+        };
+
+        // Bracket probabilities as bars
+        const brackets = Object.keys(bracket_probs).map(Number).sort((a, b) => a - b);
+        const barX = brackets;
+        const barY = brackets.map(k => bracket_probs[k]);
+
+        const traceBars = {
+            x: barX, y: barY,
+            type: 'bar',
+            marker: { color: 'rgba(59,130,246,0.5)', line: { color: '#3b82f6', width: 1 } },
+            name: 'P(bracket)',
+            hovertemplate: '%{x}°F: %{y:.1%}<extra></extra>',
+            yaxis: 'y2',
+        };
+
+        const layout = {
+            ...basePlotLayout,
+            showlegend: true,
+            legend: { x: 0, y: 1.02, orientation: 'h', font: { size: 10 } },
+            barmode: 'overlay',
+            xaxis: { ...basePlotLayout.xaxis, title: { text: '°F', standoff: 8, font: { size: 10 } } },
+            yaxis: {
+                ...basePlotLayout.yaxis,
+                title: { text: 'Density', standoff: 8, font: { size: 10 } },
+                side: 'left',
+            },
+            yaxis2: {
+                ...basePlotLayout.yaxis,
+                title: { text: 'Prob', standoff: 8, font: { size: 10 } },
+                side: 'right',
+                overlaying: 'y',
+                showgrid: false,
+                tickformat: '.0%',
+            },
+        };
+
+        Plotly.react('bell-chart', [traceCurve, traceBars], layout, plotConfig);
+    }
+
+    // -----------------------------------------------------------------------
+    // City Cards
+    // -----------------------------------------------------------------------
+    async function refreshCityCards() {
+        const data = await fetchJSON('/api/cities');
+        if (!data || !data.cities) return;
+
+        data.cities.forEach(c => {
+            const city = c.city;
+            const tempEl = document.getElementById(`card-temp-${city}`);
+            const driftEl = document.getElementById(`card-drift-${city}`);
+            const ciEl = document.getElementById(`card-ci-${city}`);
+            const confEl = document.getElementById(`card-conf-${city}`);
+
+            if (c.center !== null) {
+                tempEl.textContent = `${c.center.toFixed(1)}°F`;
+                const driftSign = c.drift >= 0 ? '+' : '';
+                driftEl.textContent = `drift ${driftSign}${c.drift.toFixed(1)}`;
+                driftEl.className = `mono text-xs ${c.drift > 0 ? 'text-amber-400' : c.drift < 0 ? 'text-blue-400' : 'text-slate-500'}`;
+                ciEl.textContent = `[${c.interval_90[0]}, ${c.interval_90[1]}]`;
+                const confPct = Math.max(0, Math.min(100, (c.confidence || 0) * 100));
+                confEl.style.width = `${confPct}%`;
+                confEl.className = `confidence-fill ${confPct > 60 ? 'bg-emerald-500' : confPct > 30 ? 'bg-blue-500' : 'bg-amber-500'}`;
+            } else {
+                tempEl.textContent = '--°F';
+                driftEl.textContent = '--';
+                ciEl.textContent = '--';
+                confEl.style.width = '0%';
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Market Intelligence
+    // -----------------------------------------------------------------------
+    async function refreshMarket(city) {
+        const data = await fetchJSON(`/api/market/${city}`);
+        const pending = document.getElementById('market-pending');
+        const table = document.getElementById('market-table');
+        const body = document.getElementById('market-body');
+        const status = document.getElementById('market-status');
+
+        if (!data || !data.available) {
+            pending.classList.remove('hidden');
+            table.classList.add('hidden');
+            status.textContent = data?.message || 'Market data pending';
+            return;
+        }
+
+        pending.classList.add('hidden');
+        table.classList.remove('hidden');
+        status.textContent = `${data.comparisons.length} brackets`;
+
+        body.innerHTML = data.comparisons.map(c => {
+            const rowClass = c.signal === 'alpha' ? 'signal-alpha' : c.signal === 'overpriced' ? 'signal-overpriced' : '';
+            const edgeColor = c.edge > 0.05 ? 'text-emerald-400' : c.edge < -0.05 ? 'text-red-400' : 'text-slate-400';
+            const edgeStr = c.edge !== null ? `${(c.edge * 100).toFixed(1)}pp` : '--';
+            const signalLabel = c.signal === 'alpha' ? '● BUY' : c.signal === 'overpriced' ? '● AVOID' : '○ FAIR';
+            const signalColor = c.signal === 'alpha' ? 'text-emerald-400' : c.signal === 'overpriced' ? 'text-red-400' : 'text-slate-500';
+
+            return `<tr class="${rowClass} border-b border-slate-800/50">
+                <td class="py-2 pr-4">${c.bracket}°F <span class="${signalColor} text-xs ml-1">${signalLabel}</span></td>
+                <td class="py-2 pr-4">${(c.model_prob * 100).toFixed(1)}%</td>
+                <td class="py-2 pr-4">${c.market_mid !== null ? (c.market_mid * 100).toFixed(1) + '%' : '--'}</td>
+                <td class="py-2 pr-4 ${edgeColor}">${edgeStr}</td>
+                <td class="py-2 pr-4 text-slate-400">${c.yes_bid ?? '--'}</td>
+                <td class="py-2 text-slate-400">${c.yes_ask ?? '--'}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    // -----------------------------------------------------------------------
+    // Orchestration
+    // -----------------------------------------------------------------------
+    async function refreshSelectedCity() {
+        await Promise.all([
+            renderRibbon(selectedCity),
+            renderBell(selectedCity),
+            refreshMarket(selectedCity),
+        ]);
+    }
+
+    async function refreshAll() {
+        await Promise.all([
+            refreshSelectedCity(),
+            refreshCityCards(),
+        ]);
+    }
+
+    // Initial load
+    refreshAll();
+
+    // Auto-refresh every 60 seconds
+    setInterval(refreshAll, 60000);
+    </script>
+</body>
+</html>

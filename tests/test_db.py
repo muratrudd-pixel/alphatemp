@@ -116,9 +116,43 @@ def test_drift_signals_schema():
     cols = con.execute("DESCRIBE drift_signals").fetchall()
     col_names = {c[0] for c in cols}
     for expected in ["city", "calculated_at", "model_run", "drift_score",
-                     "slope_divergence", "forecast_trend", "magnet_proximity",
-                     "magnet_distance", "confidence", "projected_high"]:
+                     "slope_divergence", "forecast_trend", "confidence",
+                     "projected_high"]:
         assert expected in col_names, f"Missing column: {expected}"
+    con.close()
+
+
+def test_station_bias_table_exists():
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB)
+    tables = con.execute("SHOW TABLES").fetchall()
+    table_names = {t[0] for t in tables}
+    assert "station_bias" in table_names
+    con.close()
+
+
+def test_station_bias_schema():
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB)
+    cols = con.execute("DESCRIBE station_bias").fetchall()
+    col_names = {c[0] for c in cols}
+    for expected in ["station_id", "calculated_at", "mean_bias", "std_error", "sample_days"]:
+        assert expected in col_names, f"Missing column: {expected}"
+    con.close()
+
+
+def test_station_bias_unique_constraint():
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB)
+    con.execute("""
+        INSERT INTO station_bias (station_id, calculated_at, mean_bias, std_error, sample_days)
+        VALUES ('KNYC', '2026-02-22 12:00:00', 0.8, 1.2, 85)
+    """)
+    with pytest.raises(duckdb.ConstraintException):
+        con.execute("""
+            INSERT INTO station_bias (station_id, calculated_at, mean_bias, std_error, sample_days)
+            VALUES ('KNYC', '2026-02-22 12:00:00', 0.5, 1.0, 90)
+        """)
     con.close()
 
 
@@ -127,17 +161,15 @@ def test_drift_signals_unique_constraint():
     con = duckdb.connect(TEST_DB)
     con.execute("""
         INSERT INTO drift_signals (city, calculated_at, model_run, drift_score,
-            slope_divergence, forecast_trend, magnet_proximity, magnet_distance,
-            confidence, projected_high)
+            slope_divergence, forecast_trend, confidence, projected_high)
         VALUES ('NYC', '2026-02-22 12:00:00', '2026-02-22 06:00:00', 1.2,
-            0.3, 0.5, 31, -0.3, 0.85, 31.3)
+            0.3, 0.5, 0.85, 31.3)
     """)
     with pytest.raises(duckdb.ConstraintException):
         con.execute("""
             INSERT INTO drift_signals (city, calculated_at, model_run, drift_score,
-                slope_divergence, forecast_trend, magnet_proximity, magnet_distance,
-                confidence, projected_high)
+                slope_divergence, forecast_trend, confidence, projected_high)
             VALUES ('NYC', '2026-02-22 12:00:00', '2026-02-22 06:00:00', 2.0,
-                0.1, 0.2, 32, 0.7, 0.90, 32.7)
+                0.1, 0.2, 0.90, 32.7)
         """)
     con.close()
