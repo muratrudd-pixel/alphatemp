@@ -9,6 +9,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from loguru import logger
 
+# ============================================================
+# TRADING KILL SWITCH — set to True to enable live trading.
+# While False, all order placement is blocked at the code level.
+# ============================================================
+TRADING_ENABLED = False
+
 # Kalshi API base URLs
 KALSHI_PROD_URL = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_DEMO_URL = "https://demo-api.kalshi.co/trade-api/v2"
@@ -131,6 +137,10 @@ class KalshiClient:
             yes_price: Price in cents (1-99) for yes side
             no_price: Price in cents (1-99) for no side
         """
+        if not TRADING_ENABLED:
+            logger.warning(f"BLOCKED: {action} {count}x {side} @ {yes_price or no_price}c on {ticker} — TRADING_ENABLED is False")
+            return {"blocked": True, "reason": "TRADING_ENABLED is False"}
+
         body = {
             "ticker": ticker,
             "side": side,
