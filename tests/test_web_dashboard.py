@@ -213,9 +213,8 @@ def _insert_forecast(db_path, station_id, model_run, valid_at, temp_f):
     con.close()
 
 
-def test_observations_include_neighbor_stations(client):
-    """Observation feed should return obs from settlement + neighbor stations."""
-    # NYC: settlement=KNYC, neighbors=[KLGA, KEWR]
+def test_observations_settlement_only(client):
+    """Observation feed should only return the settlement station, not neighbors."""
     now = datetime.now(timezone.utc)
     base = now.replace(hour=12, minute=0, second=0, microsecond=0)
 
@@ -229,27 +228,8 @@ def test_observations_include_neighbor_stations(client):
     data = resp.json()
 
     stations_returned = {o["station_id"] for o in data["observations"]}
-    assert "KNYC" in stations_returned
-    assert "KLGA" in stations_returned
-    assert "KEWR" in stations_returned
-    assert len(data["observations"]) == 3
-
-
-def test_running_high_settlement_only(client):
-    """Running high should only consider the settlement station, not neighbors."""
-    now = datetime.now(timezone.utc)
-    base = now.replace(hour=12, minute=0, second=0, microsecond=0)
-
-    # Neighbor has higher temp — should NOT be running high
-    _insert_obs(TEST_DB, "KNYC", base, 30.0)
-    _insert_obs(TEST_DB, "KLGA", base + timedelta(minutes=1), 50.0)
-
-    today = base.strftime("%Y-%m-%d")
-    resp = client.get(f"/api/observations/NYC?date={today}")
-    data = resp.json()
-
-    assert data["running_high"] == 30.0
-    assert data["running_high_station"] == "KNYC"
+    assert stations_returned == {"KNYC"}
+    assert len(data["observations"]) == 1
 
 
 # --- Ribbon collapse ---
@@ -303,32 +283,29 @@ def test_forecast_curve_includes_now_utc(client):
     assert parsed.tzinfo is not None
 
 
-# --- Multi-station obs in forecast_curve ---
+# --- Settlement-only obs in forecast_curve ---
 
 
-def test_forecast_curve_obs_include_neighbors(client):
-    """forecast_curve observations should include data from neighbor stations."""
+def test_forecast_curve_obs_settlement_only(client):
+    """forecast_curve observations should only include the settlement station."""
     now = datetime.now(timezone.utc)
     model_run = now - timedelta(hours=2)
     valid = now + timedelta(hours=1)
 
     _insert_forecast(TEST_DB, "KNYC", model_run, valid, 33.0)
 
-    # Insert obs from multiple stations within the same day
     base = now - timedelta(hours=1)
     _insert_obs(TEST_DB, "KNYC", base, 30.0)
     _insert_obs(TEST_DB, "KLGA", base + timedelta(minutes=1), 31.0)
     _insert_obs(TEST_DB, "KEWR", base + timedelta(minutes=2), 29.5)
 
-    # Use date param so the day-bounds query includes past observations
     today = now.strftime("%Y-%m-%d")
     resp = client.get(f"/api/forecast-curve/NYC?date={today}")
     data = resp.json()
 
-    stations_in_obs = {o["station_id"] for o in data["observations"]}
-    assert "KNYC" in stations_in_obs
-    assert "KLGA" in stations_in_obs
-    assert "KEWR" in stations_in_obs
+    # Only KNYC obs should appear — neighbors excluded
+    assert len(data["observations"]) == 1
+    assert data["observations"][0]["temp_f"] == 30.0
 
 
 # --- NWS Settlement source ---

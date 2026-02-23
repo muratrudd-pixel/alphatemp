@@ -105,31 +105,28 @@ async def health():
 
 @app.get("/api/observations/{city}")
 async def observation_feed(city: str, date: str = None):
-    """Raw observation feed for settlement + neighbor stations.
+    """Raw observation feed for the settlement station only.
 
     Returns observations for the given day (midnight–midnight ET), newest first.
-    Defaults to today in ET.  Running high is settlement-station only (Kalshi settles
-    on the settlement ICAO, not neighbors).
+    Defaults to today in ET.
     """
     city = city.upper()
     if city not in CITIES:
         return {"error": f"Unknown city: {city}"}
 
     station_id = CITIES[city]["settlement"]
-    all_stations = [station_id] + CITIES[city].get("neighbors", [])
-    placeholders = ", ".join("?" for _ in all_stations)
 
     day_start_utc, day_end_utc = et_day_bounds_utc(date)
 
     con = get_connection()
     rows = con.execute(
-        f"""SELECT station_id, observed_at, temp_f, temp_c_tenth, raw_metar, ingested_at
+        """SELECT station_id, observed_at, temp_f, temp_c_tenth, raw_metar, ingested_at
             FROM observations
-            WHERE station_id IN ({placeholders})
+            WHERE station_id = ?
             AND observed_at >= ? AND observed_at < ?
             ORDER BY observed_at DESC
-            LIMIT 500""",
-        [*all_stations, day_start_utc, day_end_utc],
+            LIMIT 200""",
+        [station_id, day_start_utc, day_end_utc],
     ).fetchall()
 
     observations = []
@@ -145,8 +142,7 @@ async def observation_feed(city: str, date: str = None):
                 "raw_metar": metar,
                 "ingested_at": ingested.isoformat() if ingested else None,
             })
-            # Running high: settlement station only (Kalshi settles on settlement ICAO)
-            if sid == station_id and (running_high is None or temp_f > running_high):
+            if running_high is None or temp_f > running_high:
                 running_high = temp_f
                 running_high_station = sid
 
@@ -333,31 +329,28 @@ async def forecast_curve(city: str, date: str = None):
                 for mr, pts in sorted(prior_by_run.items(), reverse=True)
             ]
 
-    # Observations — settlement + neighbor stations for denser coverage
-    all_stations = [station_id] + CITIES[city].get("neighbors", [])
-    obs_placeholders = ", ".join("?" for _ in all_stations)
+    # Observations — settlement station only
     if day_start_utc:
         observations = con.execute(
-            f"""SELECT station_id, observed_at, temp_f FROM observations
-               WHERE station_id IN ({obs_placeholders})
+            """SELECT observed_at, temp_f FROM observations
+               WHERE station_id = ?
                AND observed_at >= ? AND observed_at < ?
                ORDER BY observed_at""",
-            [*all_stations, day_start_utc, day_end_utc],
+            [station_id, day_start_utc, day_end_utc],
         ).fetchall()
     else:
         first_valid = forecasts[0][0]
         observations = con.execute(
-            f"""SELECT station_id, observed_at, temp_f FROM observations
-               WHERE station_id IN ({obs_placeholders})
+            """SELECT observed_at, temp_f FROM observations
+               WHERE station_id = ?
                AND observed_at >= ?
                ORDER BY observed_at""",
-            [*all_stations, first_valid],
+            [station_id, first_valid],
         ).fetchall()
 
     obs_points = [
-        {"station_id": row[0], "observed_at": row[1].isoformat(),
-         "temp_f": round(row[2], 1)}
-        for row in observations if row[2] is not None
+        {"observed_at": row[0].isoformat(), "temp_f": round(row[1], 1)}
+        for row in observations if row[1] is not None
     ]
 
     # Settlement high: prefer NWS daily (CLI thermometer) over running obs max
@@ -383,12 +376,10 @@ async def forecast_curve(city: str, date: str = None):
         observed_high_at = f"{nws_date}T17:00:00"  # noon ET = 17:00 UTC
         settlement_source = "nws_cli"
     elif obs_points:
-        # Fallback: running max of settlement-station obs only
-        settlement_obs = [p for p in obs_points if p["station_id"] == station_id]
-        if settlement_obs:
-            best = max(settlement_obs, key=lambda p: p["temp_f"])
-            observed_high = best["temp_f"]
-            observed_high_at = best["observed_at"]
+        # Fallback: running max of settlement-station obs
+        best = max(obs_points, key=lambda p: p["temp_f"])
+        observed_high = best["temp_f"]
+        observed_high_at = best["observed_at"]
         settlement_source = "obs_running"
 
     # Get latest drift for this city
