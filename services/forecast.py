@@ -6,6 +6,7 @@ from typing import List
 
 import duckdb
 import numpy as np
+import pygrib
 from herbie import Herbie
 from loguru import logger
 
@@ -29,23 +30,20 @@ class HRRRFetcher:
         self.db_path = db_path
         self.stations = STATION_COORDS
 
-    def _extract_nearest(self, ds, lat: float, lon: float) -> float:
+    def _extract_nearest(self, msg, lat: float, lon: float) -> float:
         """Extract 2m temp at the nearest grid point to (lat, lon).
 
-        Herbie returns xarray datasets where latitude/longitude are 2D
-        auxiliary coordinates on (y, x) dims. HRRR uses 0-360° longitude
-        convention, so we convert negative longitudes before lookup.
+        pygrib messages provide latlons() as 2D arrays. HRRR uses negative
+        longitudes (-134 to -60), matching standard convention.
 
         Longitude is weighted by cos(lat) to compensate for meridian
         convergence — at 40°N, 1° lon is ~22% shorter than 1° lat.
         """
-        lat_grid = ds["t2m"].coords["latitude"].values
-        lon_grid = ds["t2m"].coords["longitude"].values
-        lon_lookup = lon % 360  # Convert -87.75 → 272.25 to match HRRR grid
+        lat_grid, lon_grid = msg.latlons()
         cos_lat = np.cos(np.radians(lat))
-        dist = np.abs(lat_grid - lat) + np.abs(lon_grid - lon_lookup) * cos_lat
+        dist = np.abs(lat_grid - lat) + np.abs(lon_grid - lon) * cos_lat
         idx = np.unravel_index(np.argmin(dist), dist.shape)
-        return float(ds["t2m"].isel(y=idx[0], x=idx[1]).values)
+        return float(msg.values[idx])
 
     def fetch_run(self, model_run: datetime, fxx_range: range = range(1, 19)) -> int:
         """Fetch a single HRRR run for all stations. Returns rows inserted."""
@@ -61,7 +59,9 @@ class HRRRFetcher:
                     product="sfc",
                     fxx=fxx,
                 )
-                ds = H.xarray("TMP:2 m")
+                grib_path = H.download("TMP:2 m")
+                grbs = pygrib.open(str(grib_path))
+                msg = grbs.select(name="2 metre temperature")[0]
             except Exception as e:
                 logger.debug(f"HRRR fxx={fxx} not available for {model_run}: {e}")
                 continue
@@ -70,7 +70,7 @@ class HRRRFetcher:
 
             for stid, (lat, lon) in self.stations.items():
                 try:
-                    temp_k = self._extract_nearest(ds, lat, lon)
+                    temp_k = self._extract_nearest(msg, lat, lon)
                     temp_c = round(temp_k - 273.15, 2)
                     temp_f = round(temp_c * 9.0 / 5.0 + 32.0, 1)
 

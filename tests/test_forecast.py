@@ -40,24 +40,27 @@ def test_get_recent_model_runs_crosses_midnight():
     assert runs[2] == datetime(2026, 2, 21, 22, 0, tzinfo=timezone.utc)
 
 
+def _make_mock_grib_msg():
+    """Create a mock pygrib message with 2m temp data at a single grid point."""
+    import numpy as np
+    mock_msg = MagicMock()
+    mock_msg.values = np.array([[280.0]])
+    mock_msg.latlons.return_value = (np.array([[40.78]]), np.array([[-73.97]]))
+    return mock_msg
+
+
 def test_fetcher_stores_forecasts(test_db):
     """Mock Herbie to verify forecasts land in DuckDB."""
-    import numpy as np
-    import xarray as xr
-
-    mock_ds = xr.Dataset(
-        {"t2m": xr.DataArray(
-            data=np.array([[280.0]]),
-            dims=["y", "x"],
-            coords={"latitude": (["y", "x"], [[40.78]]),
-                     "longitude": (["y", "x"], [[-73.97]])},
-        )}
-    )
+    mock_msg = _make_mock_grib_msg()
 
     mock_herbie = MagicMock()
-    mock_herbie.xarray.return_value = mock_ds
+    mock_herbie.download.return_value = "/tmp/fake.grib2"
 
-    with patch("services.forecast.Herbie", return_value=mock_herbie):
+    mock_grbs = MagicMock()
+    mock_grbs.select.return_value = [mock_msg]
+
+    with patch("services.forecast.Herbie", return_value=mock_herbie), \
+         patch("services.forecast.pygrib.open", return_value=mock_grbs):
         fetcher = HRRRFetcher(db_path=test_db)
         model_run = datetime(2026, 2, 22, 12, 0, tzinfo=timezone.utc)
         inserted = fetcher.fetch_run(model_run, fxx_range=range(1, 3))
@@ -76,22 +79,16 @@ def test_fetcher_stores_forecasts(test_db):
 
 def test_fetcher_deduplicates(test_db):
     """Running fetch_run twice with same data should not create duplicates."""
-    import numpy as np
-    import xarray as xr
-
-    mock_ds = xr.Dataset(
-        {"t2m": xr.DataArray(
-            data=np.array([[280.0]]),
-            dims=["y", "x"],
-            coords={"latitude": (["y", "x"], [[40.78]]),
-                     "longitude": (["y", "x"], [[-73.97]])},
-        )}
-    )
+    mock_msg = _make_mock_grib_msg()
 
     mock_herbie = MagicMock()
-    mock_herbie.xarray.return_value = mock_ds
+    mock_herbie.download.return_value = "/tmp/fake.grib2"
 
-    with patch("services.forecast.Herbie", return_value=mock_herbie):
+    mock_grbs = MagicMock()
+    mock_grbs.select.return_value = [mock_msg]
+
+    with patch("services.forecast.Herbie", return_value=mock_herbie), \
+         patch("services.forecast.pygrib.open", return_value=mock_grbs):
         fetcher = HRRRFetcher(db_path=test_db)
         model_run = datetime(2026, 2, 22, 12, 0, tzinfo=timezone.utc)
         fetcher.fetch_run(model_run, fxx_range=range(1, 3))
