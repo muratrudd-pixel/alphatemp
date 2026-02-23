@@ -43,11 +43,17 @@ CITIES: dict = {
 # Polling interval in seconds
 POLL_INTERVAL_SECONDS: int = 60
 
+# IEM ASOS polling interval (matches Synoptic — 60s poll with 90-min lookback)
+IEM_POLL_INTERVAL_SECONDS: int = 60
+
 # Forecast polling interval (15 minutes — HRRR updates hourly, this catches trickle-in)
 FORECAST_POLL_INTERVAL_SECONDS: int = 900
 
 # NWS daily high poll interval (4 hours — CLI reports publish once daily)
 NWS_DAILY_POLL_INTERVAL_SECONDS: int = 14400
+
+# NWS CLI direct poll interval (30 min — same-day settlement data)
+NWS_CLI_POLL_INTERVAL_SECONDS: int = 1800
 
 # Settlement station coordinates for HRRR grid point extraction
 STATION_COORDS: dict = {

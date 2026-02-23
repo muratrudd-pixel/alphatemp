@@ -14,6 +14,7 @@ from services.forecast import HRRRFetcher
 from services.bias import BiasEngine
 from services.market_fetcher import MarketFetcher
 from services.nws_fetcher import NWSFetcher
+from services.iem_ingestor import IEMIngestor
 
 
 async def main():
@@ -26,13 +27,15 @@ async def main():
     init_db()
 
     ingestor = SynopticIngestor(token=token)
+    iem = IEMIngestor()
     fetcher = HRRRFetcher()
     engine = BiasEngine()
     market = MarketFetcher()
     nws = NWSFetcher()
 
     tasks = [
-        ingestor.run(),
+        ingestor.run(),    # Synoptic — 11 stations (broad coverage)
+        iem.run(),         # IEM — 5 settlement stations (low-latency SPECI)
         fetcher.run(),
         engine.run(),
         market.run(),
