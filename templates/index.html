@@ -348,10 +348,11 @@
             hovertemplate: '%{y:.1f}°F<extra></extra>',
         };
 
-        // "Now" vertical line (in ET)
+        // "Now" vertical line (in ET) — prefer server timestamp, fallback to client
+        const nowLine = data.now_utc ? toET(data.now_utc) : nowET();
         const nowShape = {
             type: 'line',
-            x0: nowET(), x1: nowET(),
+            x0: nowLine, x1: nowLine,
             y0: 0, y1: 1, yref: 'paper',
             line: { color: 'rgba(148,163,184,0.4)', width: 1, dash: 'dash' },
         };

@@ -105,28 +105,31 @@ async def health():
 
 @app.get("/api/observations/{city}")
 async def observation_feed(city: str, date: str = None):
-    """Raw observation feed for the settlement station.
+    """Raw observation feed for settlement + neighbor stations.
 
     Returns observations for the given day (midnight–midnight ET), newest first.
-    Defaults to today in ET.
+    Defaults to today in ET.  Running high is settlement-station only (Kalshi settles
+    on the settlement ICAO, not neighbors).
     """
     city = city.upper()
     if city not in CITIES:
         return {"error": f"Unknown city: {city}"}
 
     station_id = CITIES[city]["settlement"]
+    all_stations = [station_id] + CITIES[city].get("neighbors", [])
+    placeholders = ", ".join("?" for _ in all_stations)
 
     day_start_utc, day_end_utc = et_day_bounds_utc(date)
 
     con = get_connection()
     rows = con.execute(
-        """SELECT station_id, observed_at, temp_f, temp_c_tenth, raw_metar, ingested_at
+        f"""SELECT station_id, observed_at, temp_f, temp_c_tenth, raw_metar, ingested_at
             FROM observations
-            WHERE station_id = ?
+            WHERE station_id IN ({placeholders})
             AND observed_at >= ? AND observed_at < ?
             ORDER BY observed_at DESC
-            LIMIT 200""",
-        [station_id, day_start_utc, day_end_utc],
+            LIMIT 500""",
+        [*all_stations, day_start_utc, day_end_utc],
     ).fetchall()
 
     observations = []
@@ -142,7 +145,8 @@ async def observation_feed(city: str, date: str = None):
                 "raw_metar": metar,
                 "ingested_at": ingested.isoformat() if ingested else None,
             })
-            if running_high is None or temp_f > running_high:
+            # Running high: settlement station only (Kalshi settles on settlement ICAO)
+            if sid == station_id and (running_high is None or temp_f > running_high):
                 running_high = temp_f
                 running_high_station = sid
 
@@ -279,9 +283,12 @@ async def forecast_curve(city: str, date: str = None):
             ref = valid_at.replace(tzinfo=timezone.utc)
         else:
             ref = valid_at
-        hours_ahead = max(0, (ref - now).total_seconds() / 3600)
-        lead_factor = min(1.0, (hours_ahead / 18.0) ** 0.5) if hours_ahead > 0 else 0.05
-        std_at_hour = max(0.3, historical_std * lead_factor * stability * convergence)
+        hours_ahead = (ref - now).total_seconds() / 3600
+        if hours_ahead <= 0:
+            std_at_hour = 0.01  # near-zero — ribbon collapses for past timestamps
+        else:
+            lead_factor = min(1.0, (hours_ahead / 18.0) ** 0.5)
+            std_at_hour = max(0.3, historical_std * lead_factor * stability * convergence)
         upper = round(temp_f + 1.645 * std_at_hour, 1)
         lower = round(temp_f - 1.645 * std_at_hour, 1)
 
@@ -326,26 +333,31 @@ async def forecast_curve(city: str, date: str = None):
                 for mr, pts in sorted(prior_by_run.items(), reverse=True)
             ]
 
-    # Observations — settlement station only
+    # Observations — settlement + neighbor stations for denser coverage
+    all_stations = [station_id] + CITIES[city].get("neighbors", [])
+    obs_placeholders = ", ".join("?" for _ in all_stations)
     if day_start_utc:
         observations = con.execute(
-            """SELECT observed_at, temp_f FROM observations
-               WHERE station_id = ? AND observed_at >= ? AND observed_at < ?
+            f"""SELECT station_id, observed_at, temp_f FROM observations
+               WHERE station_id IN ({obs_placeholders})
+               AND observed_at >= ? AND observed_at < ?
                ORDER BY observed_at""",
-            [station_id, day_start_utc, day_end_utc],
+            [*all_stations, day_start_utc, day_end_utc],
         ).fetchall()
     else:
         first_valid = forecasts[0][0]
         observations = con.execute(
-            """SELECT observed_at, temp_f FROM observations
-               WHERE station_id = ? AND observed_at >= ?
+            f"""SELECT station_id, observed_at, temp_f FROM observations
+               WHERE station_id IN ({obs_placeholders})
+               AND observed_at >= ?
                ORDER BY observed_at""",
-            [station_id, first_valid],
+            [*all_stations, first_valid],
         ).fetchall()
 
     obs_points = [
-        {"observed_at": row[0].isoformat(), "temp_f": round(row[1], 1)}
-        for row in observations if row[1] is not None
+        {"station_id": row[0], "observed_at": row[1].isoformat(),
+         "temp_f": round(row[2], 1)}
+        for row in observations if row[2] is not None
     ]
 
     # Get latest drift for this city
@@ -368,6 +380,7 @@ async def forecast_curve(city: str, date: str = None):
         "prior_runs": prior_runs,
         "drift": drift,
         "bias": bias_val,
+        "now_utc": now.isoformat(),
     }
 
 

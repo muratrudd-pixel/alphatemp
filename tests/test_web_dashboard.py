@@ -178,3 +178,154 @@ def test_market_with_date_param(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["city"] == "NYC"
+
+
+# --- Multi-station observations ---
+
+
+def _strip_tz(dt):
+    """Strip timezone for DuckDB TIMESTAMP columns (stores naive values)."""
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
+def _insert_obs(db_path, station_id, observed_at, temp_f):
+    """Helper to insert a single observation row."""
+    observed_at = _strip_tz(observed_at)
+    con = get_connection(db_path)
+    con.execute(
+        """INSERT INTO observations (station_id, observed_at, temp_f, temp_c_tenth, raw_metar, ingested_at)
+           VALUES (?, ?, ?, NULL, NULL, ?)""",
+        [station_id, observed_at, temp_f, observed_at],
+    )
+    con.close()
+
+
+def _insert_forecast(db_path, station_id, model_run, valid_at, temp_f):
+    """Helper to insert a single forecast row."""
+    model_run = _strip_tz(model_run)
+    valid_at = _strip_tz(valid_at)
+    con = get_connection(db_path)
+    con.execute(
+        """INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at)
+           VALUES (?, ?, ?, ?, NULL, ?)""",
+        [station_id, model_run, valid_at, temp_f, valid_at],
+    )
+    con.close()
+
+
+def test_observations_include_neighbor_stations(client):
+    """Observation feed should return obs from settlement + neighbor stations."""
+    # NYC: settlement=KNYC, neighbors=[KLGA, KEWR]
+    now = datetime.now(timezone.utc)
+    base = now.replace(hour=12, minute=0, second=0, microsecond=0)
+
+    _insert_obs(TEST_DB, "KNYC", base, 30.0)
+    _insert_obs(TEST_DB, "KLGA", base + timedelta(minutes=1), 31.5)
+    _insert_obs(TEST_DB, "KEWR", base + timedelta(minutes=2), 29.0)
+
+    today = base.strftime("%Y-%m-%d")
+    resp = client.get(f"/api/observations/NYC?date={today}")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    stations_returned = {o["station_id"] for o in data["observations"]}
+    assert "KNYC" in stations_returned
+    assert "KLGA" in stations_returned
+    assert "KEWR" in stations_returned
+    assert len(data["observations"]) == 3
+
+
+def test_running_high_settlement_only(client):
+    """Running high should only consider the settlement station, not neighbors."""
+    now = datetime.now(timezone.utc)
+    base = now.replace(hour=12, minute=0, second=0, microsecond=0)
+
+    # Neighbor has higher temp — should NOT be running high
+    _insert_obs(TEST_DB, "KNYC", base, 30.0)
+    _insert_obs(TEST_DB, "KLGA", base + timedelta(minutes=1), 50.0)
+
+    today = base.strftime("%Y-%m-%d")
+    resp = client.get(f"/api/observations/NYC?date={today}")
+    data = resp.json()
+
+    assert data["running_high"] == 30.0
+    assert data["running_high_station"] == "KNYC"
+
+
+# --- Ribbon collapse ---
+
+
+def test_ribbon_collapses_for_past_timestamps(client):
+    """Confidence ribbon should have near-zero std for past forecast timestamps."""
+    now = datetime.now(timezone.utc)
+    model_run = now - timedelta(hours=6)
+
+    # Past timestamp (3 hours ago)
+    past_valid = now - timedelta(hours=3)
+    # Future timestamp (3 hours ahead)
+    future_valid = now + timedelta(hours=3)
+
+    _insert_forecast(TEST_DB, "KNYC", model_run, past_valid, 32.0)
+    _insert_forecast(TEST_DB, "KNYC", model_run, future_valid, 35.0)
+
+    resp = client.get("/api/forecast-curve/NYC")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert len(data["ribbon"]) == 2
+
+    past_ribbon = data["ribbon"][0]
+    future_ribbon = data["ribbon"][1]
+
+    # Past should have near-zero std (0.01)
+    assert past_ribbon["std"] == 0.01
+    # Future should have std >= 0.3 (the floor)
+    assert future_ribbon["std"] >= 0.3
+
+
+# --- now_utc in forecast_curve ---
+
+
+def test_forecast_curve_includes_now_utc(client):
+    """forecast_curve response should include now_utc field."""
+    now = datetime.now(timezone.utc)
+    model_run = now - timedelta(hours=1)
+    valid = now + timedelta(hours=1)
+
+    _insert_forecast(TEST_DB, "KNYC", model_run, valid, 33.0)
+
+    resp = client.get("/api/forecast-curve/NYC")
+    data = resp.json()
+
+    assert "now_utc" in data
+    # Should be parseable as ISO datetime
+    parsed = datetime.fromisoformat(data["now_utc"])
+    assert parsed.tzinfo is not None
+
+
+# --- Multi-station obs in forecast_curve ---
+
+
+def test_forecast_curve_obs_include_neighbors(client):
+    """forecast_curve observations should include data from neighbor stations."""
+    now = datetime.now(timezone.utc)
+    model_run = now - timedelta(hours=2)
+    valid = now + timedelta(hours=1)
+
+    _insert_forecast(TEST_DB, "KNYC", model_run, valid, 33.0)
+
+    # Insert obs from multiple stations within the same day
+    base = now - timedelta(hours=1)
+    _insert_obs(TEST_DB, "KNYC", base, 30.0)
+    _insert_obs(TEST_DB, "KLGA", base + timedelta(minutes=1), 31.0)
+    _insert_obs(TEST_DB, "KEWR", base + timedelta(minutes=2), 29.5)
+
+    # Use date param so the day-bounds query includes past observations
+    today = now.strftime("%Y-%m-%d")
+    resp = client.get(f"/api/forecast-curve/NYC?date={today}")
+    data = resp.json()
+
+    stations_in_obs = {o["station_id"] for o in data["observations"]}
+    assert "KNYC" in stations_in_obs
+    assert "KLGA" in stations_in_obs
+    assert "KEWR" in stations_in_obs
