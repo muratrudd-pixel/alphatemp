@@ -1,0 +1,16 @@
+fastapi==0.128.8
+uvicorn[standard]==0.39.0
+duckdb==1.4.4
+httpx==0.28.1
+herbie-data==2024.8.0
+polars==1.36.1
+scipy==1.13.1
+cryptography==46.0.5
+loguru==0.7.3
+python-dotenv==1.2.1
+pygrib==2.1.6
+pyproj==3.6.1
+numpy==2.0.2
+xarray==2024.7.0
+Jinja2==3.1.6
+cfgrib==0.9.15.1

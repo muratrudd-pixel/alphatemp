@@ -33,12 +33,13 @@ class HRRRFetcher:
         """Extract 2m temp at the nearest grid point to (lat, lon).
 
         Herbie returns xarray datasets where latitude/longitude are 2D
-        auxiliary coordinates on (y, x) dims. We compute the L1 distance
-        to find the nearest grid point, then use isel to grab it.
+        auxiliary coordinates on (y, x) dims. HRRR uses 0-360° longitude
+        convention, so we convert negative longitudes before lookup.
         """
         lat_grid = ds["t2m"].coords["latitude"].values
         lon_grid = ds["t2m"].coords["longitude"].values
-        dist = np.abs(lat_grid - lat) + np.abs(lon_grid - lon)
+        lon_lookup = lon % 360  # Convert -87.75 → 272.25 to match HRRR grid
+        dist = np.abs(lat_grid - lat) + np.abs(lon_grid - lon_lookup)
         idx = np.unravel_index(np.argmin(dist), dist.shape)
         return float(ds["t2m"].isel(y=idx[0], x=idx[1]).values)
 

@@ -25,7 +25,16 @@ class BiasModel:
     For each station, for each day with a 12z HRRR run:
       - peak_error = MAX(forecast) - MAX(observations) for that day's window
     Aggregates across all days to get mean_bias and std_error.
+    Only includes days with sufficient observation coverage.
     """
+
+    # Minimum observations in the forecast window to consider a day "complete".
+    # With 1-min ASOS data across a 17-hour window, a full day has ~1020 obs.
+    # 100 obs (~2 hours of coverage) filters out sparse/missing days.
+    # KNYC (Central Park) only reports hourly METARs (~17 obs per window),
+    # so it gets a lower threshold.
+    MIN_OBS_COUNT = 100
+    MIN_OBS_OVERRIDES = {"KNYC": 12}
 
     def __init__(self, db_path: str = "data/alphatemp.duckdb"):
         self.db_path = db_path
@@ -66,13 +75,16 @@ class BiasModel:
             if not window or window[0] is None:
                 continue
 
-            # Observed high in the same window
+            # Observed high in the same window — require complete day
             obs_row = con.execute(
-                "SELECT MAX(temp_f) FROM observations WHERE station_id = ? AND observed_at BETWEEN ? AND ?",
+                "SELECT MAX(temp_f), COUNT(*) FROM observations "
+                "WHERE station_id = ? AND observed_at BETWEEN ? AND ?",
                 [station_id, window[0], window[1]],
             ).fetchone()
             obs_high = obs_row[0] if obs_row and obs_row[0] is not None else None
-            if obs_high is None:
+            obs_count = obs_row[1] if obs_row else 0
+            min_obs = self.MIN_OBS_OVERRIDES.get(station_id, self.MIN_OBS_COUNT)
+            if obs_high is None or obs_count < min_obs:
                 continue
 
             peak_errors.append(fcst_high - obs_high)

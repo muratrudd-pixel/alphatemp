@@ -1,0 +1,14 @@
+.git
+.env
+.pytest_cache
+__pycache__
+venv/
+.worktrees/
+data/
+tests/
+docs/
+scripts/
+*.pyc
+*.duckdb
+*.duckdb.wal
+.claude/

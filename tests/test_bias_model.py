@@ -1,7 +1,7 @@
 """Tests for historical bias model."""
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -40,13 +40,18 @@ def _seed_day(con, station_id: str, date_str: str, fcst_temps: list, obs_high: f
             [station_id, model_run, valid_at, temp_f, temp_c],
         )
 
-    # Seed a single observation at the daily high
-    obs_time = datetime.fromisoformat(f"{date_str} 18:00:00")
-    con.execute(
-        "INSERT INTO observations (station_id, observed_at, temp_f, temp_c_tenth, raw_metar, ingested_at) "
-        "VALUES (?, ?, ?, NULL, '', CURRENT_TIMESTAMP)",
-        [station_id, obs_time, obs_high],
-    )
+    # Seed enough observations to pass MIN_OBS_COUNT completeness check.
+    # 120 obs at 1-min intervals starting at 13:00, all within the forecast window.
+    window_start = datetime.fromisoformat(f"{date_str} 13:00:00")
+    for i in range(120):
+        obs_time = window_start + timedelta(minutes=i)
+        # Vary temps so the max is obs_high (peak around obs #60)
+        temp = obs_high - abs(i - 60) * 0.1 if obs_high is not None else None
+        con.execute(
+            "INSERT INTO observations (station_id, observed_at, temp_f, temp_c_tenth, raw_metar, ingested_at) "
+            "VALUES (?, ?, ?, NULL, '', CURRENT_TIMESTAMP)",
+            [station_id, obs_time, temp],
+        )
 
 
 @pytest.fixture

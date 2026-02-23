@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  alphatemp:
+    build: .
+    container_name: alphatemp
+    restart: unless-stopped
+    ports:
+      - "8050:8050"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    tmpfs:
+      - /tmp:size=2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

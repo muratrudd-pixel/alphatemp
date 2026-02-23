@@ -34,6 +34,7 @@
             border-radius: 0.5rem;
             transition: border-color 0.2s, transform 0.15s;
             cursor: pointer;
+            touch-action: manipulation;
         }
         .city-card:hover { border-color: rgba(59, 130, 246, 0.4); transform: translateY(-1px); }
         .city-card.active { border-color: var(--blue-line); box-shadow: 0 0 20px rgba(59, 130, 246, 0.15); }
@@ -57,6 +58,7 @@
         }
         select:focus { border-color: var(--blue-line); }
         .signal-alpha { background: var(--alpha-bg); }
+        .signal-alpha-gap { background: rgba(6, 95, 70, 0.6); border-left: 3px solid #10b981; }
         .signal-overpriced { background: var(--overpriced-bg); }
         .confidence-bar {
             height: 4px; border-radius: 2px; background: rgba(148, 163, 184, 0.15);
@@ -70,11 +72,14 @@
         @media (max-width: 1023px) {
             .chart-container { min-height: 280px; }
         }
+        @media (max-width: 639px) {
+            .chart-container { min-height: 220px; }
+        }
     </style>
 </head>
 <body class="min-h-screen">
     <!-- Header -->
-    <header class="px-4 lg:px-6 py-3 flex items-center justify-between border-b border-slate-700/50">
+    <header class="px-4 lg:px-6 py-3 flex flex-col sm:flex-row items-center justify-between gap-2 border-b border-slate-700/50">
         <div class="flex items-center gap-3">
             <div class="glow-dot"></div>
             <h1 class="text-lg lg:text-xl font-semibold tracking-tight">
@@ -115,7 +120,7 @@
         </div>
 
         <!-- City Cards -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 lg:gap-4">
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 lg:gap-4">
             <div class="city-card p-4 fade-in active" data-city="NYC" onclick="selectCity('NYC')">
                 <div class="flex items-center justify-between mb-2">
                     <span class="text-sm font-semibold text-slate-300">NYC</span>
@@ -286,32 +291,67 @@
         const upperY = data.ribbon.map(p => p.upper_90);
         const lowerY = data.ribbon.map(p => p.lower_90);
         const ribbonX = data.ribbon.map(p => p.valid_at);
+        const ribbonStd = data.ribbon.map(p => p.std);
         const obsX = data.observations.map(p => p.observed_at);
         const obsY = data.observations.map(p => p.temp_f);
 
-        // Upper bound (invisible line — anchor for fill)
+        // Inner 50% CI bounds (z=0.674)
+        const fcstMap = {};
+        data.forecasts.forEach(p => { fcstMap[p.valid_at] = p.temp_f; });
+        const innerUpperY = data.ribbon.map(p => {
+            const center = fcstMap[p.valid_at] ?? ((p.upper_90 + p.lower_90) / 2);
+            return Math.round((center + 0.674 * p.std) * 10) / 10;
+        });
+        const innerLowerY = data.ribbon.map(p => {
+            const center = fcstMap[p.valid_at] ?? ((p.upper_90 + p.lower_90) / 2);
+            return Math.round((center - 0.674 * p.std) * 10) / 10;
+        });
+
+        // Outer 90% CI — upper bound (invisible anchor for fill)
         const traceUpper = {
             x: ribbonX, y: upperY,
             type: 'scatter', mode: 'lines',
             line: { width: 0 },
             showlegend: false, hoverinfo: 'skip',
         };
-        // Lower bound (fill to upper)
+        // Outer 90% CI — lower bound (fill to upper)
         const traceLower = {
             x: ribbonX, y: lowerY,
             type: 'scatter', mode: 'lines',
             fill: 'tonexty',
-            fillcolor: 'rgba(59,130,246,0.12)',
+            fillcolor: 'rgba(59,130,246,0.10)',
+            line: { width: 0 },
+            showlegend: false, hoverinfo: 'skip',
+            name: '90% CI',
+        };
+        // Inner 50% CI — upper bound
+        const traceInnerUpper = {
+            x: ribbonX, y: innerUpperY,
+            type: 'scatter', mode: 'lines',
             line: { width: 0 },
             showlegend: false, hoverinfo: 'skip',
         };
-        // Forecast center line
+        // Inner 50% CI — lower bound (fill to inner upper)
+        const traceInnerLower = {
+            x: ribbonX, y: innerLowerY,
+            type: 'scatter', mode: 'lines',
+            fill: 'tonexty',
+            fillcolor: 'rgba(59,130,246,0.22)',
+            line: { width: 0 },
+            showlegend: false, hoverinfo: 'skip',
+            name: '50% CI',
+        };
+        // Forecast center line with sigma in hover
+        const fcstStdMap = {};
+        data.ribbon.forEach(p => { fcstStdMap[p.valid_at] = p.std; });
+        const fcstSigma = fcstX.map(t => fcstStdMap[t] ?? null);
         const traceFcst = {
             x: fcstX, y: fcstY,
             type: 'scatter', mode: 'lines',
             line: { color: '#3b82f6', width: 2, dash: 'dot' },
             name: 'HRRR Forecast',
-            hovertemplate: '%{y:.1f}°F<extra></extra>',
+            customdata: fcstSigma,
+            hovertemplate: '%{y:.1f}°F (σ=%{customdata:.2f})<extra></extra>',
         };
         // Observed actuals
         const traceObs = {
@@ -323,15 +363,27 @@
             hovertemplate: '%{y:.1f}°F<extra></extra>',
         };
 
+        // "Now" vertical line
+        const nowISO = new Date().toISOString();
+        const nowShape = {
+            type: 'line',
+            x0: nowISO, x1: nowISO,
+            y0: 0, y1: 1, yref: 'paper',
+            line: { color: 'rgba(148,163,184,0.4)', width: 1, dash: 'dash' },
+        };
+
         const layout = {
             ...basePlotLayout,
             showlegend: true,
             legend: { x: 0, y: 1.02, orientation: 'h', font: { size: 10 } },
             yaxis: { ...basePlotLayout.yaxis, title: { text: '°F', standoff: 8, font: { size: 10 } } },
             xaxis: { ...basePlotLayout.xaxis, type: 'date' },
+            shapes: [nowShape],
         };
 
-        Plotly.react('ribbon-chart', [traceUpper, traceLower, traceFcst, traceObs], layout, plotConfig);
+        Plotly.react('ribbon-chart',
+            [traceUpper, traceLower, traceInnerUpper, traceInnerLower, traceFcst, traceObs],
+            layout, plotConfig);
         document.getElementById('ribbon-model-run').textContent = city;
     }
 
@@ -468,14 +520,25 @@
 
         pending.classList.add('hidden');
         table.classList.remove('hidden');
-        status.textContent = `${data.comparisons.length} brackets`;
 
+        let gapCount = 0;
         body.innerHTML = data.comparisons.map(c => {
-            const rowClass = c.signal === 'alpha' ? 'signal-alpha' : c.signal === 'overpriced' ? 'signal-overpriced' : '';
+            // Alpha gap: model is 15%+ higher relative to market mid
+            const isAlphaGap = c.signal === 'alpha' && c.market_mid !== null && c.market_mid > 0
+                && (c.model_prob - c.market_mid) / c.market_mid >= 0.15;
+            if (isAlphaGap) gapCount++;
+
+            const rowClass = isAlphaGap ? 'signal-alpha-gap'
+                : c.signal === 'alpha' ? 'signal-alpha'
+                : c.signal === 'overpriced' ? 'signal-overpriced' : '';
             const edgeColor = c.edge > 0.05 ? 'text-emerald-400' : c.edge < -0.05 ? 'text-red-400' : 'text-slate-400';
             const edgeStr = c.edge !== null ? `${(c.edge * 100).toFixed(1)}pp` : '--';
-            const signalLabel = c.signal === 'alpha' ? '● BUY' : c.signal === 'overpriced' ? '● AVOID' : '○ FAIR';
-            const signalColor = c.signal === 'alpha' ? 'text-emerald-400' : c.signal === 'overpriced' ? 'text-red-400' : 'text-slate-500';
+            const signalLabel = isAlphaGap ? '◆ ALPHA GAP'
+                : c.signal === 'alpha' ? '● BUY'
+                : c.signal === 'overpriced' ? '● AVOID' : '○ FAIR';
+            const signalColor = isAlphaGap ? 'text-emerald-300 font-bold'
+                : c.signal === 'alpha' ? 'text-emerald-400'
+                : c.signal === 'overpriced' ? 'text-red-400' : 'text-slate-500';
 
             return `<tr class="${rowClass} border-b border-slate-800/50">
                 <td class="py-2 pr-4">${c.bracket}°F <span class="${signalColor} text-xs ml-1">${signalLabel}</span></td>
@@ -486,6 +549,9 @@
                 <td class="py-2 text-slate-400">${c.yes_ask ?? '--'}</td>
             </tr>`;
         }).join('');
+
+        const gapStr = gapCount > 0 ? ` · ${gapCount} alpha gap${gapCount > 1 ? 's' : ''}` : '';
+        status.textContent = `${data.comparisons.length} brackets${gapStr}`;
     }
 
     // -----------------------------------------------------------------------
