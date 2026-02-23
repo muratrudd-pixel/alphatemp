@@ -35,7 +35,7 @@ class IEMIngestor:
         self.db_path = db_path
 
     @retry_async(max_retries=3, base_delay=2.0)
-    async def _fetch_iem(self, client: httpx.AsyncClient, params: dict) -> str:
+    async def _fetch_iem(self, client: httpx.AsyncClient, params) -> str:
         """GET CSV from IEM ASOS endpoint with retry."""
         resp = await client.get(
             IEM_BASE_URL,
@@ -52,28 +52,31 @@ class IEMIngestor:
         # Naive UTC for DuckDB TIMESTAMP columns (same convention as Synoptic)
         now = now_utc.replace(tzinfo=None)
 
-        params = {
-            "station": ",".join(IEM_STATIONS.keys()),
-            "data": "metar,tmpf",
-            "year1": str(start.year),
-            "month1": str(start.month),
-            "day1": str(start.day),
-            "hour1": str(start.hour),
-            "minute1": str(start.minute),
-            "year2": str(now.year),
-            "month2": str(now.month),
-            "day2": str(now.day),
-            "hour2": str(now.hour),
-            "minute2": str(now.minute),
-            "tz": "Etc/UTC",
-            "format": "onlycomma",
-            "latlon": "no",
-            "elev": "no",
-            "missing": "M",
-            "trace": "T",
-            "direct": "no",
-            "report_type": "3",
-        }
+        # List of tuples so we can send report_type twice:
+        #   report_type=3 (routine METAR) + report_type=4 (SPECI)
+        params = [
+            ("station", ",".join(IEM_STATIONS.keys())),
+            ("data", "metar,tmpf"),
+            ("year1", str(start.year)),
+            ("month1", str(start.month)),
+            ("day1", str(start.day)),
+            ("hour1", str(start.hour)),
+            ("minute1", str(start.minute)),
+            ("year2", str(now_utc.year)),
+            ("month2", str(now_utc.month)),
+            ("day2", str(now_utc.day)),
+            ("hour2", str(now_utc.hour)),
+            ("minute2", str(now_utc.minute)),
+            ("tz", "Etc/UTC"),
+            ("format", "onlycomma"),
+            ("latlon", "no"),
+            ("elev", "no"),
+            ("missing", "M"),
+            ("trace", "T"),
+            ("direct", "no"),
+            ("report_type", "3"),
+            ("report_type", "4"),
+        ]
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
