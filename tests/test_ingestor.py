@@ -40,26 +40,27 @@ def test_parse_hot_day():
 TEST_DB = "data/test_alphatemp.duckdb"
 
 MOCK_SYNOPTIC_RESPONSE = {
+    "SUMMARY": {"RESPONSE_CODE": 1, "RESPONSE_MESSAGE": "OK", "NUMBER_OF_OBJECTS": 2},
     "STATION": [
         {
             "STID": "KNYC",
             "OBSERVATIONS": {
                 "date_time": ["2026-02-22T12:00:00Z", "2026-02-22T12:01:00Z"],
-                "air_temp_value_1": {"values": [7.2, 7.3]},
-                "metar": {"values": [
+                "air_temp_set_1": [7.2, 7.3],
+                "metar_set_1": [
                     "METAR KNYC 221200Z RMK AO2 T00720056",
                     "METAR KNYC 221201Z RMK AO2 T00730058",
-                ]},
+                ],
             },
         },
         {
             "STID": "KMDW",
             "OBSERVATIONS": {
                 "date_time": ["2026-02-22T12:00:00Z"],
-                "air_temp_value_1": {"values": [-2.5]},
-                "metar": {"values": [
+                "air_temp_set_1": [-2.5],
+                "metar_set_1": [
                     "METAR KMDW 221200Z RMK AO2 T10251033",
-                ]},
+                ],
             },
         },
     ]

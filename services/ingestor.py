@@ -2,7 +2,7 @@
 
 import asyncio
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import duckdb
@@ -45,10 +45,13 @@ class SynopticIngestor:
 
     async def poll_once(self) -> int:
         """Execute a single poll cycle. Returns number of new rows inserted."""
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(minutes=15)
         params = {
             "stid": ",".join(self.stations),
-            "recent": 5,
-            "vars": "air_temp",
+            "start": start.strftime("%Y%m%d%H%M"),
+            "end": now.strftime("%Y%m%d%H%M"),
+            "vars": "air_temp,metar",
             "obtimezone": "UTC",
             "token": self.token,
         }
@@ -62,19 +65,19 @@ class SynopticIngestor:
             logger.warning(f"Synoptic API request failed: {e}")
             return 0
 
-        if "STATION" not in data:
-            logger.warning("No STATION data in Synoptic response")
+        summary = data.get("SUMMARY", {})
+        if summary.get("RESPONSE_CODE") != 1 or "STATION" not in data:
+            logger.warning(f"Synoptic API returned no data: {summary.get('RESPONSE_MESSAGE', 'unknown')}")
             return 0
 
         rows = []
-        now = datetime.now(timezone.utc)
 
         for station in data["STATION"]:
             stid = station["STID"]
             obs = station.get("OBSERVATIONS", {})
             times = obs.get("date_time", [])
-            temps = obs.get("air_temp_value_1", {}).get("values", [])
-            metars = obs.get("metar", {}).get("values", [])
+            temps = obs.get("air_temp_set_1", [])
+            metars = obs.get("metar_set_1", [])
 
             for i, dt_str in enumerate(times):
                 temp_f_val = temps[i] if i < len(temps) else None
