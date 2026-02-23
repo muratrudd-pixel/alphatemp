@@ -15,6 +15,18 @@ from core.db import get_connection
 from core.retry import retry_async
 
 T_GROUP_PATTERN = re.compile(r"\bT(\d)(\d{3})")
+METAR_TIMESTAMP = re.compile(r"\d{6}Z")
+
+
+def _is_metar_stub(metar_str: str) -> bool:
+    """True if METAR is a bare stub with no weather data.
+
+    Real METARs always contain a Zulu timestamp (e.g. 230505Z).
+    Stubs like 'METAR KMIA AUTO' lack one and carry garbage temps.
+    """
+    if not metar_str:
+        return True
+    return METAR_TIMESTAMP.search(metar_str) is None
 
 
 def parse_t_group(metar_remarks: str) -> Optional[float]:
@@ -55,7 +67,7 @@ class SynopticIngestor:
     async def poll_once(self) -> int:
         """Execute a single poll cycle. Returns number of new rows inserted."""
         now = datetime.now(timezone.utc)
-        start = now - timedelta(minutes=15)
+        start = now - timedelta(minutes=90)
         params = {
             "stid": ",".join(self.stations),
             "start": start.strftime("%Y%m%d%H%M"),
@@ -95,6 +107,11 @@ class SynopticIngestor:
                 # Parse T-group for high-res Celsius
                 temp_c_tenth = parse_t_group(metar_str)
 
+                # Stub METARs carry garbage temps — discard them
+                if _is_metar_stub(metar_str):
+                    temp_f = None
+                    temp_c_tenth = None
+
                 rows.append({
                     "station_id": stid,
                     "observed_at": dt_str,
@@ -131,8 +148,42 @@ class SynopticIngestor:
         logger.info(f"Inserted {inserted} new observations ({len(rows) - inserted} duplicates skipped)")
         return inserted
 
+    async def _recover_gap(self) -> None:
+        """Check for data gaps on startup and log accordingly."""
+        con = get_connection(self.db_path)
+        try:
+            result = con.execute("SELECT MAX(observed_at) FROM observations").fetchone()
+        finally:
+            con.close()
+
+        if result is None or result[0] is None:
+            logger.info("No existing observations — starting fresh")
+            return
+
+        last_obs = result[0]
+        if not isinstance(last_obs, datetime):
+            last_obs = datetime.fromisoformat(str(last_obs))
+        if last_obs.tzinfo is None:
+            last_obs = last_obs.replace(tzinfo=timezone.utc)
+
+        gap_minutes = (datetime.now(timezone.utc) - last_obs).total_seconds() / 60
+
+        if gap_minutes > 90:
+            logger.warning(
+                f"Data gap of {gap_minutes:.0f} min detected (last obs: {last_obs.isoformat()}). "
+                f"Gap exceeds 90-min lookback — some data is unrecoverable from the realtime API."
+            )
+        elif gap_minutes > 15:
+            logger.info(
+                f"Data gap of {gap_minutes:.0f} min detected (last obs: {last_obs.isoformat()}). "
+                f"Extended 90-min lookback will recover it on next poll."
+            )
+        else:
+            logger.info(f"Last observation {gap_minutes:.0f} min ago — no gap to recover")
+
     async def run(self) -> None:
         """Run the ingestor loop indefinitely."""
+        await self._recover_gap()
         logger.info(f"Starting Synoptic ingestor — polling {len(self.stations)} stations every {POLL_INTERVAL_SECONDS}s")
         while True:
             await self.poll_once()
