@@ -96,7 +96,7 @@ class BiasModel:
 
         n = len(peak_errors)
         mean_bias = sum(peak_errors) / n
-        variance = sum((e - mean_bias) ** 2 for e in peak_errors) / n if n > 1 else 0.0
+        variance = sum((e - mean_bias) ** 2 for e in peak_errors) / (n - 1) if n > 1 else 0.0
         std_error = variance ** 0.5
 
         return StationBias(

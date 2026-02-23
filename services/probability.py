@@ -30,9 +30,12 @@ class ProbabilityEngine:
     Std = historical_std_error * time_factor * stability_factor * convergence_factor
     """
 
+    CACHE_TTL_SECONDS = 3600  # 1 hour
+
     def __init__(self, db_path: str = "data/alphatemp.duckdb"):
         self.db_path = db_path
         self._bias_cache: Dict[str, StationBias] = {}
+        self._cache_loaded_at: Optional[datetime] = None
 
     def load_bias_cache(self) -> None:
         """Load the latest historical bias stats for all stations."""
@@ -53,6 +56,7 @@ class ProbabilityEngine:
                     sample_days=row[2],
                 )
         con.close()
+        self._cache_loaded_at = datetime.now(timezone.utc)
         logger.info(f"Loaded bias cache for {len(self._bias_cache)} stations")
 
     def _get_forecast_high(self, con, station_id: str) -> Optional[float]:
@@ -81,9 +85,10 @@ class ProbabilityEngine:
         """Time-based uncertainty reduction: 1.0 at 8am ET -> 0.3 by 3pm ET.
 
         More hours remaining = more uncertainty.
-        ET is UTC-5 (close enough for this purpose).
+        Uses zoneinfo for correct DST handling.
         """
-        et_hour = (ref_time.hour - 5) % 24
+        from core.timezone import utc_to_et_hour
+        et_hour = utc_to_et_hour(ref_time)
         if et_hour <= 8:
             return 1.0
         elif et_hour >= 15:
@@ -141,10 +146,13 @@ class ProbabilityEngine:
         else:
             return 0.6 + 0.7 * (spread - 1.0) / 3.0
 
-    def _compute_bracket_probs(self, center: float, std: float, radius: int = 5) -> Dict[int, float]:
+    def _compute_bracket_probs(self, center: float, std: float, radius: int = 15) -> Dict[int, float]:
         """Compute P(high = k°F) for integer brackets around the center.
 
         P(bracket=k) = Phi((k+0.5 - center)/std) - Phi((k-0.5 - center)/std)
+
+        Radius of 15 ensures coverage across the Kalshi bracket range even when
+        the model center and market center disagree.
         """
         if std <= 0:
             # Degenerate: all probability on nearest integer
@@ -156,7 +164,7 @@ class ProbabilityEngine:
 
         for k in range(center_int - radius, center_int + radius + 1):
             p = norm.cdf((k + 0.5 - center) / std) - norm.cdf((k - 0.5 - center) / std)
-            if p > 0.001:  # Skip negligible brackets
+            if p > 0.0001:  # Skip negligible brackets
                 probs[k] = round(p, 4)
 
         # Normalize to ensure probs sum to ~1.0 (rounding correction)
@@ -166,8 +174,20 @@ class ProbabilityEngine:
 
         return probs
 
+    def _refresh_cache_if_stale(self) -> None:
+        """Reload bias cache if older than TTL."""
+        if self._cache_loaded_at is None:
+            self.load_bias_cache()
+            return
+        age = (datetime.now(timezone.utc) - self._cache_loaded_at).total_seconds()
+        if age >= self.CACHE_TTL_SECONDS:
+            logger.info("Bias cache stale — refreshing")
+            self.load_bias_cache()
+
     def calculate_city(self, city: str, ref_time: Optional[datetime] = None) -> Optional[CityForecast]:
         """Produce a probability distribution for one city."""
+        self._refresh_cache_if_stale()
+
         if ref_time is None:
             ref_time = datetime.now(timezone.utc)
 

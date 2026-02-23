@@ -173,3 +173,22 @@ def test_drift_signals_unique_constraint():
                 0.1, 0.2, 0.90, 32.7)
         """)
     con.close()
+
+
+def test_indexes_created():
+    """All 6 performance indexes should exist after init_db."""
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB)
+    rows = con.execute("SELECT index_name FROM duckdb_indexes()").fetchall()
+    index_names = {r[0] for r in rows}
+    con.close()
+
+    expected = {
+        "idx_obs_station_time",
+        "idx_fcst_station_run",
+        "idx_fcst_station_valid",
+        "idx_drift_city_time",
+        "idx_market_city_time",
+        "idx_bias_station_time",
+    }
+    assert expected.issubset(index_names), f"Missing indexes: {expected - index_names}"

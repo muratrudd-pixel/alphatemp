@@ -35,11 +35,15 @@ class HRRRFetcher:
         Herbie returns xarray datasets where latitude/longitude are 2D
         auxiliary coordinates on (y, x) dims. HRRR uses 0-360° longitude
         convention, so we convert negative longitudes before lookup.
+
+        Longitude is weighted by cos(lat) to compensate for meridian
+        convergence — at 40°N, 1° lon is ~22% shorter than 1° lat.
         """
         lat_grid = ds["t2m"].coords["latitude"].values
         lon_grid = ds["t2m"].coords["longitude"].values
         lon_lookup = lon % 360  # Convert -87.75 → 272.25 to match HRRR grid
-        dist = np.abs(lat_grid - lat) + np.abs(lon_grid - lon_lookup)
+        cos_lat = np.cos(np.radians(lat))
+        dist = np.abs(lat_grid - lat) + np.abs(lon_grid - lon_lookup) * cos_lat
         idx = np.unravel_index(np.argmin(dist), dist.shape)
         return float(ds["t2m"].isel(y=idx[0], x=idx[1]).values)
 

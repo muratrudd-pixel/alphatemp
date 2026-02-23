@@ -1,7 +1,7 @@
 """Tests for the probability engine."""
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -160,3 +160,31 @@ def test_calculate_all_returns_dict(seeded_db):
     assert isinstance(results, dict)
     assert "NYC" in results
     assert isinstance(results["NYC"], CityForecast)
+
+
+def test_bias_cache_auto_refreshes(seeded_db):
+    """Cache should auto-refresh when TTL expires."""
+    engine = ProbabilityEngine(db_path=seeded_db)
+    engine.load_bias_cache()
+
+    original_bias = engine._bias_cache["KNYC"].mean_bias
+    assert original_bias == pytest.approx(0.8, abs=0.01)
+
+    # Insert newer bias data
+    con = get_connection(seeded_db)
+    con.execute(
+        """INSERT INTO station_bias (station_id, calculated_at, mean_bias, std_error, sample_days)
+           VALUES ('KNYC', '2026-02-22 12:00:00', 1.5, 1.0, 90)"""
+    )
+    con.close()
+
+    # Cache not stale yet — should still return old value
+    engine.calculate_city("NYC", ref_time=datetime(2026, 2, 22, 14, 0, tzinfo=timezone.utc))
+    assert engine._bias_cache["KNYC"].mean_bias == pytest.approx(0.8, abs=0.01)
+
+    # Force cache to appear stale
+    engine._cache_loaded_at = datetime.now(timezone.utc) - timedelta(hours=2)
+
+    # Next call should trigger refresh
+    engine.calculate_city("NYC", ref_time=datetime(2026, 2, 22, 14, 0, tzinfo=timezone.utc))
+    assert engine._bias_cache["KNYC"].mean_bias == pytest.approx(1.5, abs=0.01)

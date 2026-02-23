@@ -37,17 +37,26 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS market_ticks (
-            market_id   VARCHAR NOT NULL,
-            city        VARCHAR NOT NULL,
-            captured_at TIMESTAMP NOT NULL,
-            yes_bid     DOUBLE,
-            yes_ask     DOUBLE,
-            no_bid      DOUBLE,
-            no_ask      DOUBLE,
-            last_trade  DOUBLE,
-            volume      INTEGER
+            market_id    VARCHAR NOT NULL,
+            city         VARCHAR NOT NULL,
+            captured_at  TIMESTAMP NOT NULL,
+            yes_bid      DOUBLE,
+            yes_ask      DOUBLE,
+            no_bid       DOUBLE,
+            no_ask       DOUBLE,
+            last_trade   DOUBLE,
+            volume       INTEGER,
+            floor_strike DOUBLE,
+            cap_strike   DOUBLE
         )
     """)
+
+    # Migration: add floor_strike/cap_strike to existing tables missing them
+    for col in ("floor_strike", "cap_strike"):
+        try:
+            con.execute(f"ALTER TABLE market_ticks ADD COLUMN {col} DOUBLE")
+        except Exception:
+            pass  # Column already exists
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS drift_signals (
@@ -73,6 +82,17 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             UNIQUE (station_id, calculated_at)
         )
     """)
+
+    # Indexes — accelerate the most common query patterns
+    for stmt in [
+        "CREATE INDEX IF NOT EXISTS idx_obs_station_time ON observations (station_id, observed_at)",
+        "CREATE INDEX IF NOT EXISTS idx_fcst_station_run ON forecasts (station_id, model_run)",
+        "CREATE INDEX IF NOT EXISTS idx_fcst_station_valid ON forecasts (station_id, valid_at)",
+        "CREATE INDEX IF NOT EXISTS idx_drift_city_time ON drift_signals (city, calculated_at)",
+        "CREATE INDEX IF NOT EXISTS idx_market_city_time ON market_ticks (city, captured_at)",
+        "CREATE INDEX IF NOT EXISTS idx_bias_station_time ON station_bias (station_id, calculated_at)",
+    ]:
+        con.execute(stmt)
 
     logger.info("Database tables initialized")
     con.close()

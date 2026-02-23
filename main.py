@@ -12,6 +12,7 @@ from core.db import init_db
 from services.ingestor import SynopticIngestor
 from services.forecast import HRRRFetcher
 from services.bias import BiasEngine
+from services.market_fetcher import MarketFetcher
 
 
 async def main():
@@ -26,11 +27,13 @@ async def main():
     ingestor = SynopticIngestor(token=token)
     fetcher = HRRRFetcher()
     engine = BiasEngine()
+    market = MarketFetcher()
 
     tasks = [
         ingestor.run(),
         fetcher.run(),
         engine.run(),
+        market.run(),
     ]
 
     if "--dashboard" in sys.argv:

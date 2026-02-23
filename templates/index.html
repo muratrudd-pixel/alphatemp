@@ -12,12 +12,10 @@
         :root {
             --bg-deep: #0f172a;
             --bg-panel: #1e293b;
-            --bg-card: #1e293b;
             --text-primary: #f1f5f9;
             --text-muted: #94a3b8;
             --blue-line: #3b82f6;
             --amber-obs: #f59e0b;
-            --emerald-bell: #10b981;
             --alpha-bg: rgba(6, 78, 59, 0.5);
             --overpriced-bg: rgba(127, 29, 29, 0.5);
         }
@@ -28,19 +26,9 @@
             border: 1px solid rgba(148, 163, 184, 0.1);
             border-radius: 0.5rem;
         }
-        .city-card {
-            background: var(--bg-card);
-            border: 1px solid rgba(148, 163, 184, 0.08);
-            border-radius: 0.5rem;
-            transition: border-color 0.2s, transform 0.15s;
-            cursor: pointer;
-            touch-action: manipulation;
-        }
-        .city-card:hover { border-color: rgba(59, 130, 246, 0.4); transform: translateY(-1px); }
-        .city-card.active { border-color: var(--blue-line); box-shadow: 0 0 20px rgba(59, 130, 246, 0.15); }
         .glow-dot {
-            width: 6px; height: 6px; border-radius: 50%; background: var(--emerald-bell);
-            box-shadow: 0 0 6px var(--emerald-bell);
+            width: 6px; height: 6px; border-radius: 50%; background: #10b981;
+            box-shadow: 0 0 6px #10b981;
             animation: pulse-glow 2s ease-in-out infinite;
         }
         @keyframes pulse-glow {
@@ -60,11 +48,6 @@
         .signal-alpha { background: var(--alpha-bg); }
         .signal-alpha-gap { background: rgba(6, 95, 70, 0.6); border-left: 3px solid #10b981; }
         .signal-overpriced { background: var(--overpriced-bg); }
-        .confidence-bar {
-            height: 4px; border-radius: 2px; background: rgba(148, 163, 184, 0.15);
-            overflow: hidden;
-        }
-        .confidence-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
         .fade-in { animation: fadeIn 0.4s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
         /* Plotly container sizing */
@@ -94,92 +77,64 @@
                 <option value="MIA">MIA</option>
                 <option value="LA">LA</option>
             </select>
+            <input type="date" id="date-select" class="text-sm mono" style="background:var(--bg-panel); border:1px solid rgba(148,163,184,0.2); color:var(--text-primary); border-radius:0.375rem; padding:0.375rem 0.75rem;">
             <div id="clock" class="mono text-sm text-slate-400"></div>
         </div>
     </header>
 
     <main class="p-4 lg:p-6 space-y-4 lg:space-y-5 max-w-[1600px] mx-auto">
-        <!-- Charts Row -->
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-5">
-            <!-- Ribbon Chart -->
-            <div class="lg:col-span-8 panel p-4">
-                <div class="flex items-center justify-between mb-3">
-                    <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Forecast Ribbon</h2>
-                    <span id="ribbon-model-run" class="mono text-xs text-slate-500"></span>
-                </div>
-                <div id="ribbon-chart" class="chart-container"></div>
+        <!-- Chart Row -->
+        <div class="panel p-4">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Forecast Ribbon</h2>
+                <span id="ribbon-model-run" class="mono text-xs text-slate-500"></span>
             </div>
-            <!-- Bell Curve -->
-            <div class="lg:col-span-4 panel p-4">
-                <div class="flex items-center justify-between mb-3">
-                    <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Distribution</h2>
-                    <span id="bell-stats" class="mono text-xs text-slate-500"></span>
-                </div>
-                <div id="bell-chart" class="chart-container"></div>
-            </div>
+            <div id="ribbon-chart" class="chart-container"></div>
         </div>
 
-        <!-- City Cards -->
-        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 lg:gap-4">
-            <div class="city-card p-4 fade-in active" data-city="NYC" onclick="selectCity('NYC')">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm font-semibold text-slate-300">NYC</span>
-                    <span class="mono text-xs text-slate-500" id="card-drift-NYC">--</span>
+        <!-- Data Feeds Row -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-5">
+            <!-- Observation Feed -->
+            <div class="panel p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Observation Feed</h2>
+                    <span id="obs-status" class="mono text-xs text-slate-500"></span>
                 </div>
-                <div class="mono text-2xl font-bold mb-2" id="card-temp-NYC">--°F</div>
-                <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
-                    <span>90% CI</span>
-                    <span class="mono" id="card-ci-NYC">--</span>
+                <div class="overflow-x-auto" style="max-height:320px; overflow-y:auto;">
+                    <table class="w-full text-sm">
+                        <thead class="sticky top-0" style="background:var(--bg-panel);">
+                            <tr class="border-b border-slate-700/50 text-left text-xs uppercase tracking-wider text-slate-400">
+                                <th class="pb-2 pr-4">Time (ET)</th>
+                                <th class="pb-2 pr-4">Station</th>
+                                <th class="pb-2 pr-4">Temp &deg;F</th>
+                                <th class="pb-2 pr-4">METAR</th>
+                                <th class="pb-2">Ingested</th>
+                            </tr>
+                        </thead>
+                        <tbody id="obs-body" class="mono text-xs"></tbody>
+                    </table>
                 </div>
-                <div class="confidence-bar"><div class="confidence-fill bg-blue-500" id="card-conf-NYC" style="width:0%"></div></div>
             </div>
-            <div class="city-card p-4 fade-in" data-city="PHL" onclick="selectCity('PHL')">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm font-semibold text-slate-300">PHL</span>
-                    <span class="mono text-xs text-slate-500" id="card-drift-PHL">--</span>
+            <!-- Forecast Feed -->
+            <div class="panel p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Forecast Feed</h2>
+                    <span id="fcst-status" class="mono text-xs text-slate-500"></span>
                 </div>
-                <div class="mono text-2xl font-bold mb-2" id="card-temp-PHL">--°F</div>
-                <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
-                    <span>90% CI</span>
-                    <span class="mono" id="card-ci-PHL">--</span>
+                <div class="overflow-x-auto" style="max-height:320px; overflow-y:auto;">
+                    <table class="w-full text-sm">
+                        <thead class="sticky top-0" style="background:var(--bg-panel);">
+                            <tr class="border-b border-slate-700/50 text-left text-xs uppercase tracking-wider text-slate-400">
+                                <th class="pb-2 pr-4">Model Run</th>
+                                <th class="pb-2 pr-4">Valid At (ET)</th>
+                                <th class="pb-2 pr-4">Temp &deg;F</th>
+                                <th class="pb-2 pr-4">Lead (hrs)</th>
+                                <th class="pb-2">Ingested</th>
+                            </tr>
+                        </thead>
+                        <tbody id="fcst-body" class="mono text-xs"></tbody>
+                    </table>
                 </div>
-                <div class="confidence-bar"><div class="confidence-fill bg-blue-500" id="card-conf-PHL" style="width:0%"></div></div>
-            </div>
-            <div class="city-card p-4 fade-in" data-city="CHI" onclick="selectCity('CHI')">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm font-semibold text-slate-300">CHI</span>
-                    <span class="mono text-xs text-slate-500" id="card-drift-CHI">--</span>
-                </div>
-                <div class="mono text-2xl font-bold mb-2" id="card-temp-CHI">--°F</div>
-                <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
-                    <span>90% CI</span>
-                    <span class="mono" id="card-ci-CHI">--</span>
-                </div>
-                <div class="confidence-bar"><div class="confidence-fill bg-blue-500" id="card-conf-CHI" style="width:0%"></div></div>
-            </div>
-            <div class="city-card p-4 fade-in" data-city="MIA" onclick="selectCity('MIA')">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm font-semibold text-slate-300">MIA</span>
-                    <span class="mono text-xs text-slate-500" id="card-drift-MIA">--</span>
-                </div>
-                <div class="mono text-2xl font-bold mb-2" id="card-temp-MIA">--°F</div>
-                <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
-                    <span>90% CI</span>
-                    <span class="mono" id="card-ci-MIA">--</span>
-                </div>
-                <div class="confidence-bar"><div class="confidence-fill bg-blue-500" id="card-conf-MIA" style="width:0%"></div></div>
-            </div>
-            <div class="city-card p-4 fade-in" data-city="LA" onclick="selectCity('LA')">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm font-semibold text-slate-300">LA</span>
-                    <span class="mono text-xs text-slate-500" id="card-drift-LA">--</span>
-                </div>
-                <div class="mono text-2xl font-bold mb-2" id="card-temp-LA">--°F</div>
-                <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
-                    <span>90% CI</span>
-                    <span class="mono" id="card-ci-LA">--</span>
-                </div>
-                <div class="confidence-bar"><div class="confidence-fill bg-blue-500" id="card-conf-LA" style="width:0%"></div></div>
             </div>
         </div>
 
@@ -217,6 +172,28 @@
     const GRID_COLOR = 'rgba(148,163,184,0.08)';
     const FONT_COLOR = '#94a3b8';
 
+    // Convert UTC ISO string to Eastern Time ISO string (display only)
+    function toET(utcStr) {
+        const d = new Date(utcStr + 'Z');
+        const et = new Date(d.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        return et.getFullYear() + '-' +
+            String(et.getMonth()+1).padStart(2,'0') + '-' +
+            String(et.getDate()).padStart(2,'0') + 'T' +
+            String(et.getHours()).padStart(2,'0') + ':' +
+            String(et.getMinutes()).padStart(2,'0') + ':' +
+            String(et.getSeconds()).padStart(2,'0');
+    }
+    function nowET() {
+        const d = new Date();
+        const et = new Date(d.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        return et.getFullYear() + '-' +
+            String(et.getMonth()+1).padStart(2,'0') + '-' +
+            String(et.getDate()).padStart(2,'0') + 'T' +
+            String(et.getHours()).padStart(2,'0') + ':' +
+            String(et.getMinutes()).padStart(2,'0') + ':' +
+            String(et.getSeconds()).padStart(2,'0');
+    }
+
     const basePlotLayout = {
         paper_bgcolor: PLOT_BG,
         plot_bgcolor: PLOT_BG,
@@ -243,15 +220,21 @@
     setInterval(updateClock, 1000);
     updateClock();
 
+    // Set date picker to today (ET)
+    const todayET = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    document.getElementById('date-select').value = todayET;
+    document.getElementById('date-select').addEventListener('change', () => refreshSelectedCity());
+
+    function getSelectedDate() {
+        return document.getElementById('date-select').value || null;
+    }
+
     // -----------------------------------------------------------------------
     // City Selection
     // -----------------------------------------------------------------------
     function selectCity(city) {
         selectedCity = city;
         document.getElementById('city-select').value = city;
-        document.querySelectorAll('.city-card').forEach(c => {
-            c.classList.toggle('active', c.dataset.city === city);
-        });
         refreshSelectedCity();
     }
 
@@ -276,7 +259,8 @@
     // Ribbon Chart
     // -----------------------------------------------------------------------
     async function renderRibbon(city) {
-        const data = await fetchJSON(`/api/forecast-curve/${city}`);
+        const dateParam = getSelectedDate() ? `?date=${getSelectedDate()}` : '';
+        const data = await fetchJSON(`/api/forecast-curve/${city}${dateParam}`);
         if (!data || !data.forecasts.length) {
             Plotly.react('ribbon-chart', [], {
                 ...basePlotLayout,
@@ -286,16 +270,16 @@
             return;
         }
 
-        const fcstX = data.forecasts.map(p => p.valid_at);
+        const fcstX = data.forecasts.map(p => toET(p.valid_at));
         const fcstY = data.forecasts.map(p => p.temp_f);
         const upperY = data.ribbon.map(p => p.upper_90);
         const lowerY = data.ribbon.map(p => p.lower_90);
-        const ribbonX = data.ribbon.map(p => p.valid_at);
+        const ribbonX = data.ribbon.map(p => toET(p.valid_at));
         const ribbonStd = data.ribbon.map(p => p.std);
-        const obsX = data.observations.map(p => p.observed_at);
+        const obsX = data.observations.map(p => toET(p.observed_at));
         const obsY = data.observations.map(p => p.temp_f);
 
-        // Inner 50% CI bounds (z=0.674)
+        // Inner 50% CI bounds (z=0.674) — use original UTC keys for lookup
         const fcstMap = {};
         data.forecasts.forEach(p => { fcstMap[p.valid_at] = p.temp_f; });
         const innerUpperY = data.ribbon.map(p => {
@@ -306,6 +290,9 @@
             const center = fcstMap[p.valid_at] ?? ((p.upper_90 + p.lower_90) / 2);
             return Math.round((center - 0.674 * p.std) * 10) / 10;
         });
+        // Sigma lookup also uses original UTC keys
+        const fcstStdMapUTC = {};
+        data.ribbon.forEach(p => { fcstStdMapUTC[p.valid_at] = p.std; });
 
         // Outer 90% CI — upper bound (invisible anchor for fill)
         const traceUpper = {
@@ -342,9 +329,7 @@
             name: '50% CI',
         };
         // Forecast center line with sigma in hover
-        const fcstStdMap = {};
-        data.ribbon.forEach(p => { fcstStdMap[p.valid_at] = p.std; });
-        const fcstSigma = fcstX.map(t => fcstStdMap[t] ?? null);
+        const fcstSigma = data.forecasts.map(p => fcstStdMapUTC[p.valid_at] ?? null);
         const traceFcst = {
             x: fcstX, y: fcstY,
             type: 'scatter', mode: 'lines',
@@ -363,149 +348,70 @@
             hovertemplate: '%{y:.1f}°F<extra></extra>',
         };
 
-        // "Now" vertical line
-        const nowISO = new Date().toISOString();
+        // "Now" vertical line (in ET)
         const nowShape = {
             type: 'line',
-            x0: nowISO, x1: nowISO,
+            x0: nowET(), x1: nowET(),
             y0: 0, y1: 1, yref: 'paper',
             line: { color: 'rgba(148,163,184,0.4)', width: 1, dash: 'dash' },
         };
+
+        // Drift annotation: show how observations are running vs forecast
+        const drift = data.drift || 0;
+        const bias = data.bias || 0;
+        const driftSign = drift >= 0 ? '+' : '';
+        const biasSign = bias >= 0 ? '+' : '';
+        const driftAnnotation = {
+            text: `drift ${driftSign}${drift.toFixed(1)}°F  bias ${biasSign}${bias.toFixed(1)}°F`,
+            showarrow: false,
+            font: { size: 10, color: drift > 0 ? '#f59e0b' : drift < 0 ? '#3b82f6' : '#94a3b8' },
+            xref: 'paper', yref: 'paper',
+            x: 1, y: 1.02,
+            xanchor: 'right',
+        };
+
+        // Date range: if a date is selected, set x-axis to midnight–midnight ET
+        const xaxisConfig = { ...basePlotLayout.xaxis, type: 'date' };
+        const selectedDate = getSelectedDate();
+        if (selectedDate) {
+            xaxisConfig.range = [selectedDate + 'T00:00:00', selectedDate + 'T23:59:59'];
+        }
 
         const layout = {
             ...basePlotLayout,
             showlegend: true,
             legend: { x: 0, y: 1.02, orientation: 'h', font: { size: 10 } },
             yaxis: { ...basePlotLayout.yaxis, title: { text: '°F', standoff: 8, font: { size: 10 } } },
-            xaxis: { ...basePlotLayout.xaxis, type: 'date' },
+            xaxis: xaxisConfig,
             shapes: [nowShape],
+            annotations: [driftAnnotation],
         };
+
+        // Prior model runs as faded ghost lines
+        const priorTraces = (data.prior_runs || []).map((run, i) => ({
+            x: run.points.map(p => toET(p.valid_at)),
+            y: run.points.map(p => p.temp_f),
+            type: 'scatter', mode: 'lines',
+            line: { color: 'rgba(59,130,246,0.25)', width: 1 },
+            name: i === 0 ? 'Prior Runs' : undefined,
+            showlegend: i === 0,
+            legendgroup: 'prior',
+            hovertemplate: '%{y:.1f}°F<extra>' + run.model_run + '</extra>',
+        }));
 
         Plotly.react('ribbon-chart',
-            [traceUpper, traceLower, traceInnerUpper, traceInnerLower, traceFcst, traceObs],
+            [traceUpper, traceLower, traceInnerUpper, traceInnerLower,
+             ...priorTraces, traceFcst, traceObs],
             layout, plotConfig);
         document.getElementById('ribbon-model-run').textContent = city;
-    }
-
-    // -----------------------------------------------------------------------
-    // Gaussian Bell Curve
-    // -----------------------------------------------------------------------
-    function gaussianPDF(x, mu, sigma) {
-        const coeff = 1.0 / (sigma * Math.sqrt(2 * Math.PI));
-        const exp = -0.5 * Math.pow((x - mu) / sigma, 2);
-        return coeff * Math.exp(exp);
-    }
-
-    async function renderBell(city) {
-        const data = await fetchJSON(`/api/probability/${city}`);
-        if (!data || data.available === false || !data.center) {
-            Plotly.react('bell-chart', [], {
-                ...basePlotLayout,
-                annotations: [{ text: 'No distribution data', showarrow: false, font: { size: 14, color: FONT_COLOR }, xref: 'paper', yref: 'paper', x: 0.5, y: 0.5 }]
-            }, plotConfig);
-            document.getElementById('bell-stats').textContent = '';
-            return;
-        }
-
-        const { center, std, bracket_probs } = data;
-        document.getElementById('bell-stats').textContent = `μ=${center.toFixed(1)} σ=${std.toFixed(2)}`;
-
-        // PDF curve over ±4σ
-        const xMin = center - 4 * std;
-        const xMax = center + 4 * std;
-        const step = (xMax - xMin) / 200;
-        const curveX = [], curveY = [];
-        for (let x = xMin; x <= xMax; x += step) {
-            curveX.push(x);
-            curveY.push(gaussianPDF(x, center, std));
-        }
-
-        const traceCurve = {
-            x: curveX, y: curveY,
-            type: 'scatter', mode: 'lines',
-            fill: 'tozeroy',
-            fillcolor: 'rgba(16,185,129,0.15)',
-            line: { color: '#10b981', width: 2 },
-            name: 'PDF',
-            hovertemplate: '%{x:.1f}°F: %{y:.4f}<extra></extra>',
-            yaxis: 'y',
-        };
-
-        // Bracket probabilities as bars
-        const brackets = Object.keys(bracket_probs).map(Number).sort((a, b) => a - b);
-        const barX = brackets;
-        const barY = brackets.map(k => bracket_probs[k]);
-
-        const traceBars = {
-            x: barX, y: barY,
-            type: 'bar',
-            marker: { color: 'rgba(59,130,246,0.5)', line: { color: '#3b82f6', width: 1 } },
-            name: 'P(bracket)',
-            hovertemplate: '%{x}°F: %{y:.1%}<extra></extra>',
-            yaxis: 'y2',
-        };
-
-        const layout = {
-            ...basePlotLayout,
-            showlegend: true,
-            legend: { x: 0, y: 1.02, orientation: 'h', font: { size: 10 } },
-            barmode: 'overlay',
-            xaxis: { ...basePlotLayout.xaxis, title: { text: '°F', standoff: 8, font: { size: 10 } } },
-            yaxis: {
-                ...basePlotLayout.yaxis,
-                title: { text: 'Density', standoff: 8, font: { size: 10 } },
-                side: 'left',
-            },
-            yaxis2: {
-                ...basePlotLayout.yaxis,
-                title: { text: 'Prob', standoff: 8, font: { size: 10 } },
-                side: 'right',
-                overlaying: 'y',
-                showgrid: false,
-                tickformat: '.0%',
-            },
-        };
-
-        Plotly.react('bell-chart', [traceCurve, traceBars], layout, plotConfig);
-    }
-
-    // -----------------------------------------------------------------------
-    // City Cards
-    // -----------------------------------------------------------------------
-    async function refreshCityCards() {
-        const data = await fetchJSON('/api/cities');
-        if (!data || !data.cities) return;
-
-        data.cities.forEach(c => {
-            const city = c.city;
-            const tempEl = document.getElementById(`card-temp-${city}`);
-            const driftEl = document.getElementById(`card-drift-${city}`);
-            const ciEl = document.getElementById(`card-ci-${city}`);
-            const confEl = document.getElementById(`card-conf-${city}`);
-
-            if (c.center !== null) {
-                tempEl.textContent = `${c.center.toFixed(1)}°F`;
-                const driftSign = c.drift >= 0 ? '+' : '';
-                driftEl.textContent = `drift ${driftSign}${c.drift.toFixed(1)}`;
-                driftEl.className = `mono text-xs ${c.drift > 0 ? 'text-amber-400' : c.drift < 0 ? 'text-blue-400' : 'text-slate-500'}`;
-                ciEl.textContent = `[${c.interval_90[0]}, ${c.interval_90[1]}]`;
-                const confPct = Math.max(0, Math.min(100, (c.confidence || 0) * 100));
-                confEl.style.width = `${confPct}%`;
-                confEl.className = `confidence-fill ${confPct > 60 ? 'bg-emerald-500' : confPct > 30 ? 'bg-blue-500' : 'bg-amber-500'}`;
-            } else {
-                tempEl.textContent = '--°F';
-                driftEl.textContent = '--';
-                ciEl.textContent = '--';
-                confEl.style.width = '0%';
-            }
-        });
     }
 
     // -----------------------------------------------------------------------
     // Market Intelligence
     // -----------------------------------------------------------------------
     async function refreshMarket(city) {
-        const data = await fetchJSON(`/api/market/${city}`);
+        const dateParam = getSelectedDate() ? `?date=${getSelectedDate()}` : '';
+        const data = await fetchJSON(`/api/market/${city}${dateParam}`);
         const pending = document.getElementById('market-pending');
         const table = document.getElementById('market-table');
         const body = document.getElementById('market-body');
@@ -555,21 +461,98 @@
     }
 
     // -----------------------------------------------------------------------
+    // Observation Feed
+    // -----------------------------------------------------------------------
+    function formatETShort(utcStr) {
+        if (!utcStr) return '--';
+        const d = new Date(utcStr + 'Z');
+        return d.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+
+    async function refreshObsFeed(city) {
+        const dateParam = getSelectedDate() ? `?date=${getSelectedDate()}` : '';
+        const data = await fetchJSON(`/api/observations/${city}${dateParam}`);
+        const body = document.getElementById('obs-body');
+        const status = document.getElementById('obs-status');
+
+        if (!data || !data.observations || data.observations.length === 0) {
+            body.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-slate-500">No observations</td></tr>';
+            status.textContent = '';
+            return;
+        }
+
+        body.innerHTML = data.observations.map(o => {
+            const timeET = formatETShort(o.observed_at);
+            const metar = o.raw_metar ? o.raw_metar.substring(0, 40) + (o.raw_metar.length > 40 ? '...' : '') : '--';
+            const ingested = o.ingested_at ? formatETShort(o.ingested_at) : '--';
+            return `<tr class="border-b border-slate-800/50">
+                <td class="py-1.5 pr-4 text-slate-300">${timeET}</td>
+                <td class="py-1.5 pr-4 text-slate-400">${o.station_id}</td>
+                <td class="py-1.5 pr-4 text-amber-400">${o.temp_f.toFixed(1)}</td>
+                <td class="py-1.5 pr-4 text-slate-500 text-[10px]" title="${o.raw_metar || ''}">${metar}</td>
+                <td class="py-1.5 text-slate-500">${ingested}</td>
+            </tr>`;
+        }).join('');
+
+        const highStr = data.running_high !== null
+            ? ` · running high ${data.running_high.toFixed(1)}°F (${data.running_high_station})`
+            : '';
+        status.textContent = `${data.observations.length} obs${highStr}`;
+    }
+
+    // -----------------------------------------------------------------------
+    // Forecast Feed
+    // -----------------------------------------------------------------------
+    async function refreshFcstFeed(city) {
+        const dateParam = getSelectedDate() ? `?date=${getSelectedDate()}` : '';
+        const data = await fetchJSON(`/api/forecast-points/${city}${dateParam}`);
+        const body = document.getElementById('fcst-body');
+        const status = document.getElementById('fcst-status');
+
+        if (!data || !data.points || data.points.length === 0) {
+            body.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-slate-500">No forecast points</td></tr>';
+            status.textContent = '';
+            return;
+        }
+
+        let prevRun = null;
+        body.innerHTML = data.points.map(p => {
+            const runET = formatETShort(p.model_run);
+            const validET = formatETShort(p.valid_at);
+            const ingested = p.ingested_at ? formatETShort(p.ingested_at) : '--';
+            const borderClass = prevRun !== null && p.model_run !== prevRun
+                ? 'border-t-2 border-slate-600' : 'border-b border-slate-800/50';
+            prevRun = p.model_run;
+            return `<tr class="${borderClass}">
+                <td class="py-1.5 pr-4 text-slate-400">${runET}z</td>
+                <td class="py-1.5 pr-4 text-slate-300">${validET}</td>
+                <td class="py-1.5 pr-4 text-blue-400">${p.temp_f.toFixed(1)}</td>
+                <td class="py-1.5 pr-4 text-slate-500">${p.lead_hours}h</td>
+                <td class="py-1.5 text-slate-500">${ingested}</td>
+            </tr>`;
+        }).join('');
+
+        const latestStr = data.latest_run
+            ? `Latest run ${formatETShort(data.latest_run)}z` : 'No runs';
+        const highStr = data.forecast_high !== null
+            ? ` · forecast high ${data.forecast_high.toFixed(1)}°F` : '';
+        status.textContent = `${latestStr}${highStr}`;
+    }
+
+    // -----------------------------------------------------------------------
     // Orchestration
     // -----------------------------------------------------------------------
     async function refreshSelectedCity() {
         await Promise.all([
             renderRibbon(selectedCity),
-            renderBell(selectedCity),
+            refreshObsFeed(selectedCity),
+            refreshFcstFeed(selectedCity),
             refreshMarket(selectedCity),
         ]);
     }
 
     async function refreshAll() {
-        await Promise.all([
-            refreshSelectedCity(),
-            refreshCityCards(),
-        ]);
+        await refreshSelectedCity();
     }
 
     // Initial load

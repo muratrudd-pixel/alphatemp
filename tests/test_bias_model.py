@@ -82,12 +82,12 @@ def test_compute_station_bias_mean(seeded_db):
 
 
 def test_compute_station_bias_std(seeded_db):
-    """Std error for [1, 2, 0] with mean=1.0: sqrt(((0+1+1)/3)) = sqrt(2/3) ~ 0.82."""
+    """Std error for [1, 2, 0] with mean=1.0 using Bessel's correction: sqrt(((0+1+1)/2)) = 1.0."""
     model = BiasModel(db_path=seeded_db)
     bias = model.compute_station_bias("KNYC")
 
     assert bias is not None
-    assert bias.std_error == pytest.approx(0.82, abs=0.01)
+    assert bias.std_error == pytest.approx(1.0, abs=0.01)
 
 
 def test_compute_station_bias_no_data(test_db):

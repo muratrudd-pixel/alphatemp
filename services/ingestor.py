@@ -12,6 +12,7 @@ from loguru import logger
 
 from core.constants import get_all_station_ids, POLL_INTERVAL_SECONDS
 from core.db import get_connection
+from core.retry import retry_async
 
 T_GROUP_PATTERN = re.compile(r"\bT(\d)(\d{3})")
 
@@ -43,6 +44,14 @@ class SynopticIngestor:
         self.db_path = db_path
         self.stations = get_all_station_ids()
 
+    @retry_async(max_retries=3, base_delay=2.0)
+    async def _fetch_synoptic(self, params: dict) -> dict:
+        """Fetch data from Synoptic API with automatic retry on failure."""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(SYNOPTIC_BASE_URL, params=params)
+            resp.raise_for_status()
+            return resp.json()
+
     async def poll_once(self) -> int:
         """Execute a single poll cycle. Returns number of new rows inserted."""
         now = datetime.now(timezone.utc)
@@ -57,12 +66,9 @@ class SynopticIngestor:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(SYNOPTIC_BASE_URL, params=params)
-                resp.raise_for_status()
-                data = resp.json()
-        except httpx.HTTPError as e:
-            logger.warning(f"Synoptic API request failed: {e}")
+            data = await self._fetch_synoptic(params)
+        except Exception as e:
+            logger.warning(f"Synoptic API request failed after retries: {e}")
             return 0
 
         summary = data.get("SUMMARY", {})

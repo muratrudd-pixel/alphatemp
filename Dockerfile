@@ -1,6 +1,6 @@
-FROM python:3.11-slim-bookworm
+FROM python:3.9-slim-bookworm
 
-# eccodes for GRIB decoding (Herbie + pygrib), proj for pyproj
+# eccodes for GRIB decoding (cfgrib), proj for pyproj
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libeccodes-dev libeccodes-tools libproj-dev proj-data build-essential curl \
     && rm -rf /var/lib/apt/lists/*
@@ -8,7 +8,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# pygrib needs Cython <3 (its .pyx uses Python 2 syntax like xrange/long)
+# and numpy must be present for --no-build-isolation to work
+RUN pip install --no-cache-dir "Cython<3" numpy==2.0.2 && \
+    pip install --no-cache-dir --no-build-isolation pygrib==2.1.6
+
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir --no-deps herbie-data==2024.8.0 && \
+    pip install --no-cache-dir requests toml
 
 COPY core/ core/
 COPY services/ services/
