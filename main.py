@@ -9,6 +9,8 @@ from loguru import logger
 
 from core.db import init_db
 from services.ingestor import SynopticIngestor
+from services.forecast import HRRRFetcher
+from services.bias import BiasEngine
 
 
 async def main():
@@ -19,8 +21,16 @@ async def main():
         return
 
     init_db()
+
     ingestor = SynopticIngestor(token=token)
-    await ingestor.run()
+    fetcher = HRRRFetcher()
+    engine = BiasEngine()
+
+    await asyncio.gather(
+        ingestor.run(),
+        fetcher.run(),
+        engine.run(),
+    )
 
 
 if __name__ == "__main__":
