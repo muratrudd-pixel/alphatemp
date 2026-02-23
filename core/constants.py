@@ -43,6 +43,18 @@ CITIES: dict = {
 # Polling interval in seconds
 POLL_INTERVAL_SECONDS: int = 60
 
+# Forecast polling interval (15 minutes — HRRR updates hourly, this catches trickle-in)
+FORECAST_POLL_INTERVAL_SECONDS: int = 900
+
+# Settlement station coordinates for HRRR grid point extraction
+STATION_COORDS: dict = {
+    "KNYC": (40.7789, -73.9692),
+    "KPHL": (39.8721, -75.2411),
+    "KMDW": (41.7868, -87.7522),
+    "KMIA": (25.7959, -80.2870),
+    "KLAX": (33.9425, -118.4081),
+}
+
 
 def get_all_station_ids() -> list:
     """Return flat list of all 11 station ICAO codes."""

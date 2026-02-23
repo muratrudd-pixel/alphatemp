@@ -7,6 +7,8 @@ from core.constants import (
     FLB_LONGSHOT_CEILING,
     CITIES,
     POLL_INTERVAL_SECONDS,
+    STATION_COORDS,
+    FORECAST_POLL_INTERVAL_SECONDS,
 )
 
 
@@ -71,3 +73,22 @@ def test_all_stations_list():
 
 def test_poll_interval():
     assert POLL_INTERVAL_SECONDS == 60
+
+
+def test_station_coords_exist_for_all_settlements():
+    """Every settlement station must have coordinates."""
+    for city_cfg in CITIES.values():
+        stid = city_cfg["settlement"]
+        assert stid in STATION_COORDS, f"Missing coords for {stid}"
+        lat, lon = STATION_COORDS[stid]
+        assert -90 <= lat <= 90, f"Invalid lat for {stid}"
+        assert -180 <= lon <= 180, f"Invalid lon for {stid}"
+
+
+def test_station_coords_only_settlements():
+    """Coords should only be for settlement stations, not neighbors."""
+    assert len(STATION_COORDS) == 5
+
+
+def test_forecast_poll_interval():
+    assert FORECAST_POLL_INTERVAL_SECONDS == 900
