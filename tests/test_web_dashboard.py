@@ -329,3 +329,74 @@ def test_forecast_curve_obs_include_neighbors(client):
     assert "KNYC" in stations_in_obs
     assert "KLGA" in stations_in_obs
     assert "KEWR" in stations_in_obs
+
+
+# --- NWS Settlement source ---
+
+
+def _insert_nws_daily(db_path, station_id, obs_date, max_temp_f, min_temp_f):
+    """Helper to insert a single NWS daily row."""
+    con = get_connection(db_path)
+    con.execute(
+        """INSERT INTO nws_daily (station_id, obs_date, max_temp_f, min_temp_f, source, ingested_at)
+           VALUES (?, ?, ?, ?, 'ACIS', CURRENT_TIMESTAMP)""",
+        [station_id, obs_date, max_temp_f, min_temp_f],
+    )
+    con.close()
+
+
+def test_forecast_curve_prefers_nws_over_obs(client):
+    """When NWS daily data exists, it should be used over running obs max."""
+    now = datetime.now(timezone.utc)
+    model_run = now - timedelta(hours=2)
+    valid = now + timedelta(hours=1)
+    today = now.strftime("%Y-%m-%d")
+
+    _insert_forecast(TEST_DB, "KNYC", model_run, valid, 40.0)
+
+    # Obs running high = 38°F
+    base = now - timedelta(hours=1)
+    _insert_obs(TEST_DB, "KNYC", base, 38.0)
+
+    # NWS daily high = 42°F (should win)
+    _insert_nws_daily(TEST_DB, "KNYC", today, 42.0, 28.0)
+
+    resp = client.get(f"/api/forecast-curve/NYC?date={today}")
+    data = resp.json()
+
+    assert data["observed_high"] == 42.0
+    assert data["settlement_source"] == "nws_cli"
+
+
+def test_forecast_curve_falls_back_to_obs(client):
+    """When no NWS data exists, fall back to running obs max."""
+    now = datetime.now(timezone.utc)
+    model_run = now - timedelta(hours=2)
+    valid = now + timedelta(hours=1)
+    today = now.strftime("%Y-%m-%d")
+
+    _insert_forecast(TEST_DB, "KNYC", model_run, valid, 40.0)
+
+    # Only obs data, no NWS
+    base = now - timedelta(hours=1)
+    _insert_obs(TEST_DB, "KNYC", base, 38.0)
+
+    resp = client.get(f"/api/forecast-curve/NYC?date={today}")
+    data = resp.json()
+
+    assert data["observed_high"] == 38.0
+    assert data["settlement_source"] == "obs_running"
+
+
+def test_forecast_curve_includes_settlement_source(client):
+    """forecast_curve response should include settlement_source field."""
+    now = datetime.now(timezone.utc)
+    model_run = now - timedelta(hours=1)
+    valid = now + timedelta(hours=1)
+
+    _insert_forecast(TEST_DB, "KNYC", model_run, valid, 33.0)
+
+    resp = client.get("/api/forecast-curve/NYC")
+    data = resp.json()
+
+    assert "settlement_source" in data

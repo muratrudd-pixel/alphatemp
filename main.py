@@ -13,6 +13,7 @@ from services.ingestor import SynopticIngestor
 from services.forecast import HRRRFetcher
 from services.bias import BiasEngine
 from services.market_fetcher import MarketFetcher
+from services.nws_fetcher import NWSFetcher
 
 
 async def main():
@@ -28,12 +29,14 @@ async def main():
     fetcher = HRRRFetcher()
     engine = BiasEngine()
     market = MarketFetcher()
+    nws = NWSFetcher()
 
     tasks = [
         ingestor.run(),
         fetcher.run(),
         engine.run(),
         market.run(),
+        nws.run(),
     ]
 
     if "--dashboard" in sys.argv:

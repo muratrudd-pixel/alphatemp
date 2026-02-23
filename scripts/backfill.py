@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""90-day backfill pipeline — observations, forecasts, and bias model.
+"""90-day backfill pipeline — observations, forecasts, bias model, and NWS daily.
 
 Usage:
     python scripts/backfill.py --days 90
     python scripts/backfill.py --days 90 --obs-only
     python scripts/backfill.py --days 90 --fcst-only
     python scripts/backfill.py --days 90 --bias-only
+    python scripts/backfill.py --days 90 --nws-only
     python scripts/backfill.py --days 90 --dry-run
 """
 
@@ -30,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--obs-only", action="store_true", help="Run observation backfill only")
     parser.add_argument("--fcst-only", action="store_true", help="Run forecast backfill only")
     parser.add_argument("--bias-only", action="store_true", help="Run bias model only")
+    parser.add_argument("--nws-only", action="store_true", help="Run NWS daily backfill only")
     parser.add_argument("--dry-run", action="store_true", help="Show what would run without hitting APIs")
     parser.add_argument("--db-path", default="data/alphatemp.duckdb", help="Database path")
     return parser.parse_args()
@@ -49,6 +51,16 @@ def run_forecasts(days: int, db_path: str) -> int:
     logger.info("STEP 2: Forecast backfill (HRRR via Herbie)")
     logger.info("=" * 60)
     return backfill_forecasts(days_back=days, db_path=db_path)
+
+
+def run_nws_daily(days: int, db_path: str) -> int:
+    import asyncio
+    from services.nws_fetcher import NWSFetcher
+    logger.info("=" * 60)
+    logger.info("STEP 4: NWS daily backfill (ACIS)")
+    logger.info("=" * 60)
+    fetcher = NWSFetcher(db_path=db_path)
+    return asyncio.run(fetcher.backfill(days_back=days))
 
 
 def run_bias_model(db_path: str) -> int:
@@ -102,6 +114,16 @@ def print_quality_report(db_path: str, days: int) -> None:
         paired = row[0] if row else 0
         logger.info(f"  {stid}: {paired} paired days")
 
+    # NWS daily coverage
+    logger.info("NWS daily coverage:")
+    for stid in stations:
+        row = con.execute(
+            "SELECT COUNT(*) FROM nws_daily WHERE station_id = ?",
+            [stid],
+        ).fetchone()
+        nws_days = row[0] if row else 0
+        logger.info(f"  {stid}: {nws_days} days with NWS data")
+
     # Bias model results
     logger.info("Bias model results:")
     for stid in stations:
@@ -146,7 +168,7 @@ def main() -> None:
         print_dry_run(args.days)
         return
 
-    run_all = not (args.obs_only or args.fcst_only or args.bias_only)
+    run_all = not (args.obs_only or args.fcst_only or args.bias_only or args.nws_only)
 
     # Ensure DB exists
     init_db(args.db_path)
@@ -159,6 +181,7 @@ def main() -> None:
     obs_rows = 0
     fcst_rows = 0
     bias_count = 0
+    nws_rows = 0
 
     if run_all or args.obs_only:
         obs_rows = run_observations(token, args.days, args.db_path)
@@ -169,13 +192,17 @@ def main() -> None:
     if run_all or args.bias_only:
         bias_count = run_bias_model(args.db_path)
 
+    if run_all or args.nws_only:
+        nws_rows = run_nws_daily(args.days, args.db_path)
+
     # Quality report
     print_quality_report(args.db_path, args.days)
 
     logger.info("=" * 60)
     logger.info(
         f"Pipeline complete: {obs_rows} obs rows, "
-        f"{fcst_rows} fcst rows, {bias_count} bias entries"
+        f"{fcst_rows} fcst rows, {bias_count} bias entries, "
+        f"{nws_rows} NWS daily rows"
     )
     logger.info("=" * 60)
 

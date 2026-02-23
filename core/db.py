@@ -83,6 +83,18 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         )
     """)
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS nws_daily (
+            station_id   VARCHAR NOT NULL,
+            obs_date     DATE NOT NULL,
+            max_temp_f   DOUBLE,
+            min_temp_f   DOUBLE,
+            source       VARCHAR DEFAULT 'ACIS',
+            ingested_at  TIMESTAMP NOT NULL,
+            UNIQUE (station_id, obs_date)
+        )
+    """)
+
     # Indexes — accelerate the most common query patterns
     for stmt in [
         "CREATE INDEX IF NOT EXISTS idx_obs_station_time ON observations (station_id, observed_at)",
@@ -91,6 +103,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         "CREATE INDEX IF NOT EXISTS idx_drift_city_time ON drift_signals (city, calculated_at)",
         "CREATE INDEX IF NOT EXISTS idx_market_city_time ON market_ticks (city, captured_at)",
         "CREATE INDEX IF NOT EXISTS idx_bias_station_time ON station_bias (station_id, calculated_at)",
+        "CREATE INDEX IF NOT EXISTS idx_nws_station_date ON nws_daily (station_id, obs_date)",
     ]:
         con.execute(stmt)
 

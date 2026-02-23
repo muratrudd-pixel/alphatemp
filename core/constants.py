@@ -46,6 +46,9 @@ POLL_INTERVAL_SECONDS: int = 60
 # Forecast polling interval (15 minutes — HRRR updates hourly, this catches trickle-in)
 FORECAST_POLL_INTERVAL_SECONDS: int = 900
 
+# NWS daily high poll interval (4 hours — CLI reports publish once daily)
+NWS_DAILY_POLL_INTERVAL_SECONDS: int = 14400
+
 # Settlement station coordinates for HRRR grid point extraction
 STATION_COORDS: dict = {
     "KNYC": (40.7789, -73.9692),

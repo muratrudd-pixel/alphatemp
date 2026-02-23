@@ -360,6 +360,37 @@ async def forecast_curve(city: str, date: str = None):
         for row in observations if row[2] is not None
     ]
 
+    # Settlement high: prefer NWS daily (CLI thermometer) over running obs max
+    observed_high = None
+    observed_high_at = None
+    settlement_source = None
+
+    # Determine target date for NWS lookup
+    if date:
+        nws_date = date
+    else:
+        from core.timezone import ET as _ET
+        nws_date = datetime.now(_ET).strftime("%Y-%m-%d")
+
+    nws_row = con.execute(
+        "SELECT max_temp_f FROM nws_daily WHERE station_id = ? AND obs_date = ?",
+        [station_id, nws_date],
+    ).fetchone()
+
+    if nws_row and nws_row[0] is not None:
+        observed_high = round(nws_row[0], 1)
+        # Place NWS settlement dot at noon ET for display purposes
+        observed_high_at = f"{nws_date}T17:00:00"  # noon ET = 17:00 UTC
+        settlement_source = "nws_cli"
+    elif obs_points:
+        # Fallback: running max of settlement-station obs only
+        settlement_obs = [p for p in obs_points if p["station_id"] == station_id]
+        if settlement_obs:
+            best = max(settlement_obs, key=lambda p: p["temp_f"])
+            observed_high = best["temp_f"]
+            observed_high_at = best["observed_at"]
+        settlement_source = "obs_running"
+
     # Get latest drift for this city
     drift_row = con.execute(
         """SELECT drift_score FROM drift_signals
@@ -381,6 +412,9 @@ async def forecast_curve(city: str, date: str = None):
         "drift": drift,
         "bias": bias_val,
         "now_utc": now.isoformat(),
+        "observed_high": observed_high,
+        "observed_high_at": observed_high_at,
+        "settlement_source": settlement_source,
     }
 
 
