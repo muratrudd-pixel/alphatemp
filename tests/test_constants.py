@@ -1,6 +1,7 @@
 # tests/test_constants.py
 from core.constants import (
     generate_magnets,
+    get_all_station_ids,
     MAGNETS,
     FLB_FAVORITE_FLOOR,
     FLB_LONGSHOT_CEILING,
@@ -63,10 +64,8 @@ def test_cities_config():
 
 def test_all_stations_list():
     """All 11 stations should be extractable from CITIES config."""
-    all_stations = []
-    for city in CITIES.values():
-        all_stations.append(city["settlement"])
-        all_stations.extend(city["neighbors"])
+    all_stations = get_all_station_ids()
+    assert isinstance(all_stations, list)
     assert len(all_stations) == 11
 
 
