@@ -1,9 +1,12 @@
-"""IEM ASOS ingestor — low-latency METAR + SPECI for settlement stations."""
+"""AWC METAR ingestor — low-latency METAR + SPECI for settlement stations.
+
+Uses the Aviation Weather Center (aviationweather.gov) API, which carries
+both routine METARs and SPECI reports. IEM's ASOS feed was missing SPECIs
+for non-airport stations like KNYC (Central Park).
+"""
 
 import asyncio
-import csv
-import io
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import duckdb
 import httpx
@@ -14,80 +17,60 @@ from core.db import get_connection
 from core.retry import retry_async
 from services.ingestor import parse_t_group, _is_metar_stub
 
-IEM_BASE_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
+AWC_BASE_URL = "https://aviationweather.gov/api/data/metar"
 
-# IEM uses 3-letter FAA codes; map to 4-letter ICAO for our observations table
-IEM_STATIONS = {
-    "NYC": "KNYC",
-    "PHL": "KPHL",
-    "MDW": "KMDW",
-    "MIA": "KMIA",
-    "LAX": "KLAX",
-}
+# Settlement stations to poll
+AWC_STATIONS = ["KNYC", "KPHL", "KMDW", "KMIA", "KLAX"]
 
 USER_AGENT = "(alphatemp, contact@alphatemp.com)"
 
 
 class IEMIngestor:
-    """Polls IEM ASOS for METAR+SPECI on the 5 settlement stations."""
+    """Polls AWC for METAR+SPECI on the 5 settlement stations.
+
+    Named IEMIngestor for backwards compatibility with main.py imports,
+    but now uses the AWC API which carries SPECIs that IEM lacks.
+    """
 
     def __init__(self, db_path: str = "data/alphatemp.duckdb"):
         self.db_path = db_path
 
     @retry_async(max_retries=3, base_delay=2.0)
-    async def _fetch_iem(self, client: httpx.AsyncClient, params) -> str:
-        """GET CSV from IEM ASOS endpoint with retry."""
+    async def _fetch_awc(self, client: httpx.AsyncClient, params: dict) -> list:
+        """GET JSON from AWC METAR endpoint with retry."""
         resp = await client.get(
-            IEM_BASE_URL,
+            AWC_BASE_URL,
             params=params,
             headers={"User-Agent": USER_AGENT},
         )
         resp.raise_for_status()
-        return resp.text
+        return resp.json()
 
     async def poll_once(self) -> int:
         """Single poll cycle. Returns number of new rows inserted."""
-        now_utc = datetime.now(timezone.utc)
-        start = now_utc - timedelta(minutes=90)
-        # Naive UTC for DuckDB TIMESTAMP columns (same convention as Synoptic)
-        now = now_utc.replace(tzinfo=None)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        # List of tuples so we can send report_type twice:
-        #   report_type=3 (routine METAR) + report_type=4 (SPECI)
-        params = [
-            ("station", ",".join(IEM_STATIONS.keys())),
-            ("data", "metar,tmpf"),
-            ("year1", str(start.year)),
-            ("month1", str(start.month)),
-            ("day1", str(start.day)),
-            ("hour1", str(start.hour)),
-            ("minute1", str(start.minute)),
-            ("year2", str(now_utc.year)),
-            ("month2", str(now_utc.month)),
-            ("day2", str(now_utc.day)),
-            ("hour2", str(now_utc.hour)),
-            ("minute2", str(now_utc.minute)),
-            ("tz", "Etc/UTC"),
-            ("format", "onlycomma"),
-            ("latlon", "no"),
-            ("elev", "no"),
-            ("missing", "M"),
-            ("trace", "T"),
-            ("direct", "no"),
-            ("report_type", "3"),
-            ("report_type", "4"),
-        ]
+        params = {
+            "ids": ",".join(AWC_STATIONS),
+            "format": "json",
+            "hours": "2",
+            "taf": "false",
+        }
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                csv_text = await self._fetch_iem(client, params)
+                data = await self._fetch_awc(client, params)
         except Exception as e:
-            logger.warning(f"IEM ASOS request failed after retries: {e}")
+            logger.warning(f"AWC METAR request failed after retries: {e}")
             return 0
 
-        rows = self._parse_csv(csv_text, now)
+        if not isinstance(data, list):
+            logger.warning(f"AWC returned unexpected format: {type(data)}")
+            return 0
+
+        rows = self._parse_json(data, now)
         if not rows:
-            logger.debug("IEM: no observations to insert")
+            logger.debug("AWC: no observations to insert")
             return 0
 
         con = get_connection(self.db_path)
@@ -106,66 +89,65 @@ class IEMIngestor:
                 pass  # Duplicate — first-to-arrive wins
         con.close()
 
-        logger.info(f"IEM: inserted {inserted} new observations ({len(rows) - inserted} duplicates skipped)")
+        logger.info(f"AWC: inserted {inserted} new observations ({len(rows) - inserted} duplicates skipped)")
         return inserted
 
-    def _parse_csv(self, csv_text: str, now: datetime) -> list[dict]:
-        """Parse IEM CSV response into observation dicts."""
-        reader = csv.DictReader(io.StringIO(csv_text))
+    def _parse_json(self, data: list, now: datetime) -> list[dict]:
+        """Parse AWC JSON response into observation dicts."""
         rows = []
 
-        for record in reader:
-            faa_code = record.get("station", "").strip()
-            icao = IEM_STATIONS.get(faa_code)
-            if icao is None:
+        for obs in data:
+            station_id = obs.get("icaoId", "").strip()
+            if station_id not in AWC_STATIONS:
                 continue
 
-            valid_str = record.get("valid", "").strip()
-            if not valid_str:
+            report_time = obs.get("reportTime", "")
+            if not report_time:
                 continue
 
             try:
-                # Parse as naive UTC — DuckDB TIMESTAMP column has no tz,
-                # same convention as Synoptic ingestor
-                observed_at = datetime.strptime(valid_str, "%Y-%m-%d %H:%M")
+                # AWC returns ISO format: "2026-02-23T21:08:00.000Z"
+                observed_at = datetime.strptime(
+                    report_time, "%Y-%m-%dT%H:%M:%S.%fZ"
+                )
             except ValueError:
-                logger.debug(f"IEM: skipping unparseable timestamp: {valid_str}")
-                continue
+                try:
+                    observed_at = datetime.strptime(
+                        report_time, "%Y-%m-%dT%H:%M:%SZ"
+                    )
+                except ValueError:
+                    logger.debug(f"AWC: skipping unparseable timestamp: {report_time}")
+                    continue
 
-            metar_str = record.get("metar", "").strip()
-            tmpf_str = record.get("tmpf", "").strip()
+            raw_ob = obs.get("rawOb", "").strip()
 
-            # Parse temps
             temp_f = None
             temp_c_tenth = None
 
-            if not _is_metar_stub(metar_str):
-                # T-group from raw METAR
-                temp_c_tenth = parse_t_group(metar_str)
+            if not _is_metar_stub(raw_ob):
+                # T-group from raw METAR/SPECI string
+                temp_c_tenth = parse_t_group(raw_ob)
 
-                # tmpf from IEM's parsed field
-                if tmpf_str and tmpf_str != "M":
-                    try:
-                        temp_f = round(float(tmpf_str), 1)
-                    except ValueError:
-                        pass
+                # AWC provides temp in Celsius — convert to F
+                temp_c = obs.get("temp")
+                if temp_c is not None:
+                    temp_f = round(temp_c * 9.0 / 5.0 + 32.0, 1)
 
             rows.append({
-                "station_id": icao,
+                "station_id": station_id,
                 "observed_at": observed_at,
                 "temp_f": temp_f,
                 "temp_c_tenth": temp_c_tenth,
-                "raw_metar": metar_str,
+                "raw_metar": raw_ob,
                 "ingested_at": now,
             })
 
         return rows
 
     async def run(self) -> None:
-        """Run the IEM ingestor loop indefinitely."""
-        stations = list(IEM_STATIONS.values())
+        """Run the AWC ingestor loop indefinitely."""
         logger.info(
-            f"Starting IEM ASOS ingestor — polling {len(stations)} settlement stations "
+            f"Starting AWC METAR+SPECI ingestor — polling {len(AWC_STATIONS)} settlement stations "
             f"every {IEM_POLL_INTERVAL_SECONDS}s"
         )
         while True:
