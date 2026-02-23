@@ -35,6 +35,7 @@ def backfill_forecasts(
 
     total_inserted = 0
     total_skipped = 0
+    day_num = 0
 
     logger.info(
         f"Backfilling 12z HRRR runs from {start_date} to {end_date} "
@@ -43,6 +44,8 @@ def backfill_forecasts(
 
     current = start_date
     while current < end_date:
+        day_num += 1
+        pct = int(day_num / days_back * 100)
         model_run = datetime(current.year, current.month, current.day, 12, tzinfo=timezone.utc)
 
         # Idempotent check: skip if we already have data for this run
@@ -60,9 +63,15 @@ def backfill_forecasts(
         try:
             inserted = fetcher.fetch_run(model_run)
             total_inserted += inserted
-            logger.info(f"  {model_run.strftime('%Y-%m-%d %Hz')}: {inserted} rows")
+            logger.info(
+                f"Day {day_num}/{days_back} ({pct}%) — "
+                f"{model_run.strftime('%Y-%m-%d %Hz')}: {inserted} rows"
+            )
         except Exception as e:
-            logger.warning(f"  {model_run.strftime('%Y-%m-%d %Hz')}: archive gap or error — {e}")
+            logger.warning(
+                f"Day {day_num}/{days_back} ({pct}%) — "
+                f"{model_run.strftime('%Y-%m-%d %Hz')}: archive gap or error — {e}"
+            )
 
         current += timedelta(days=1)
         time.sleep(delay_seconds)

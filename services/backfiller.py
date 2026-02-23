@@ -1,5 +1,6 @@
 """Historical ASOS data backfiller via Synoptic API."""
 
+import math
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -43,15 +44,30 @@ def backfill(
     start = end - timedelta(days=days_back)
 
     total_inserted = 0
+    total_chunks = math.ceil(days_back / CHUNK_DAYS)
+    chunk_num = 0
     chunk_start = start
+
+    # Quality tracking
+    stations_with_data: set = set()
+    total_rows_seen = 0
+    tgroup_parsed = 0
+    tgroup_attempted = 0
 
     logger.info(
         f"Backfilling {len(stations)} stations from {start.strftime('%Y-%m-%d')} "
-        f"to {end.strftime('%Y-%m-%d')} ({days_back} days)"
+        f"to {end.strftime('%Y-%m-%d')} ({days_back} days, {total_chunks} chunks)"
     )
 
     while chunk_start < end:
         chunk_end = min(chunk_start + timedelta(days=CHUNK_DAYS), end)
+        chunk_num += 1
+        pct = int(chunk_num / total_chunks * 100)
+
+        logger.info(
+            f"Chunk {chunk_num}/{total_chunks} ({pct}%) — "
+            f"{chunk_start.strftime('%Y-%m-%d')} to {chunk_end.strftime('%Y-%m-%d')}"
+        )
 
         params = {
             "stid": stid_str,
@@ -83,10 +99,11 @@ def backfill(
             continue
 
         rows = []
-        now_str = datetime.now(timezone.utc).isoformat()
+        now_ts = datetime.now(timezone.utc).replace(tzinfo=None)
 
         for station in data["STATION"]:
             stid = station["STID"]
+            stations_with_data.add(stid)
             obs = station.get("OBSERVATIONS", {})
             times = obs.get("date_time", [])
             temps = obs.get("air_temp_set_1", [])
@@ -101,9 +118,21 @@ def backfill(
                     if temp_c_val is not None
                     else None
                 )
-                temp_c_tenth = parse_t_group(metar_str) if metar_str else None
 
-                rows.append((stid, dt_str, temp_f, temp_c_tenth, metar_str, now_str))
+                if metar_str:
+                    tgroup_attempted += 1
+                    temp_c_tenth = parse_t_group(metar_str)
+                    if temp_c_tenth is not None:
+                        tgroup_parsed += 1
+                else:
+                    temp_c_tenth = None
+
+                # Parse observed_at to datetime for consistent TIMESTAMP type
+                observed_at = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).replace(tzinfo=None)
+
+                rows.append((stid, observed_at, temp_f, temp_c_tenth, metar_str, now_ts))
+
+        total_rows_seen += len(rows)
 
         if rows:
             con = get_connection(db_path)
@@ -129,5 +158,20 @@ def backfill(
         chunk_start = chunk_end
         time.sleep(REQUEST_DELAY)
 
-    logger.info(f"Backfill complete: {total_inserted} total rows inserted")
+    # Completion summary
+    tgroup_rate = (
+        f"{tgroup_parsed}/{tgroup_attempted} ({int(tgroup_parsed / tgroup_attempted * 100)}%)"
+        if tgroup_attempted > 0
+        else "N/A"
+    )
+    logger.info(
+        f"Backfill complete: {total_inserted} rows inserted, "
+        f"{total_rows_seen} total rows seen"
+    )
+    logger.info(
+        f"  Stations with data: {len(stations_with_data)}/{len(stations)} "
+        f"({', '.join(sorted(stations_with_data))})"
+    )
+    logger.info(f"  T-group parse rate: {tgroup_rate}")
+
     return total_inserted
