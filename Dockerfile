@@ -2,7 +2,7 @@ FROM python:3.11-slim-bookworm
 
 # eccodes for GRIB decoding (Herbie + pygrib), proj for pyproj
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libeccodes-dev libeccodes-tools libproj-dev proj-data build-essential \
+    libeccodes-dev libeccodes-tools libproj-dev proj-data build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
