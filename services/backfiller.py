@@ -134,7 +134,7 @@ def backfill(
                 # Parse observed_at to datetime for consistent TIMESTAMP type
                 observed_at = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).replace(tzinfo=None)
 
-                rows.append((stid, observed_at, temp_f, temp_c_tenth, six_hr_max_c, six_hr_min_c, metar_str, now_ts))
+                rows.append((stid, observed_at, temp_f, temp_c_tenth, six_hr_max_c, six_hr_min_c, metar_str, now_ts, "backfill"))
 
         total_rows_seen += len(rows)
 
@@ -146,8 +146,8 @@ def backfill(
                     con.execute(
                         """INSERT INTO observations
                            (station_id, observed_at, temp_f, temp_c_tenth,
-                            six_hr_max_c, six_hr_min_c, raw_metar, ingested_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            six_hr_max_c, six_hr_min_c, raw_metar, ingested_at, ingest_source)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         list(row),
                     )
                     inserted += 1

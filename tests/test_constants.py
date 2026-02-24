@@ -58,17 +58,17 @@ def test_flb_thresholds():
 
 
 def test_cities_config():
-    assert "CHI" in CITIES
-    assert CITIES["CHI"]["settlement"] == "KMDW"
-    assert "KORD" in CITIES["CHI"]["neighbors"]
-    assert len(CITIES) == 5
+    assert "NYC" in CITIES
+    assert CITIES["NYC"]["settlement"] == "KNYC"
+    assert "KLGA" in CITIES["NYC"]["neighbors"]
+    assert len(CITIES) == 1
 
 
 def test_all_stations_list():
-    """All 11 stations should be extractable from CITIES config."""
+    """All NYC stations should be extractable from CITIES config."""
     all_stations = get_all_station_ids()
     assert isinstance(all_stations, list)
-    assert len(all_stations) == 11
+    assert len(all_stations) == 3  # KNYC + KLGA + KEWR
 
 
 def test_poll_interval():
@@ -87,7 +87,7 @@ def test_station_coords_exist_for_all_settlements():
 
 def test_station_coords_only_settlements():
     """Coords should only be for settlement stations, not neighbors."""
-    assert len(STATION_COORDS) == 5
+    assert len(STATION_COORDS) == 1
 
 
 def test_forecast_poll_interval():

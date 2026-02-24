@@ -112,7 +112,7 @@ def test_empty_forecast_points(client):
     resp = client.get("/api/forecast-points/NYC")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["points"] == []
+    assert data["runs"] == []
     assert data["forecast_high"] is None
 
 

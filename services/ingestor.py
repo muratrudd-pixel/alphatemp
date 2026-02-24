@@ -147,6 +147,7 @@ class SynopticIngestor:
                     "six_hr_min_c": six_hr_min_c,
                     "raw_metar": metar_str,
                     "ingested_at": now.isoformat(),
+                    "ingest_source": "synoptic",
                 })
 
         if not rows:
@@ -164,11 +165,11 @@ class SynopticIngestor:
             try:
                 con.execute(
                     """INSERT INTO observations (station_id, observed_at, temp_f, temp_c_tenth,
-                       six_hr_max_c, six_hr_min_c, raw_metar, ingested_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       six_hr_max_c, six_hr_min_c, raw_metar, ingested_at, ingest_source)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [row["station_id"], row["observed_at"], row["temp_f"],
                      row["temp_c_tenth"], row["six_hr_max_c"], row["six_hr_min_c"],
-                     row["raw_metar"], row["ingested_at"]],
+                     row["raw_metar"], row["ingested_at"], row["ingest_source"]],
                 )
                 inserted += 1
             except duckdb.ConstraintException:

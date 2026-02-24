@@ -53,12 +53,12 @@
         @keyframes flash-new { 0% { background: rgba(245,158,11,0.3); } 100% { background: transparent; } }
         .flash-new { animation: flash-new 2s ease-out; }
         /* Plotly container sizing */
-        .chart-container { width: 100%; min-height: 340px; }
+        .chart-container { width: 100%; min-height: 600px; }
         @media (max-width: 1023px) {
-            .chart-container { min-height: 280px; }
+            .chart-container { min-height: 450px; }
         }
         @media (max-width: 639px) {
-            .chart-container { min-height: 220px; }
+            .chart-container { min-height: 320px; }
         }
     </style>
 </head>
@@ -72,14 +72,11 @@
             </h1>
         </div>
         <div class="flex items-center gap-4">
-            <select id="city-select" class="text-sm">
-                <option value="NYC">NYC</option>
-                <option value="PHL">PHL</option>
-                <option value="CHI">CHI</option>
-                <option value="MIA">MIA</option>
-                <option value="LA">LA</option>
-            </select>
-            <input type="date" id="date-select" class="text-sm mono" style="background:var(--bg-panel); border:1px solid rgba(148,163,184,0.2); color:var(--text-primary); border-radius:0.375rem; padding:0.375rem 0.75rem;">
+            <span class="mono text-sm text-slate-300 font-semibold">NYC</span>
+            <div id="date-toggle" class="flex text-sm mono">
+                <button id="btn-today" class="px-3 py-1 rounded-l border border-slate-600 bg-blue-600 text-white">Today</button>
+                <button id="btn-tomorrow" class="px-3 py-1 rounded-r border border-l-0 border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600">Tomorrow</button>
+            </div>
             <div id="clock" class="mono text-sm text-slate-400"></div>
             <span id="refresh-countdown" class="mono text-xs text-slate-500">60s</span>
             <span id="last-updated" class="mono text-xs text-slate-600"></span>
@@ -87,57 +84,64 @@
     </header>
 
     <main class="p-4 lg:p-6 space-y-4 lg:space-y-5 max-w-[1600px] mx-auto">
-        <!-- Chart Row -->
-        <div class="panel p-4">
-            <div class="flex items-center justify-between mb-3">
-                <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Forecast Ribbon</h2>
-                <span id="ribbon-model-run" class="mono text-xs text-slate-500"></span>
+        <!-- Chart + Feeds Row -->
+        <div id="chart-feeds-row" class="grid grid-cols-1 lg:grid-cols-[1fr_520px] gap-4 lg:gap-5 lg:items-start">
+            <!-- Chart (left) — natural height, no stretch -->
+            <div class="panel p-4" id="chart-panel">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Forecast Ribbon</h2>
+                    <div class="flex items-center gap-3">
+                        <button id="btn-neighbors" class="px-2 py-0.5 text-[10px] mono rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600 uppercase tracking-wider">Neighbors</button>
+                        <span id="ribbon-model-run" class="mono text-xs text-slate-500"></span>
+                    </div>
+                </div>
+                <div id="ribbon-chart" class="chart-container"></div>
             </div>
-            <div id="ribbon-chart" class="chart-container"></div>
-        </div>
 
-        <!-- Data Feeds Row -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-5">
-            <!-- Observation Feed -->
-            <div class="panel p-4">
-                <div class="flex items-center justify-between mb-3">
-                    <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Observation Feed</h2>
-                    <span id="obs-status" class="mono text-xs text-slate-500"></span>
+            <!-- Feeds (right) — JS-driven height to match chart panel -->
+            <div id="feeds-col" class="flex flex-col gap-4 lg:gap-5" style="min-height:0;">
+                <!-- Observation Feed -->
+                <div class="panel p-3 flex flex-col flex-1" style="min-height:0;">
+                    <div class="flex items-center justify-between mb-2">
+                        <h2 class="text-xs font-medium text-slate-300 uppercase tracking-widest">Observations</h2>
+                        <span id="obs-status" class="mono text-[10px] text-slate-500"></span>
+                    </div>
+                    <div class="flex-1 overflow-y-auto" style="min-height:0;">
+                        <table class="w-full">
+                            <thead class="sticky top-0" style="background:var(--bg-panel);">
+                                <tr class="border-b border-slate-700/50 text-left text-[10px] uppercase tracking-wider text-slate-400">
+                                    <th class="pb-1.5 pr-2">Rcvd</th>
+                                    <th class="pb-1.5 pr-2">Released</th>
+                                    <th class="pb-1.5 pr-2">Obs</th>
+                                    <th class="pb-1.5 pr-2">Source</th>
+                                    <th class="pb-1.5 text-right">Temp</th>
+                                </tr>
+                            </thead>
+                            <tbody id="obs-body" class="mono text-[11px]"></tbody>
+                        </table>
+                    </div>
                 </div>
-                <div class="overflow-x-auto" style="max-height:320px; overflow-y:auto;">
-                    <table class="w-full text-sm">
-                        <thead class="sticky top-0" style="background:var(--bg-panel);">
-                            <tr class="border-b border-slate-700/50 text-left text-xs uppercase tracking-wider text-slate-400">
-                                <th class="pb-2 pr-4">Time (ET)</th>
-                                <th class="pb-2 pr-4">Station</th>
-                                <th class="pb-2 pr-4">Temp &deg;F</th>
-                                <th class="pb-2 pr-4">METAR</th>
-                                <th class="pb-2">Ingested</th>
-                            </tr>
-                        </thead>
-                        <tbody id="obs-body" class="mono text-xs"></tbody>
-                    </table>
-                </div>
-            </div>
-            <!-- Forecast Feed -->
-            <div class="panel p-4">
-                <div class="flex items-center justify-between mb-3">
-                    <h2 class="text-sm font-medium text-slate-300 uppercase tracking-widest">Forecast Feed</h2>
-                    <span id="fcst-status" class="mono text-xs text-slate-500"></span>
-                </div>
-                <div class="overflow-x-auto" style="max-height:320px; overflow-y:auto;">
-                    <table class="w-full text-sm">
-                        <thead class="sticky top-0" style="background:var(--bg-panel);">
-                            <tr class="border-b border-slate-700/50 text-left text-xs uppercase tracking-wider text-slate-400">
-                                <th class="pb-2 pr-4">Model Run</th>
-                                <th class="pb-2 pr-4">Valid At (ET)</th>
-                                <th class="pb-2 pr-4">Temp &deg;F</th>
-                                <th class="pb-2 pr-4">Lead (hrs)</th>
-                                <th class="pb-2">Ingested</th>
-                            </tr>
-                        </thead>
-                        <tbody id="fcst-body" class="mono text-xs"></tbody>
-                    </table>
+                <!-- Forecast Feed -->
+                <div class="panel p-3 flex flex-col flex-1" style="min-height:0;">
+                    <div class="flex items-center justify-between mb-2">
+                        <h2 class="text-xs font-medium text-slate-300 uppercase tracking-widest">HRRR Runs</h2>
+                        <span id="fcst-status" class="mono text-[10px] text-slate-500"></span>
+                    </div>
+                    <div class="flex-1 overflow-y-auto" style="min-height:0;">
+                        <table class="w-full">
+                            <thead class="sticky top-0" style="background:var(--bg-panel);">
+                                <tr class="border-b border-slate-700/50 text-left text-[10px] uppercase tracking-wider text-slate-400">
+                                    <th class="pb-1.5 pr-2">Run</th>
+                                    <th class="pb-1.5 pr-2">Rcvd</th>
+                                    <th class="pb-1.5 pr-2">High At</th>
+                                    <th class="pb-1.5 pr-2">&Delta; Time</th>
+                                    <th class="pb-1.5 pr-2 text-right">High</th>
+                                    <th class="pb-1.5 text-right">&Delta; Temp</th>
+                                </tr>
+                            </thead>
+                            <tbody id="fcst-body" class="mono text-[11px]"></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
@@ -208,11 +212,24 @@
     };
 
     const plotConfig = {
-        displayModeBar: true,
-        modeBarButtonsToRemove: ['toImage', 'lasso2d', 'select2d', 'autoScale2d'],
+        displayModeBar: false,
         scrollZoom: true,
         responsive: true,
     };
+
+    // -----------------------------------------------------------------------
+    // Sync feeds column height to chart panel
+    // -----------------------------------------------------------------------
+    function syncFeedsHeight() {
+        const chart = document.getElementById('chart-panel');
+        const feeds = document.getElementById('feeds-col');
+        if (chart && feeds && window.innerWidth >= 1024) {
+            feeds.style.maxHeight = chart.offsetHeight + 'px';
+        } else if (feeds) {
+            feeds.style.maxHeight = '';
+        }
+    }
+    window.addEventListener('resize', syncFeedsHeight);
 
     // -----------------------------------------------------------------------
     // Clock
@@ -225,26 +242,50 @@
     setInterval(updateClock, 1000);
     updateClock();
 
-    // Set date picker to today (ET)
-    const todayET = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-    document.getElementById('date-select').value = todayET;
-    document.getElementById('date-select').addEventListener('change', () => refreshSelectedCity());
+    // Date toggle — Today / Tomorrow
+    function getETDate(offsetDays = 0) {
+        const d = new Date();
+        d.setDate(d.getDate() + offsetDays);
+        return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    }
+    let selectedDate = getETDate(0);
+
+    const btnToday = document.getElementById('btn-today');
+    const btnTomorrow = document.getElementById('btn-tomorrow');
+
+    function setDateToggle(offset) {
+        selectedDate = getETDate(offset);
+        if (offset === 0) {
+            btnToday.className = 'px-3 py-1 rounded-l border border-slate-600 bg-blue-600 text-white';
+            btnTomorrow.className = 'px-3 py-1 rounded-r border border-l-0 border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600';
+        } else {
+            btnToday.className = 'px-3 py-1 rounded-l border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600';
+            btnTomorrow.className = 'px-3 py-1 rounded-r border border-l-0 border-slate-600 bg-blue-600 text-white';
+        }
+        refreshSelectedCity();
+    }
+    btnToday.addEventListener('click', () => setDateToggle(0));
+    btnTomorrow.addEventListener('click', () => setDateToggle(1));
 
     function getSelectedDate() {
-        return document.getElementById('date-select').value || null;
+        return selectedDate;
     }
 
     // -----------------------------------------------------------------------
     // City Selection
     // -----------------------------------------------------------------------
-    function selectCity(city) {
-        selectedCity = city;
-        document.getElementById('city-select').value = city;
-        refreshSelectedCity();
-    }
+    // NYC-only — no city selector needed
 
-    document.getElementById('city-select').addEventListener('change', (e) => {
-        selectCity(e.target.value);
+    // Neighbor overlay toggle
+    let showNeighbors = false;
+    const NEIGHBOR_COLORS = { KLGA: '#a78bfa', KEWR: '#fb923c' }; // violet, orange
+    const btnNeighbors = document.getElementById('btn-neighbors');
+    btnNeighbors.addEventListener('click', () => {
+        showNeighbors = !showNeighbors;
+        btnNeighbors.className = showNeighbors
+            ? 'px-2 py-0.5 text-[10px] mono rounded border border-blue-500 bg-blue-600 text-white uppercase tracking-wider'
+            : 'px-2 py-0.5 text-[10px] mono rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600 uppercase tracking-wider';
+        refreshSelectedCity();
     });
 
     // -----------------------------------------------------------------------
@@ -330,15 +371,20 @@
             showlegend: false, hoverinfo: 'skip',
             name: '50% CI',
         };
-        // Forecast center line with sigma in hover
-        const fcstSigma = data.forecasts.map(p => fcstStdMapUTC[p.valid_at] ?? null);
+        // Forecast center line with received/released in hover
+        const fcstCustom = data.forecasts.map(p => {
+            const sigma = fcstStdMapUTC[p.valid_at] ?? null;
+            const released = p.model_run ? formatETShort(p.model_run) : '--';
+            const received = p.ingested_at ? formatETShort(p.ingested_at) : '--';
+            return [sigma, released, received];
+        });
         const traceFcst = {
             x: fcstX, y: fcstY,
             type: 'scatter', mode: 'lines',
             line: { color: '#3b82f6', width: 2, dash: 'dot' },
             name: 'HRRR Forecast',
-            customdata: fcstSigma,
-            hovertemplate: '%{y:.1f}°F (σ=%{customdata:.2f})<extra></extra>',
+            customdata: fcstCustom,
+            hovertemplate: '%{y:.1f}°F (σ=%{customdata[0]:.2f})<br>Released: %{customdata[1]}<br>Received: %{customdata[2]}<extra></extra>',
         };
         // Bias-adjusted HRRR forecast (solid teal)
         const adjX = data.bias_adjusted_forecasts.map(p => toET(p.valid_at));
@@ -350,14 +396,20 @@
             name: `Bias-Adj HRRR (${data.adjustment >= 0 ? '+' : ''}${data.adjustment}°F)`,
             hovertemplate: '%{y:.1f}°F<extra>bias-adjusted</extra>',
         };
-        // Observed actuals
+        // Observed actuals with received/released in hover
+        const obsCustom = data.observations.map(p => {
+            const released = formatETShort(p.observed_at);
+            const received = p.ingested_at ? formatETShort(p.ingested_at) : '--';
+            return [released, received];
+        });
         const traceObs = {
             x: obsX, y: obsY,
             type: 'scatter', mode: 'lines+markers',
-            line: { color: '#f59e0b', width: 2 },
-            marker: { size: 5, color: '#f59e0b' },
+            line: { color: '#f1f5f9', width: 2 },
+            marker: { size: 5, color: '#f1f5f9' },
             name: 'Observed',
-            hovertemplate: '%{y:.1f}°F<extra></extra>',
+            customdata: obsCustom,
+            hovertemplate: '%{y:.1f}°F<br>Released: %{customdata[0]}<br>Received: %{customdata[1]}<extra></extra>',
         };
 
         // Settlement high — diamond (NWS CLI) or circle (running obs estimate)
@@ -396,26 +448,18 @@
             line: { color: 'rgba(148,163,184,0.4)', width: 1, dash: 'dash' },
         };
 
-        // Drift annotation
-        const drift = data.drift || 0;
-        const bias = data.bias || 0;
-        const driftSign = drift >= 0 ? '+' : '';
-        const biasSign = bias >= 0 ? '+' : '';
-        const driftAnnotation = {
-            text: `drift ${driftSign}${drift.toFixed(1)}°F  bias ${biasSign}${bias.toFixed(1)}°F`,
-            showarrow: false,
-            font: { size: 10, color: drift > 0 ? '#f59e0b' : drift < 0 ? '#3b82f6' : '#94a3b8' },
-            xref: 'paper', yref: 'paper',
-            x: 1, y: 1.02,
-            xanchor: 'right',
-        };
-
-        // Date range: if a date is selected, set x-axis to midnight–midnight ET
-        const xaxisConfig = { ...basePlotLayout.xaxis, type: 'date' };
         const selectedDate = getSelectedDate();
-        if (selectedDate) {
-            xaxisConfig.range = [selectedDate + 'T00:00:00', selectedDate + 'T23:59:59'];
-        }
+        const dayStart = (selectedDate || new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' })) + 'T00:00:00';
+        const dayEnd = (selectedDate || new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' })) + 'T23:59:59';
+        const xaxisConfig = {
+            ...basePlotLayout.xaxis,
+            type: 'date',
+            range: [dayStart, dayEnd],
+            dtick: 7200000,           // 2 hours in ms
+            tickformat: '%H:%M',
+            showgrid: true,
+            gridcolor: GRID_COLOR,
+        };
 
         const layout = {
             ...basePlotLayout,
@@ -425,7 +469,6 @@
             xaxis: xaxisConfig,
             dragmode: 'zoom',
             shapes: [nowShape, ...settlementShapes],
-            annotations: [driftAnnotation],
         };
 
         // Prior model runs as faded ghost lines
@@ -445,17 +488,41 @@
             x: data.six_hr_maxes.map(p => toET(p.observed_at)),
             y: data.six_hr_maxes.map(p => p.temp_f),
             type: 'scatter', mode: 'markers',
-            marker: { size: 10, symbol: 'triangle-left', color: '#f97316' },
+            marker: { size: 10, symbol: 'triangle-left', color: '#f1f5f9' },
             name: '6hr High',
             hovertemplate: '%{y:.1f}°F<extra>6-hour max (peaked before this time)</extra>',
         } : null;
 
-        const allTraces = [traceUpper, traceLower, traceInnerUpper, traceInnerLower,
-             ...priorTraces, traceFcst, traceAdj, traceObs];
-        if (trace6hMax) allTraces.push(trace6hMax);
+        // Neighbor station observation traces (toggled)
+        const neighborTraces = [];
+        if (showNeighbors && data.neighbor_obs) {
+            for (const [stnId, pts] of Object.entries(data.neighbor_obs)) {
+                if (pts.length === 0) continue;
+                const color = NEIGHBOR_COLORS[stnId] || '#9ca3af';
+                const nbrCustom = pts.map(p => {
+                    const released = formatETShort(p.observed_at);
+                    const received = p.ingested_at ? formatETShort(p.ingested_at) : '--';
+                    return [released, received];
+                });
+                neighborTraces.push({
+                    x: pts.map(p => toET(p.observed_at)),
+                    y: pts.map(p => p.temp_f),
+                    type: 'scatter', mode: 'lines+markers',
+                    line: { color, width: 1.5, dash: 'dot' },
+                    marker: { size: 3, color },
+                    name: stnId,
+                    customdata: nbrCustom,
+                    hovertemplate: '%{y:.1f}°F<br>Released: %{customdata[0]}<br>Received: %{customdata[1]}<extra>' + stnId + '</extra>',
+                });
+            }
+        }
+
+        const allTraces = [...priorTraces, traceFcst, traceObs, ...neighborTraces];
         if (traceSettlement) allTraces.push(traceSettlement);
+        if (trace6hMax) allTraces.push(trace6hMax);
 
         Plotly.react('ribbon-chart', allTraces, layout, plotConfig);
+        requestAnimationFrame(syncFeedsHeight);
         document.getElementById('ribbon-model-run').textContent = selectedCity;
     }
 
@@ -483,27 +550,18 @@
         let gapCount = 0;
         body.innerHTML = data.comparisons.map(c => {
             // Alpha gap: model is 15%+ higher relative to market mid
-            const isAlphaGap = c.signal === 'alpha' && c.market_mid !== null && c.market_mid > 0
-                && (c.model_prob - c.market_mid) / c.market_mid >= 0.15;
-            if (isAlphaGap) gapCount++;
-
-            const rowClass = isAlphaGap ? 'signal-alpha-gap'
-                : c.signal === 'alpha' ? 'signal-alpha'
-                : c.signal === 'overpriced' ? 'signal-overpriced' : '';
+            const isAlphaGap = false;
+            const rowClass = '';
             const edgeColor = c.edge > 0.05 ? 'text-emerald-400' : c.edge < -0.05 ? 'text-red-400' : 'text-slate-400';
             const edgeStr = c.edge !== null ? `${(c.edge * 100).toFixed(1)}pp` : '--';
-            const signalLabel = isAlphaGap ? '◆ ALPHA GAP'
-                : c.signal === 'alpha' ? '● BUY'
-                : c.signal === 'overpriced' ? '● AVOID' : '○ FAIR';
-            const signalColor = isAlphaGap ? 'text-emerald-300 font-bold'
-                : c.signal === 'alpha' ? 'text-emerald-400'
-                : c.signal === 'overpriced' ? 'text-red-400' : 'text-slate-500';
+            const signalLabel = '';
+            const signalColor = 'text-slate-600';
 
             return `<tr class="${rowClass} border-b border-slate-800/50">
                 <td class="py-2 pr-4">${c.bracket}°F <span class="${signalColor} text-xs ml-1">${signalLabel}</span></td>
-                <td class="py-2 pr-4">${(c.model_prob * 100).toFixed(1)}%</td>
+                <td class="py-2 pr-4 text-slate-600">--</td>
                 <td class="py-2 pr-4">${c.market_mid !== null ? (c.market_mid * 100).toFixed(1) + '%' : '--'}</td>
-                <td class="py-2 pr-4 ${edgeColor}">${edgeStr}</td>
+                <td class="py-2 pr-4 text-slate-600">--</td>
                 <td class="py-2 pr-4 text-slate-400">${c.yes_bid ?? '--'}</td>
                 <td class="py-2 text-slate-400">${c.yes_ask ?? '--'}</td>
             </tr>`;
@@ -531,7 +589,7 @@
         const status = document.getElementById('obs-status');
 
         if (!data || !data.observations || data.observations.length === 0) {
-            body.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-slate-500">No observations</td></tr>';
+            body.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-slate-500">No observations</td></tr>';
             status.textContent = '';
             prevObsCount = 0;
             return;
@@ -543,21 +601,30 @@
         prevObsCount = newCount;
 
         body.innerHTML = data.observations.map((o, i) => {
-            const timeET = formatETShort(o.observed_at);
-            const metar = o.raw_metar ? o.raw_metar.substring(0, 40) + (o.raw_metar.length > 40 ? '...' : '') : '--';
-            const ingested = o.ingested_at ? formatETShort(o.ingested_at) : '--';
+            const released = formatETShort(o.observed_at);
+            const received = o.ingested_at ? formatETShort(o.ingested_at) : '--';
+            const obsWindow = o.obs_window || 'snapshot';
             const flashClass = (hasNew && i < newRows) ? ' flash-new' : '';
-            return `<tr class="border-b border-slate-800/50${flashClass}">
-                <td class="py-1.5 pr-4 text-slate-300">${timeET}</td>
-                <td class="py-1.5 pr-4 text-slate-400">${o.station_id}</td>
-                <td class="py-1.5 pr-4 text-amber-400">${o.temp_f.toFixed(1)}</td>
-                <td class="py-1.5 pr-4 text-slate-500 text-[10px]" title="${o.raw_metar || ''}">${metar}</td>
-                <td class="py-1.5 text-slate-500">${ingested}</td>
+            const highClass = o.is_new_high ? ' bg-emerald-900/40' : '';
+            const sourceColor = o.source.includes('SPECI') ? 'text-yellow-400'
+                : o.source === 'NWS CLI' ? 'text-red-400'
+                : o.source.startsWith('AWC') ? 'text-teal-400'
+                : 'text-slate-400';
+            const obsColor = obsWindow === 'prior 6hrs' ? 'text-orange-400'
+                : obsWindow === 'daily high' ? 'text-red-400'
+                : 'text-slate-500';
+            const tempColor = o.is_new_high ? 'text-emerald-400 font-bold' : 'text-slate-200';
+            return `<tr class="border-b border-slate-800/30${flashClass}${highClass}">
+                <td class="py-1 pr-2 text-slate-500">${received}</td>
+                <td class="py-1 pr-2 text-slate-300">${released}</td>
+                <td class="py-1 pr-2 ${obsColor}">${obsWindow}</td>
+                <td class="py-1 pr-2 ${sourceColor}">${o.source}</td>
+                <td class="py-1 text-right ${tempColor}">${o.temp_f.toFixed(1)}°</td>
             </tr>`;
         }).join('');
 
         const highStr = data.running_high !== null
-            ? ` · running high ${data.running_high.toFixed(1)}°F (${data.running_high_station})`
+            ? ` · high ${data.running_high.toFixed(1)}°F`
             : '';
         status.textContent = `${data.observations.length} obs${highStr}`;
     }
@@ -571,33 +638,54 @@
         const body = document.getElementById('fcst-body');
         const status = document.getElementById('fcst-status');
 
-        if (!data || !data.points || data.points.length === 0) {
-            body.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-slate-500">No forecast points</td></tr>';
+        if (!data || !data.runs || data.runs.length === 0) {
+            body.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-slate-500">No forecast runs</td></tr>';
             status.textContent = '';
             return;
         }
 
-        let prevRun = null;
-        body.innerHTML = data.points.map(p => {
-            const runET = formatETShort(p.model_run);
-            const validET = formatETShort(p.valid_at);
-            const ingested = p.ingested_at ? formatETShort(p.ingested_at) : '--';
-            const borderClass = prevRun !== null && p.model_run !== prevRun
-                ? 'border-t-2 border-slate-600' : 'border-b border-slate-800/50';
-            prevRun = p.model_run;
-            return `<tr class="${borderClass}">
-                <td class="py-1.5 pr-4 text-slate-400">${runET}z</td>
-                <td class="py-1.5 pr-4 text-slate-300">${validET}</td>
-                <td class="py-1.5 pr-4 text-blue-400">${p.temp_f.toFixed(1)}</td>
-                <td class="py-1.5 pr-4 text-slate-500">${p.lead_hours}h</td>
-                <td class="py-1.5 text-slate-500">${ingested}</td>
+        body.innerHTML = data.runs.map(r => {
+            const runET = formatETShort(r.model_run);
+            const received = r.ingested_at ? formatETShort(r.ingested_at) : '--';
+            const highAt = formatETShort(r.high_valid_at);
+
+            // Format time delta
+            let timeDelta = '';
+            let timeDeltaColor = 'text-slate-600';
+            if (r.time_change_mins !== null) {
+                const hrs = Math.floor(Math.abs(r.time_change_mins) / 60);
+                const mins = Math.abs(r.time_change_mins) % 60;
+                const sign = r.time_change_mins > 0 ? '+' : r.time_change_mins < 0 ? '-' : '';
+                timeDelta = hrs > 0 ? `${sign}${hrs}h${mins > 0 ? mins + 'm' : ''}` : `${sign}${mins}m`;
+                if (r.time_change_mins === 0) timeDelta = '—';
+                timeDeltaColor = 'text-slate-400';
+            }
+
+            // Format temp delta
+            let tempDelta = '';
+            let tempDeltaColor = 'text-slate-600';
+            if (r.temp_change !== null) {
+                const sign = r.temp_change > 0 ? '+' : '';
+                tempDelta = `${sign}${r.temp_change.toFixed(1)}°`;
+                if (r.temp_change === 0) { tempDelta = '—'; }
+                else if (r.temp_change > 0) tempDeltaColor = 'text-red-400';
+                else tempDeltaColor = 'text-blue-400';
+            }
+
+            return `<tr class="border-b border-slate-800/30">
+                <td class="py-1 pr-2 text-slate-400">${runET}z</td>
+                <td class="py-1 pr-2 text-slate-500">${received}</td>
+                <td class="py-1 pr-2 text-slate-300">${highAt}</td>
+                <td class="py-1 pr-2 ${timeDeltaColor}">${timeDelta}</td>
+                <td class="py-1 pr-2 text-right text-blue-400">${r.high_temp_f.toFixed(1)}°</td>
+                <td class="py-1 text-right ${tempDeltaColor}">${tempDelta}</td>
             </tr>`;
         }).join('');
 
         const latestStr = data.latest_run
-            ? `Latest run ${formatETShort(data.latest_run)}z` : 'No runs';
+            ? `Latest ${formatETShort(data.latest_run)}z` : 'No runs';
         const highStr = data.forecast_high !== null
-            ? ` · forecast high ${data.forecast_high.toFixed(1)}°F` : '';
+            ? ` · high ${data.forecast_high.toFixed(1)}°F` : '';
         status.textContent = `${latestStr}${highStr}`;
     }
 

@@ -22,10 +22,6 @@ KALSHI_DEMO_URL = "https://demo-api.kalshi.co/trade-api/v2"
 # Temperature market series tickers
 SERIES_MAP = {
     "NYC": "KXHIGHNY",
-    "PHL": "KXHIGHPHL",
-    "CHI": "KXHIGHCHI",
-    "MIA": "KXHIGHMI",
-    "LA": "KXHIGHLA",
 }
 
 

@@ -34,10 +34,6 @@ FLB_LONGSHOT_CEILING: float = 0.15
 # Station configuration: settlement station + neighbors
 CITIES: dict = {
     "NYC": {"settlement": "KNYC", "neighbors": ["KLGA", "KEWR"]},
-    "PHL": {"settlement": "KPHL", "neighbors": ["KPNE"]},
-    "CHI": {"settlement": "KMDW", "neighbors": ["KORD"]},
-    "MIA": {"settlement": "KMIA", "neighbors": ["KOPF"]},
-    "LA":  {"settlement": "KLAX", "neighbors": ["KHHR"]},
 }
 
 # Polling interval in seconds
@@ -58,10 +54,6 @@ NWS_CLI_POLL_INTERVAL_SECONDS: int = 1800
 # Settlement station coordinates for HRRR grid point extraction
 STATION_COORDS: dict = {
     "KNYC": (40.7789, -73.9692),
-    "KPHL": (39.8721, -75.2411),
-    "KMDW": (41.7868, -87.7522),
-    "KMIA": (25.7959, -80.2870),
-    "KLAX": (33.9425, -118.4081),
 }
 
 

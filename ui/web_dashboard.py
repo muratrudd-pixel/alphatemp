@@ -105,10 +105,10 @@ async def health():
 
 @app.get("/api/observations/{city}")
 async def observation_feed(city: str, date: str = None):
-    """Raw observation feed for the settlement station only.
+    """Unified observation feed — METAR, SPECI, and 6-hour synoptic max entries.
 
     Returns observations for the given day (midnight–midnight ET), newest first.
-    Defaults to today in ET.
+    Each entry has a source tag and is_new_high flag.
     """
     city = city.upper()
     if city not in CITIES:
@@ -120,49 +120,105 @@ async def observation_feed(city: str, date: str = None):
 
     con = get_connection()
     rows = con.execute(
-        """SELECT station_id, observed_at, temp_f, temp_c_tenth, raw_metar, ingested_at
+        """SELECT station_id, observed_at, temp_f, six_hr_max_c, raw_metar,
+                  ingested_at, ingest_source
             FROM observations
             WHERE station_id = ?
             AND observed_at >= ? AND observed_at < ?
-            ORDER BY observed_at DESC
-            LIMIT 200""",
+            ORDER BY observed_at ASC
+            LIMIT 500""",
         [station_id, day_start_utc, day_end_utc],
     ).fetchall()
 
-    observations = []
-    running_high = None
-    running_high_station = None
-    for sid, obs_at, temp_f, temp_c, metar, ingested in rows:
+    # Build unified feed with source detection
+    feed = []
+    for sid, obs_at, temp_f, six_hr_max_c, metar, ingested, ingest_src in rows:
+        # Report type from raw METAR text
+        report_type = "SPECI" if metar and metar.strip().startswith("SPECI") else "METAR"
+        # Combine API source + report type (e.g. "AWC SPECI", "Synoptic METAR")
+        api_label = (ingest_src or "synoptic").upper()
+        if api_label == "AWC":
+            source = f"AWC {report_type}"
+        elif api_label == "BACKFILL":
+            source = f"Backfill {report_type}"
+        else:
+            source = f"Synoptic {report_type}"
+
+        obs_at_iso = obs_at.isoformat()
+        ingested_iso = ingested.isoformat() if ingested else None
+
         if temp_f is not None:
-            observations.append({
+            feed.append({
                 "station_id": sid,
-                "observed_at": obs_at.isoformat(),
+                "observed_at": obs_at_iso,
+                "ingested_at": ingested_iso,
+                "source": source,
                 "temp_f": round(temp_f, 1),
-                "temp_c_tenth": round(temp_c, 1) if temp_c is not None else None,
-                "raw_metar": metar,
-                "ingested_at": ingested.isoformat() if ingested else None,
+                "obs_window": "snapshot",
+                "is_new_high": False,
             })
-            if running_high is None or temp_f > running_high:
-                running_high = temp_f
-                running_high_station = sid
+
+        if six_hr_max_c is not None:
+            six_hr_max_f = round(six_hr_max_c * 9.0 / 5.0 + 32.0, 1)
+            feed.append({
+                "station_id": sid,
+                "observed_at": obs_at_iso,
+                "ingested_at": ingested_iso,
+                "source": source,
+                "temp_f": six_hr_max_f,
+                "obs_window": "prior 6hrs",
+                "is_new_high": False,
+            })
+
+    # NWS CLI daily high — add as its own row if available
+    from core.timezone import ET as _ET
+    nws_date = date if date else datetime.now(_ET).strftime("%Y-%m-%d")
+    nws_row = con.execute(
+        "SELECT max_temp_f, ingested_at FROM nws_daily WHERE station_id = ? AND obs_date = ?",
+        [station_id, nws_date],
+    ).fetchone()
+    if nws_row and nws_row[0] is not None:
+        feed.append({
+            "station_id": station_id,
+            "observed_at": f"{nws_date}T17:00:00",  # noon ET = 17:00 UTC
+            "ingested_at": nws_row[1].isoformat() if nws_row[1] else None,
+            "source": "NWS CLI",
+            "temp_f": round(nws_row[0], 1),
+            "obs_window": "daily high",
+            "is_new_high": False,
+        })
+        # Re-sort after adding NWS CLI
+        feed.sort(key=lambda x: x["observed_at"])
+
+    # Track running high chronologically
+    running_high = None
+    for entry in feed:
+        if running_high is None or entry["temp_f"] > running_high:
+            running_high = entry["temp_f"]
+            entry["is_new_high"] = True
+
+    # Reverse for display (newest first)
+    feed.reverse()
 
     con.close()
     return {
         "city": city,
         "station_id": station_id,
-        "observations": observations,
+        "observations": feed,
         "running_high": round(running_high, 1) if running_high is not None else None,
-        "running_high_station": running_high_station,
     }
 
 
 @app.get("/api/forecast-points/{city}")
 async def forecast_point_feed(city: str, date: str = None):
-    """Forecast point feed — individual forecast temps grouped by model run.
+    """Forecast run summary — one row per model run showing expected high and deltas.
 
-    Returns points for the given day (midnight–midnight ET), newest model run first.
-    Defaults to today in ET.
+    Returns runs for the given day (midnight–midnight ET), newest first.
+    Each run shows its expected high, the time of that high, and the change
+    from the prior run.
     """
+    from collections import defaultdict
+
     city = city.upper()
     if city not in CITIES:
         return {"error": f"Unknown city: {city}"}
@@ -177,36 +233,68 @@ async def forecast_point_feed(city: str, date: str = None):
            FROM forecasts
            WHERE station_id = ?
            AND valid_at >= ? AND valid_at < ?
-           ORDER BY model_run DESC, valid_at ASC""",
+           ORDER BY model_run ASC, valid_at ASC""",
         [station_id, day_start_utc, day_end_utc],
     ).fetchall()
 
-    points = []
-    latest_run = None
-    forecast_high = None
+    # Group by model_run, find the high for each run
+    runs_data = defaultdict(lambda: {"points": [], "ingested_at": None})
     for model_run, valid_at, temp_f, ingested in rows:
         if temp_f is None:
             continue
-        if latest_run is None:
-            latest_run = model_run
-        lead_hours = max(0, round((valid_at - model_run).total_seconds() / 3600))
-        points.append({
+        entry = runs_data[model_run]
+        entry["points"].append((valid_at, temp_f))
+        if ingested and entry["ingested_at"] is None:
+            entry["ingested_at"] = ingested
+
+    # Build summaries with deltas from prior run
+    summaries = []
+    prev_high_f = None
+    prev_high_at = None
+    for model_run in sorted(runs_data.keys()):
+        entry = runs_data[model_run]
+        if not entry["points"]:
+            continue
+
+        # Find the high temp and its valid_at
+        best_valid, best_temp = max(entry["points"], key=lambda p: p[1])
+
+        high_f = round(best_temp, 1)
+        high_at = best_valid.isoformat()
+        ingested = entry["ingested_at"]
+
+        # Compute deltas from prior run
+        temp_change = round(high_f - prev_high_f, 1) if prev_high_f is not None else None
+        time_change_mins = None
+        if prev_high_at is not None:
+            delta_secs = (best_valid - prev_high_at_dt).total_seconds()
+            time_change_mins = round(delta_secs / 60)
+
+        summaries.append({
             "model_run": model_run.isoformat(),
-            "valid_at": valid_at.isoformat(),
-            "temp_f": round(temp_f, 1),
-            "lead_hours": lead_hours,
             "ingested_at": ingested.isoformat() if ingested else None,
+            "high_temp_f": high_f,
+            "high_valid_at": high_at,
+            "temp_change": temp_change,
+            "time_change_mins": time_change_mins,
         })
-        if forecast_high is None or temp_f > forecast_high:
-            forecast_high = temp_f
+
+        prev_high_f = high_f
+        prev_high_at = high_at
+        prev_high_at_dt = best_valid
+
+    # Reverse for display (newest first)
+    summaries.reverse()
 
     con.close()
+    latest_run = summaries[0]["model_run"] if summaries else None
+    forecast_high = summaries[0]["high_temp_f"] if summaries else None
     return {
         "city": city,
         "station_id": station_id,
-        "points": points,
-        "latest_run": latest_run.isoformat() if latest_run else None,
-        "forecast_high": round(forecast_high, 1) if forecast_high is not None else None,
+        "runs": summaries,
+        "latest_run": latest_run,
+        "forecast_high": forecast_high,
     }
 
 
@@ -239,7 +327,7 @@ async def forecast_curve(city: str, date: str = None):
     # Latest model run forecasts — scoped to day if date provided
     if day_start_utc:
         forecasts = con.execute(
-            """SELECT valid_at, temp_f FROM forecasts
+            """SELECT valid_at, temp_f, model_run, ingested_at FROM forecasts
                WHERE station_id = ?
                AND model_run = (
                    SELECT MAX(model_run) FROM forecasts
@@ -252,7 +340,7 @@ async def forecast_curve(city: str, date: str = None):
         ).fetchall()
     else:
         forecasts = con.execute(
-            """SELECT valid_at, temp_f FROM forecasts
+            """SELECT valid_at, temp_f, model_run, ingested_at FROM forecasts
                WHERE station_id = ?
                AND model_run = (SELECT MAX(model_run) FROM forecasts WHERE station_id = ?)
                ORDER BY valid_at""",
@@ -274,7 +362,7 @@ async def forecast_curve(city: str, date: str = None):
     ribbon = []
     forecast_points = []
     now = datetime.now(timezone.utc)
-    for valid_at, temp_f in forecasts:
+    for valid_at, temp_f, model_run_ts, ingested_ts in forecasts:
         if valid_at.tzinfo is None:
             ref = valid_at.replace(tzinfo=timezone.utc)
         else:
@@ -297,6 +385,8 @@ async def forecast_curve(city: str, date: str = None):
         forecast_points.append({
             "valid_at": valid_at.isoformat(),
             "temp_f": round(temp_f, 1),
+            "model_run": model_run_ts.isoformat() if model_run_ts else None,
+            "ingested_at": ingested_ts.isoformat() if ingested_ts else None,
         })
 
     # Prior model runs — always fetch (live and date modes)
@@ -359,7 +449,7 @@ async def forecast_curve(city: str, date: str = None):
     # Observations — settlement station only (include 6-hour synoptic max)
     if day_start_utc:
         observations = con.execute(
-            """SELECT observed_at, temp_f, six_hr_max_c FROM observations
+            """SELECT observed_at, temp_f, six_hr_max_c, ingested_at FROM observations
                WHERE station_id = ?
                AND observed_at >= ? AND observed_at < ?
                ORDER BY observed_at""",
@@ -368,7 +458,7 @@ async def forecast_curve(city: str, date: str = None):
     else:
         first_valid = forecasts[0][0]
         observations = con.execute(
-            """SELECT observed_at, temp_f, six_hr_max_c FROM observations
+            """SELECT observed_at, temp_f, six_hr_max_c, ingested_at FROM observations
                WHERE station_id = ?
                AND observed_at >= ?
                ORDER BY observed_at""",
@@ -380,10 +470,12 @@ async def forecast_curve(city: str, date: str = None):
     running_high_f = None
     running_high_at = None
     for row in observations:
-        observed_at_ts, temp_f, six_hr_max_c = row
+        observed_at_ts, temp_f, six_hr_max_c, obs_ingested = row
+        obs_ingested_iso = obs_ingested.isoformat() if obs_ingested else None
         if temp_f is not None:
             obs_points.append({
                 "observed_at": observed_at_ts.isoformat(), "temp_f": round(temp_f, 1),
+                "ingested_at": obs_ingested_iso,
             })
             if running_high_f is None or temp_f > running_high_f:
                 running_high_f = temp_f
@@ -394,10 +486,40 @@ async def forecast_curve(city: str, date: str = None):
             six_hr_max_f = round(six_hr_max_c * 9.0 / 5.0 + 32.0, 1)
             six_hr_maxes.append({
                 "observed_at": observed_at_ts.isoformat(), "temp_f": six_hr_max_f,
+                "ingested_at": obs_ingested_iso,
             })
             if running_high_f is None or six_hr_max_f > running_high_f:
                 running_high_f = six_hr_max_f
                 running_high_at = observed_at_ts.isoformat()
+
+    # Neighbor station observations (for overlay toggle)
+    neighbors = CITIES[city].get("neighbors", [])
+    neighbor_obs = {}
+    for nbr_id in neighbors:
+        if day_start_utc:
+            nbr_rows = con.execute(
+                """SELECT observed_at, temp_f, ingested_at FROM observations
+                   WHERE station_id = ?
+                   AND observed_at >= ? AND observed_at < ?
+                   ORDER BY observed_at""",
+                [nbr_id, day_start_utc, day_end_utc],
+            ).fetchall()
+        else:
+            nbr_rows = con.execute(
+                """SELECT observed_at, temp_f, ingested_at FROM observations
+                   WHERE station_id = ?
+                   AND observed_at >= ?
+                   ORDER BY observed_at""",
+                [nbr_id, first_valid],
+            ).fetchall()
+        neighbor_obs[nbr_id] = [
+            {
+                "observed_at": r[0].isoformat(),
+                "temp_f": round(r[1], 1),
+                "ingested_at": r[2].isoformat() if r[2] else None,
+            }
+            for r in nbr_rows if r[1] is not None
+        ]
 
     # Settlement high: prefer NWS daily (CLI thermometer) over running obs max
     observed_high = None
@@ -462,6 +584,7 @@ async def forecast_curve(city: str, date: str = None):
         "observed_high": observed_high,
         "observed_high_at": observed_high_at,
         "settlement_source": settlement_source,
+        "neighbor_obs": neighbor_obs,
     }
 
 

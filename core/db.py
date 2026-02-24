@@ -65,8 +65,17 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         except Exception:
             pass  # Column already exists
 
+    # Migration: add ingest_source to track which API inserted each row
+    try:
+        con.execute("ALTER TABLE observations ADD COLUMN ingest_source VARCHAR")
+    except Exception:
+        pass
+
     # One-time backfill: parse raw_metar for existing rows to populate 6-hour columns
     _backfill_6h_columns(con)
+
+    # One-time backfill: tag existing rows with ingest_source based on heuristics
+    _backfill_ingest_source(con)
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS drift_signals (
@@ -149,6 +158,29 @@ def _backfill_6h_columns(con: duckdb.DuckDBPyConnection) -> None:
             updated += 1
     if updated:
         logger.info(f"Backfilled 6-hour max/min for {updated} existing observations")
+
+
+def _backfill_ingest_source(con: duckdb.DuckDBPyConnection) -> None:
+    """Tag existing rows with ingest_source. Runs once."""
+    already_done = con.execute(
+        "SELECT COUNT(*) FROM observations WHERE ingest_source IS NOT NULL"
+    ).fetchone()[0]
+    if already_done > 0:
+        return
+
+    # Non-settlement stations are always Synoptic (AWC only polls 5 settlement stations)
+    awc_stations = {'KNYC', 'KPHL', 'KMDW', 'KMIA', 'KLAX'}
+    con.execute(
+        "UPDATE observations SET ingest_source = 'synoptic' WHERE station_id NOT IN "
+        + str(tuple(awc_stations))
+    )
+    # Settlement stations could be either — tag as 'synoptic' (first ingestor historically)
+    con.execute(
+        "UPDATE observations SET ingest_source = 'synoptic' WHERE ingest_source IS NULL"
+    )
+    count = con.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+    if count:
+        logger.info(f"Backfilled ingest_source for {count} existing observations")
 
 
 def get_connection(db_path: str = DEFAULT_DB_PATH) -> duckdb.DuckDBPyConnection:

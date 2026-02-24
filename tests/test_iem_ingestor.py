@@ -50,13 +50,13 @@ AWC_JSON_SPECI = [
 # Stub METAR — no Zulu timestamp, garbage temp
 AWC_JSON_STUB = [
     {
-        "icaoId": "KMIA",
+        "icaoId": "KNYC",
         "obsTime": 1771848000,  # 2026-02-23T12:00:00Z
         "reportTime": "2026-02-23T12:00:00.000Z",
         "temp": 22.5,
         "dewp": 18.0,
         "metarType": "METAR",
-        "rawOb": "METAR KMIA AUTO",
+        "rawOb": "METAR KNYC AUTO",
     }
 ]
 
@@ -157,7 +157,7 @@ async def test_iem_skips_stub_metar(test_db):
     ).fetchone()
     con.close()
 
-    assert row[0] == "KMIA"
+    assert row[0] == "KNYC"
     assert row[1] is None, f"Stub METAR should have temp_f=None, got {row[1]}"
     assert row[2] is None, f"Stub METAR should have temp_c_tenth=None, got {row[2]}"
 

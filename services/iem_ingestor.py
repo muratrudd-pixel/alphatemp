@@ -20,7 +20,7 @@ from services.ingestor import parse_t_group, parse_6h_max, parse_6h_min, _is_met
 AWC_BASE_URL = "https://aviationweather.gov/api/data/metar"
 
 # Settlement stations to poll
-AWC_STATIONS = ["KNYC", "KPHL", "KMDW", "KMIA", "KLAX"]
+AWC_STATIONS = ["KNYC"]
 
 USER_AGENT = "(alphatemp, contact@alphatemp.com)"
 
@@ -80,11 +80,11 @@ class IEMIngestor:
                 con.execute(
                     """INSERT INTO observations
                        (station_id, observed_at, temp_f, temp_c_tenth,
-                        six_hr_max_c, six_hr_min_c, raw_metar, ingested_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        six_hr_max_c, six_hr_min_c, raw_metar, ingested_at, ingest_source)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [row["station_id"], row["observed_at"], row["temp_f"],
                      row["temp_c_tenth"], row["six_hr_max_c"], row["six_hr_min_c"],
-                     row["raw_metar"], row["ingested_at"]],
+                     row["raw_metar"], row["ingested_at"], row["ingest_source"]],
                 )
                 inserted += 1
             except duckdb.ConstraintException:
@@ -141,6 +141,7 @@ class IEMIngestor:
                 "six_hr_min_c": six_hr_min_c,
                 "raw_metar": raw_ob,
                 "ingested_at": now,
+                "ingest_source": "awc",
             })
 
         return rows
