@@ -15,6 +15,8 @@ from core.db import get_connection
 from core.retry import retry_async
 
 T_GROUP_PATTERN = re.compile(r"\bT(\d)(\d{3})")
+SIX_HR_MAX_PATTERN = re.compile(r"\b1(\d)(\d{3})\b")
+SIX_HR_MIN_PATTERN = re.compile(r"\b2(\d)(\d{3})\b")
 METAR_TIMESTAMP = re.compile(r"\d{6}Z")
 
 
@@ -43,6 +45,24 @@ def parse_t_group(metar_remarks: str) -> Optional[float]:
     sign = -1 if match.group(1) == "1" else 1
     temp = int(match.group(2)) / 10.0
     return sign * temp
+
+
+def parse_6h_max(metar_remarks: str) -> Optional[float]:
+    """Extract 6-hour maximum temp (Celsius) from synoptic remark group 1xxxx."""
+    match = SIX_HR_MAX_PATTERN.search(metar_remarks)
+    if not match:
+        return None
+    sign = -1 if match.group(1) == "1" else 1
+    return sign * int(match.group(2)) / 10.0
+
+
+def parse_6h_min(metar_remarks: str) -> Optional[float]:
+    """Extract 6-hour minimum temp (Celsius) from synoptic remark group 2xxxx."""
+    match = SIX_HR_MIN_PATTERN.search(metar_remarks)
+    if not match:
+        return None
+    sign = -1 if match.group(1) == "1" else 1
+    return sign * int(match.group(2)) / 10.0
 
 
 SYNOPTIC_BASE_URL = "https://api.synopticdata.com/v2/stations/timeseries"
@@ -107,16 +127,24 @@ class SynopticIngestor:
                 # Parse T-group for high-res Celsius
                 temp_c_tenth = parse_t_group(metar_str)
 
+                # Parse 6-hour synoptic max/min
+                six_hr_max_c = parse_6h_max(metar_str)
+                six_hr_min_c = parse_6h_min(metar_str)
+
                 # Stub METARs carry garbage temps — discard them
                 if _is_metar_stub(metar_str):
                     temp_f = None
                     temp_c_tenth = None
+                    six_hr_max_c = None
+                    six_hr_min_c = None
 
                 rows.append({
                     "station_id": stid,
                     "observed_at": dt_str,
                     "temp_f": temp_f,
                     "temp_c_tenth": temp_c_tenth,
+                    "six_hr_max_c": six_hr_max_c,
+                    "six_hr_min_c": six_hr_min_c,
                     "raw_metar": metar_str,
                     "ingested_at": now.isoformat(),
                 })
@@ -135,10 +163,12 @@ class SynopticIngestor:
         for row in df.iter_rows(named=True):
             try:
                 con.execute(
-                    """INSERT INTO observations (station_id, observed_at, temp_f, temp_c_tenth, raw_metar, ingested_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO observations (station_id, observed_at, temp_f, temp_c_tenth,
+                       six_hr_max_c, six_hr_min_c, raw_metar, ingested_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     [row["station_id"], row["observed_at"], row["temp_f"],
-                     row["temp_c_tenth"], row["raw_metar"], row["ingested_at"]],
+                     row["temp_c_tenth"], row["six_hr_max_c"], row["six_hr_min_c"],
+                     row["raw_metar"], row["ingested_at"]],
                 )
                 inserted += 1
             except duckdb.ConstraintException:

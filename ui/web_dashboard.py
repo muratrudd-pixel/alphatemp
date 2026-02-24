@@ -356,10 +356,10 @@ async def forecast_curve(city: str, date: str = None):
                 for mr, pts in sorted_runs
             ]
 
-    # Observations — settlement station only
+    # Observations — settlement station only (include 6-hour synoptic max)
     if day_start_utc:
         observations = con.execute(
-            """SELECT observed_at, temp_f FROM observations
+            """SELECT observed_at, temp_f, six_hr_max_c FROM observations
                WHERE station_id = ?
                AND observed_at >= ? AND observed_at < ?
                ORDER BY observed_at""",
@@ -368,17 +368,36 @@ async def forecast_curve(city: str, date: str = None):
     else:
         first_valid = forecasts[0][0]
         observations = con.execute(
-            """SELECT observed_at, temp_f FROM observations
+            """SELECT observed_at, temp_f, six_hr_max_c FROM observations
                WHERE station_id = ?
                AND observed_at >= ?
                ORDER BY observed_at""",
             [station_id, first_valid],
         ).fetchall()
 
-    obs_points = [
-        {"observed_at": row[0].isoformat(), "temp_f": round(row[1], 1)}
-        for row in observations if row[1] is not None
-    ]
+    obs_points = []
+    six_hr_maxes = []
+    running_high_f = None
+    running_high_at = None
+    for row in observations:
+        observed_at_ts, temp_f, six_hr_max_c = row
+        if temp_f is not None:
+            obs_points.append({
+                "observed_at": observed_at_ts.isoformat(), "temp_f": round(temp_f, 1),
+            })
+            if running_high_f is None or temp_f > running_high_f:
+                running_high_f = temp_f
+                running_high_at = observed_at_ts.isoformat()
+
+        # 6-hour max may exceed the snapshot temp — track it for running high
+        if six_hr_max_c is not None:
+            six_hr_max_f = round(six_hr_max_c * 9.0 / 5.0 + 32.0, 1)
+            six_hr_maxes.append({
+                "observed_at": observed_at_ts.isoformat(), "temp_f": six_hr_max_f,
+            })
+            if running_high_f is None or six_hr_max_f > running_high_f:
+                running_high_f = six_hr_max_f
+                running_high_at = observed_at_ts.isoformat()
 
     # Settlement high: prefer NWS daily (CLI thermometer) over running obs max
     observed_high = None
@@ -402,11 +421,10 @@ async def forecast_curve(city: str, date: str = None):
         # Place NWS settlement dot at noon ET for display purposes
         observed_high_at = f"{nws_date}T17:00:00"  # noon ET = 17:00 UTC
         settlement_source = "nws_cli"
-    elif obs_points:
-        # Fallback: running max of settlement-station obs
-        best = max(obs_points, key=lambda p: p["temp_f"])
-        observed_high = best["temp_f"]
-        observed_high_at = best["observed_at"]
+    elif running_high_f is not None:
+        # Fallback: running max of settlement-station obs (including 6-hour maxes)
+        observed_high = round(running_high_f, 1)
+        observed_high_at = running_high_at
         settlement_source = "obs_running"
 
     # Get latest drift for this city
@@ -430,8 +448,10 @@ async def forecast_curve(city: str, date: str = None):
     con.close()
     return {
         "city": city,
+        "model_run": latest_mr.isoformat() if latest_mr else None,
         "forecasts": forecast_points,
         "observations": obs_points,
+        "six_hr_maxes": six_hr_maxes,
         "ribbon": ribbon,
         "prior_runs": prior_runs,
         "bias_adjusted_forecasts": bias_adjusted_points,

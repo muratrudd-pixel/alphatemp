@@ -10,7 +10,7 @@ from loguru import logger
 
 from core.constants import CITIES
 from core.db import get_connection
-from services.ingestor import parse_t_group
+from services.ingestor import parse_t_group, parse_6h_max, parse_6h_min
 
 SYNOPTIC_BASE_URL = "https://api.synopticdata.com/v2/stations/timeseries"
 
@@ -124,13 +124,17 @@ def backfill(
                     temp_c_tenth = parse_t_group(metar_str)
                     if temp_c_tenth is not None:
                         tgroup_parsed += 1
+                    six_hr_max_c = parse_6h_max(metar_str)
+                    six_hr_min_c = parse_6h_min(metar_str)
                 else:
                     temp_c_tenth = None
+                    six_hr_max_c = None
+                    six_hr_min_c = None
 
                 # Parse observed_at to datetime for consistent TIMESTAMP type
                 observed_at = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).replace(tzinfo=None)
 
-                rows.append((stid, observed_at, temp_f, temp_c_tenth, metar_str, now_ts))
+                rows.append((stid, observed_at, temp_f, temp_c_tenth, six_hr_max_c, six_hr_min_c, metar_str, now_ts))
 
         total_rows_seen += len(rows)
 
@@ -141,8 +145,9 @@ def backfill(
                 try:
                     con.execute(
                         """INSERT INTO observations
-                           (station_id, observed_at, temp_f, temp_c_tenth, raw_metar, ingested_at)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
+                           (station_id, observed_at, temp_f, temp_c_tenth,
+                            six_hr_max_c, six_hr_min_c, raw_metar, ingested_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                         list(row),
                     )
                     inserted += 1

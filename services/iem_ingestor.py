@@ -15,7 +15,7 @@ from loguru import logger
 from core.constants import IEM_POLL_INTERVAL_SECONDS
 from core.db import get_connection
 from core.retry import retry_async
-from services.ingestor import parse_t_group, _is_metar_stub
+from services.ingestor import parse_t_group, parse_6h_max, parse_6h_min, _is_metar_stub
 
 AWC_BASE_URL = "https://aviationweather.gov/api/data/metar"
 
@@ -79,10 +79,12 @@ class IEMIngestor:
             try:
                 con.execute(
                     """INSERT INTO observations
-                       (station_id, observed_at, temp_f, temp_c_tenth, raw_metar, ingested_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                       (station_id, observed_at, temp_f, temp_c_tenth,
+                        six_hr_max_c, six_hr_min_c, raw_metar, ingested_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     [row["station_id"], row["observed_at"], row["temp_f"],
-                     row["temp_c_tenth"], row["raw_metar"], row["ingested_at"]],
+                     row["temp_c_tenth"], row["six_hr_max_c"], row["six_hr_min_c"],
+                     row["raw_metar"], row["ingested_at"]],
                 )
                 inserted += 1
             except duckdb.ConstraintException:
@@ -114,10 +116,16 @@ class IEMIngestor:
 
             temp_f = None
             temp_c_tenth = None
+            six_hr_max_c = None
+            six_hr_min_c = None
 
             if not _is_metar_stub(raw_ob):
                 # T-group from raw METAR/SPECI string
                 temp_c_tenth = parse_t_group(raw_ob)
+
+                # 6-hour synoptic max/min
+                six_hr_max_c = parse_6h_max(raw_ob)
+                six_hr_min_c = parse_6h_min(raw_ob)
 
                 # AWC provides temp in Celsius — convert to F
                 temp_c = obs.get("temp")
@@ -129,6 +137,8 @@ class IEMIngestor:
                 "observed_at": observed_at,
                 "temp_f": temp_f,
                 "temp_c_tenth": temp_c_tenth,
+                "six_hr_max_c": six_hr_max_c,
+                "six_hr_min_c": six_hr_min_c,
                 "raw_metar": raw_ob,
                 "ingested_at": now,
             })

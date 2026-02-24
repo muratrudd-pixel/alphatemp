@@ -4,7 +4,7 @@ import duckdb
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from services.ingestor import parse_t_group, _is_metar_stub, SynopticIngestor
+from services.ingestor import parse_t_group, parse_6h_max, parse_6h_min, _is_metar_stub, SynopticIngestor
 from core.db import init_db
 
 
@@ -37,6 +37,49 @@ def test_parse_hot_day():
     assert parse_t_group("T03890350") == 38.9
 
 
+# --- 6-hour synoptic max/min parsing ---
+
+def test_6h_max_positive():
+    assert parse_6h_max("10017") == 1.7
+
+
+def test_6h_max_negative():
+    assert parse_6h_max("11006") == -0.6
+
+
+def test_6h_min_positive():
+    assert parse_6h_min("20017") == 1.7
+
+
+def test_6h_min_negative():
+    assert parse_6h_min("21022") == -2.2
+
+
+def test_6h_max_no_match():
+    assert parse_6h_max("RMK AO2 SLP135") is None
+
+
+def test_6h_min_no_match():
+    assert parse_6h_min("RMK AO2 SLP135") is None
+
+
+def test_6h_max_embedded_in_metar():
+    metar = "RMK AO2 SLP135 T00110028 10017 20006 53012"
+    assert parse_6h_max(metar) == 1.7
+
+
+def test_6h_min_embedded_in_metar():
+    metar = "RMK AO2 SLP135 T00110028 10017 20006 53012"
+    assert parse_6h_min(metar) == 0.6
+
+
+def test_6h_both_in_real_metar():
+    """Full KNYC 23:51 UTC synoptic METAR with both max and min groups."""
+    metar = "METAR KNYC 222351Z 31008KT 10SM FEW250 01/M03 A3032 RMK AO2 SLP280 T00110028 10017 20006 58020"
+    assert parse_6h_max(metar) == 1.7
+    assert parse_6h_min(metar) == 0.6
+
+
 TEST_DB = "data/test_alphatemp.duckdb"
 
 MOCK_SYNOPTIC_RESPONSE = {
@@ -49,7 +92,7 @@ MOCK_SYNOPTIC_RESPONSE = {
                 "air_temp_set_1": [7.2, 7.3],
                 "metar_set_1": [
                     "METAR KNYC 221200Z RMK AO2 T00720056",
-                    "METAR KNYC 221201Z RMK AO2 T00730058",
+                    "METAR KNYC 221201Z RMK AO2 T00730058 10089 20050",
                 ],
             },
         },
@@ -107,6 +150,42 @@ async def test_ingestor_stores_observations(test_db):
     # Check T-group parsing worked
     kmdw_row = [r for r in rows if r[0] == "KMDW"][0]
     assert kmdw_row[1] == -2.5
+
+
+@pytest.mark.asyncio
+async def test_6h_columns_stored_by_ingestor(test_db):
+    """Verify 6-hour max/min columns are parsed and stored during poll_once."""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = MOCK_SYNOPTIC_RESPONSE
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("services.ingestor.httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_class.return_value = mock_client
+
+        ingestor = SynopticIngestor(token="test_token", db_path=test_db)
+        await ingestor.poll_once()
+
+    con = duckdb.connect(test_db)
+    rows = con.execute(
+        "SELECT station_id, observed_at, six_hr_max_c, six_hr_min_c FROM observations ORDER BY station_id, observed_at"
+    ).fetchall()
+    con.close()
+
+    # KNYC 2nd obs has "10089 20050" -> max=8.9C, min=5.0C
+    knyc_rows = [r for r in rows if r[0] == "KNYC"]
+    assert knyc_rows[0][2] is None  # first obs has no 6h groups
+    assert knyc_rows[1][2] == 8.9   # 10089 -> +8.9C
+    assert knyc_rows[1][3] == 5.0   # 20050 -> +5.0C
+
+    # KMDW has no 6h groups
+    kmdw_rows = [r for r in rows if r[0] == "KMDW"]
+    assert kmdw_rows[0][2] is None
+    assert kmdw_rows[0][3] is None
 
 
 @pytest.mark.asyncio

@@ -94,12 +94,6 @@
                 <span id="ribbon-model-run" class="mono text-xs text-slate-500"></span>
             </div>
             <div id="ribbon-chart" class="chart-container"></div>
-            <div class="flex items-center gap-3 mt-2 px-2">
-                <span class="mono text-xs text-slate-500">Time Machine</span>
-                <input type="range" id="time-slider" min="0" max="1440" value="1440"
-                       class="flex-1 accent-teal-400" step="1">
-                <span id="slider-label" class="mono text-xs text-slate-400 w-16 text-right">LIVE</span>
-            </div>
         </div>
 
         <!-- Data Feeds Row -->
@@ -267,15 +261,12 @@
     }
 
     // -----------------------------------------------------------------------
-    // Ribbon Chart — fetch/cache + render split for Time Machine
+    // Ribbon Chart
     // -----------------------------------------------------------------------
-    let cachedRibbonData = null;
-
     async function renderRibbon(city) {
         const dateParam = getSelectedDate() ? `?date=${getSelectedDate()}` : '';
         const data = await fetchJSON(`/api/forecast-curve/${city}${dateParam}`);
         if (!data || !data.forecasts.length) {
-            cachedRibbonData = null;
             Plotly.react('ribbon-chart', [], {
                 ...basePlotLayout,
                 annotations: [{ text: 'No forecast data', showarrow: false, font: { size: 14, color: FONT_COLOR }, xref: 'paper', yref: 'paper', x: 0.5, y: 0.5 }]
@@ -283,36 +274,6 @@
             document.getElementById('ribbon-model-run').textContent = '';
             return;
         }
-        cachedRibbonData = data;
-        // Reset slider to LIVE
-        document.getElementById('time-slider').value = 1440;
-        document.getElementById('slider-label').textContent = 'LIVE';
-        renderChart(data);
-    }
-
-    function filterDataForTime(fullData, sliderMinutes) {
-        if (sliderMinutes >= 1440) return fullData;
-
-        // Build cutoff as an ET datetime string for today
-        const selectedDate = getSelectedDate() || new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-        const hh = String(Math.floor(sliderMinutes / 60)).padStart(2, '0');
-        const mm = String(sliderMinutes % 60).padStart(2, '0');
-        const cutoffET = selectedDate + 'T' + hh + ':' + mm + ':00';
-
-        // Filter observations: only those observed before cutoff (ET)
-        const obs = fullData.observations.filter(o => toET(o.observed_at) <= cutoffET);
-
-        // For forecasts: find the model run whose points we're using
-        // The "current" forecasts from the API are the latest run
-        // Prior runs are older — in time machine, if the latest run started after cutoff,
-        // we need to demote it to a ghost and promote the next-oldest
-        // Simplification: keep current forecasts (they represent the model state)
-        // but only show obs up to the cutoff
-
-        return { ...fullData, observations: obs };
-    }
-
-    function renderChart(data) {
         const fcstX = data.forecasts.map(p => toET(p.valid_at));
         const fcstY = data.forecasts.map(p => p.temp_f);
         const upperY = data.ribbon.map(p => p.upper_90);
@@ -479,30 +440,24 @@
             hovertemplate: '%{y:.1f}°F<extra>' + run.model_run + '</extra>',
         }));
 
+        // 6-hour synoptic max markers (orange triangles)
+        const trace6hMax = (data.six_hr_maxes && data.six_hr_maxes.length > 0) ? {
+            x: data.six_hr_maxes.map(p => toET(p.observed_at)),
+            y: data.six_hr_maxes.map(p => p.temp_f),
+            type: 'scatter', mode: 'markers',
+            marker: { size: 10, symbol: 'triangle-left', color: '#f97316' },
+            name: '6hr High',
+            hovertemplate: '%{y:.1f}°F<extra>6-hour max (peaked before this time)</extra>',
+        } : null;
+
         const allTraces = [traceUpper, traceLower, traceInnerUpper, traceInnerLower,
              ...priorTraces, traceFcst, traceAdj, traceObs];
+        if (trace6hMax) allTraces.push(trace6hMax);
         if (traceSettlement) allTraces.push(traceSettlement);
 
         Plotly.react('ribbon-chart', allTraces, layout, plotConfig);
         document.getElementById('ribbon-model-run').textContent = selectedCity;
     }
-
-    // Time Machine slider handler
-    document.getElementById('time-slider').addEventListener('input', (e) => {
-        const val = parseInt(e.target.value, 10);
-        const label = document.getElementById('slider-label');
-        if (val >= 1440) {
-            label.textContent = 'LIVE';
-        } else {
-            const hh = String(Math.floor(val / 60)).padStart(2, '0');
-            const mm = String(val % 60).padStart(2, '0');
-            label.textContent = hh + ':' + mm;
-        }
-        if (cachedRibbonData) {
-            const filtered = filterDataForTime(cachedRibbonData, val);
-            renderChart(filtered);
-        }
-    });
 
     // -----------------------------------------------------------------------
     // Market Intelligence

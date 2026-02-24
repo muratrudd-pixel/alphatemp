@@ -58,6 +58,16 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         except Exception:
             pass  # Column already exists
 
+    # Migration: add 6-hour synoptic max/min columns to observations
+    for col in ("six_hr_max_c", "six_hr_min_c"):
+        try:
+            con.execute(f"ALTER TABLE observations ADD COLUMN {col} DOUBLE")
+        except Exception:
+            pass  # Column already exists
+
+    # One-time backfill: parse raw_metar for existing rows to populate 6-hour columns
+    _backfill_6h_columns(con)
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS drift_signals (
             city             VARCHAR NOT NULL,
@@ -109,6 +119,36 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
 
     logger.info("Database tables initialized")
     con.close()
+
+
+def _backfill_6h_columns(con: duckdb.DuckDBPyConnection) -> None:
+    """Parse raw_metar for existing rows to populate six_hr_max_c/min_c.
+
+    Only runs once — skips if any row already has a non-NULL value.
+    """
+    already_done = con.execute(
+        "SELECT COUNT(*) FROM observations WHERE six_hr_max_c IS NOT NULL OR six_hr_min_c IS NOT NULL"
+    ).fetchone()[0]
+    if already_done > 0:
+        return
+
+    from services.ingestor import parse_6h_max, parse_6h_min
+
+    rows = con.execute(
+        "SELECT rowid, raw_metar FROM observations WHERE raw_metar IS NOT NULL"
+    ).fetchall()
+    updated = 0
+    for rowid, metar in rows:
+        max_c = parse_6h_max(metar)
+        min_c = parse_6h_min(metar)
+        if max_c is not None or min_c is not None:
+            con.execute(
+                "UPDATE observations SET six_hr_max_c = ?, six_hr_min_c = ? WHERE rowid = ?",
+                [max_c, min_c, rowid],
+            )
+            updated += 1
+    if updated:
+        logger.info(f"Backfilled 6-hour max/min for {updated} existing observations")
 
 
 def get_connection(db_path: str = DEFAULT_DB_PATH) -> duckdb.DuckDBPyConnection:
