@@ -50,6 +50,8 @@
         .signal-overpriced { background: var(--overpriced-bg); }
         .fade-in { animation: fadeIn 0.4s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes flash-new { 0% { background: rgba(245,158,11,0.3); } 100% { background: transparent; } }
+        .flash-new { animation: flash-new 2s ease-out; }
         /* Plotly container sizing */
         .chart-container { width: 100%; min-height: 340px; }
         @media (max-width: 1023px) {
@@ -79,6 +81,8 @@
             </select>
             <input type="date" id="date-select" class="text-sm mono" style="background:var(--bg-panel); border:1px solid rgba(148,163,184,0.2); color:var(--text-primary); border-radius:0.375rem; padding:0.375rem 0.75rem;">
             <div id="clock" class="mono text-sm text-slate-400"></div>
+            <span id="refresh-countdown" class="mono text-xs text-slate-500">60s</span>
+            <span id="last-updated" class="mono text-xs text-slate-600"></span>
         </div>
     </header>
 
@@ -90,6 +94,12 @@
                 <span id="ribbon-model-run" class="mono text-xs text-slate-500"></span>
             </div>
             <div id="ribbon-chart" class="chart-container"></div>
+            <div class="flex items-center gap-3 mt-2 px-2">
+                <span class="mono text-xs text-slate-500">Time Machine</span>
+                <input type="range" id="time-slider" min="0" max="1440" value="1440"
+                       class="flex-1 accent-teal-400" step="1">
+                <span id="slider-label" class="mono text-xs text-slate-400 w-16 text-right">LIVE</span>
+            </div>
         </div>
 
         <!-- Data Feeds Row -->
@@ -204,8 +214,9 @@
     };
 
     const plotConfig = {
-        displayModeBar: false,
-        scrollZoom: false,
+        displayModeBar: true,
+        modeBarButtonsToRemove: ['toImage', 'lasso2d', 'select2d', 'autoScale2d'],
+        scrollZoom: true,
         responsive: true,
     };
 
@@ -256,12 +267,15 @@
     }
 
     // -----------------------------------------------------------------------
-    // Ribbon Chart
+    // Ribbon Chart — fetch/cache + render split for Time Machine
     // -----------------------------------------------------------------------
+    let cachedRibbonData = null;
+
     async function renderRibbon(city) {
         const dateParam = getSelectedDate() ? `?date=${getSelectedDate()}` : '';
         const data = await fetchJSON(`/api/forecast-curve/${city}${dateParam}`);
         if (!data || !data.forecasts.length) {
+            cachedRibbonData = null;
             Plotly.react('ribbon-chart', [], {
                 ...basePlotLayout,
                 annotations: [{ text: 'No forecast data', showarrow: false, font: { size: 14, color: FONT_COLOR }, xref: 'paper', yref: 'paper', x: 0.5, y: 0.5 }]
@@ -269,13 +283,41 @@
             document.getElementById('ribbon-model-run').textContent = '';
             return;
         }
+        cachedRibbonData = data;
+        // Reset slider to LIVE
+        document.getElementById('time-slider').value = 1440;
+        document.getElementById('slider-label').textContent = 'LIVE';
+        renderChart(data);
+    }
 
+    function filterDataForTime(fullData, sliderMinutes) {
+        if (sliderMinutes >= 1440) return fullData;
+
+        // Build cutoff as an ET datetime string for today
+        const selectedDate = getSelectedDate() || new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        const hh = String(Math.floor(sliderMinutes / 60)).padStart(2, '0');
+        const mm = String(sliderMinutes % 60).padStart(2, '0');
+        const cutoffET = selectedDate + 'T' + hh + ':' + mm + ':00';
+
+        // Filter observations: only those observed before cutoff (ET)
+        const obs = fullData.observations.filter(o => toET(o.observed_at) <= cutoffET);
+
+        // For forecasts: find the model run whose points we're using
+        // The "current" forecasts from the API are the latest run
+        // Prior runs are older — in time machine, if the latest run started after cutoff,
+        // we need to demote it to a ghost and promote the next-oldest
+        // Simplification: keep current forecasts (they represent the model state)
+        // but only show obs up to the cutoff
+
+        return { ...fullData, observations: obs };
+    }
+
+    function renderChart(data) {
         const fcstX = data.forecasts.map(p => toET(p.valid_at));
         const fcstY = data.forecasts.map(p => p.temp_f);
         const upperY = data.ribbon.map(p => p.upper_90);
         const lowerY = data.ribbon.map(p => p.lower_90);
         const ribbonX = data.ribbon.map(p => toET(p.valid_at));
-        const ribbonStd = data.ribbon.map(p => p.std);
         const obsX = data.observations.map(p => toET(p.observed_at));
         const obsY = data.observations.map(p => p.temp_f);
 
@@ -290,7 +332,6 @@
             const center = fcstMap[p.valid_at] ?? ((p.upper_90 + p.lower_90) / 2);
             return Math.round((center - 0.674 * p.std) * 10) / 10;
         });
-        // Sigma lookup also uses original UTC keys
         const fcstStdMapUTC = {};
         data.ribbon.forEach(p => { fcstStdMapUTC[p.valid_at] = p.std; });
 
@@ -338,6 +379,16 @@
             customdata: fcstSigma,
             hovertemplate: '%{y:.1f}°F (σ=%{customdata:.2f})<extra></extra>',
         };
+        // Bias-adjusted HRRR forecast (solid teal)
+        const adjX = data.bias_adjusted_forecasts.map(p => toET(p.valid_at));
+        const adjY = data.bias_adjusted_forecasts.map(p => p.temp_f);
+        const traceAdj = {
+            x: adjX, y: adjY,
+            type: 'scatter', mode: 'lines',
+            line: { color: '#2dd4bf', width: 2.5 },
+            name: `Bias-Adj HRRR (${data.adjustment >= 0 ? '+' : ''}${data.adjustment}°F)`,
+            hovertemplate: '%{y:.1f}°F<extra>bias-adjusted</extra>',
+        };
         // Observed actuals
         const traceObs = {
             x: obsX, y: obsY,
@@ -351,7 +402,7 @@
         // Settlement high — diamond (NWS CLI) or circle (running obs estimate)
         const isNWS = data.settlement_source === 'nws_cli';
         const traceSettlement = data.observed_high !== null && data.observed_high_at ? {
-            x: [isNWS ? toET(data.observed_high_at) : toET(data.observed_high_at)],
+            x: [toET(data.observed_high_at)],
             y: [data.observed_high],
             type: 'scatter', mode: 'markers',
             marker: {
@@ -384,7 +435,7 @@
             line: { color: 'rgba(148,163,184,0.4)', width: 1, dash: 'dash' },
         };
 
-        // Drift annotation: show how observations are running vs forecast
+        // Drift annotation
         const drift = data.drift || 0;
         const bias = data.bias || 0;
         const driftSign = drift >= 0 ? '+' : '';
@@ -411,6 +462,7 @@
             legend: { x: 0, y: 1.02, orientation: 'h', font: { size: 10 } },
             yaxis: { ...basePlotLayout.yaxis, title: { text: '°F', standoff: 8, font: { size: 10 } } },
             xaxis: xaxisConfig,
+            dragmode: 'zoom',
             shapes: [nowShape, ...settlementShapes],
             annotations: [driftAnnotation],
         };
@@ -428,12 +480,29 @@
         }));
 
         const allTraces = [traceUpper, traceLower, traceInnerUpper, traceInnerLower,
-             ...priorTraces, traceFcst, traceObs];
+             ...priorTraces, traceFcst, traceAdj, traceObs];
         if (traceSettlement) allTraces.push(traceSettlement);
 
         Plotly.react('ribbon-chart', allTraces, layout, plotConfig);
-        document.getElementById('ribbon-model-run').textContent = city;
+        document.getElementById('ribbon-model-run').textContent = selectedCity;
     }
+
+    // Time Machine slider handler
+    document.getElementById('time-slider').addEventListener('input', (e) => {
+        const val = parseInt(e.target.value, 10);
+        const label = document.getElementById('slider-label');
+        if (val >= 1440) {
+            label.textContent = 'LIVE';
+        } else {
+            const hh = String(Math.floor(val / 60)).padStart(2, '0');
+            const mm = String(val % 60).padStart(2, '0');
+            label.textContent = hh + ':' + mm;
+        }
+        if (cachedRibbonData) {
+            const filtered = filterDataForTime(cachedRibbonData, val);
+            renderChart(filtered);
+        }
+    });
 
     // -----------------------------------------------------------------------
     // Market Intelligence
@@ -498,6 +567,8 @@
         return d.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
     }
 
+    let prevObsCount = 0;
+
     async function refreshObsFeed(city) {
         const dateParam = getSelectedDate() ? `?date=${getSelectedDate()}` : '';
         const data = await fetchJSON(`/api/observations/${city}${dateParam}`);
@@ -507,14 +578,21 @@
         if (!data || !data.observations || data.observations.length === 0) {
             body.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-slate-500">No observations</td></tr>';
             status.textContent = '';
+            prevObsCount = 0;
             return;
         }
 
-        body.innerHTML = data.observations.map(o => {
+        const newCount = data.observations.length;
+        const hasNew = newCount > prevObsCount && prevObsCount > 0;
+        const newRows = hasNew ? newCount - prevObsCount : 0;
+        prevObsCount = newCount;
+
+        body.innerHTML = data.observations.map((o, i) => {
             const timeET = formatETShort(o.observed_at);
             const metar = o.raw_metar ? o.raw_metar.substring(0, 40) + (o.raw_metar.length > 40 ? '...' : '') : '--';
             const ingested = o.ingested_at ? formatETShort(o.ingested_at) : '--';
-            return `<tr class="border-b border-slate-800/50">
+            const flashClass = (hasNew && i < newRows) ? ' flash-new' : '';
+            return `<tr class="border-b border-slate-800/50${flashClass}">
                 <td class="py-1.5 pr-4 text-slate-300">${timeET}</td>
                 <td class="py-1.5 pr-4 text-slate-400">${o.station_id}</td>
                 <td class="py-1.5 pr-4 text-amber-400">${o.temp_f.toFixed(1)}</td>
@@ -571,6 +649,8 @@
     // -----------------------------------------------------------------------
     // Orchestration
     // -----------------------------------------------------------------------
+    let countdown = 60;
+
     async function refreshSelectedCity() {
         await Promise.all([
             renderRibbon(selectedCity),
@@ -578,11 +658,22 @@
             refreshFcstFeed(selectedCity),
             refreshMarket(selectedCity),
         ]);
+        // Update last-updated timestamp
+        const now = new Date();
+        const ts = now.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        document.getElementById('last-updated').textContent = 'upd ' + ts;
+        countdown = 60;
     }
 
     async function refreshAll() {
         await refreshSelectedCity();
     }
+
+    // Countdown timer — ticks every second
+    setInterval(() => {
+        countdown = Math.max(0, countdown - 1);
+        document.getElementById('refresh-countdown').textContent = countdown + 's';
+    }, 1000);
 
     // Initial load
     refreshAll();

@@ -299,7 +299,7 @@ async def forecast_curve(city: str, date: str = None):
             "temp_f": round(temp_f, 1),
         })
 
-    # Prior model runs (only when date is provided)
+    # Prior model runs — always fetch (live and date modes)
     prior_runs = []
     if day_start_utc:
         latest_mr = con.execute(
@@ -327,6 +327,33 @@ async def forecast_curve(city: str, date: str = None):
             prior_runs = [
                 {"model_run": mr.isoformat(), "points": pts}
                 for mr, pts in sorted(prior_by_run.items(), reverse=True)
+            ][:5]
+    else:
+        # Live mode: prior runs overlapping the current forecast window
+        latest_mr = con.execute(
+            "SELECT MAX(model_run) FROM forecasts WHERE station_id = ?",
+            [station_id],
+        ).fetchone()[0]
+        if latest_mr:
+            first_valid = forecasts[0][0]
+            prior_rows = con.execute(
+                """SELECT model_run, valid_at, temp_f FROM forecasts
+                   WHERE station_id = ? AND model_run != ?
+                   AND valid_at >= ?
+                   ORDER BY model_run DESC, valid_at ASC""",
+                [station_id, latest_mr, first_valid],
+            ).fetchall()
+
+            prior_by_run = defaultdict(list)
+            for mr, va, tf in prior_rows:
+                if tf is not None:
+                    prior_by_run[mr].append({
+                        "valid_at": va.isoformat(), "temp_f": round(tf, 1),
+                    })
+            sorted_runs = sorted(prior_by_run.items(), reverse=True)[:5]
+            prior_runs = [
+                {"model_run": mr.isoformat(), "points": pts}
+                for mr, pts in sorted_runs
             ]
 
     # Observations — settlement station only
@@ -393,6 +420,13 @@ async def forecast_curve(city: str, date: str = None):
     # Historical bias for this station
     bias_val = round(bias.mean_bias, 2) if bias else 0.0
 
+    # Bias adjustment (same formula as ProbabilityEngine line 212)
+    adjustment = round(-bias_val + drift, 2)
+    bias_adjusted_points = [
+        {"valid_at": p["valid_at"], "temp_f": round(p["temp_f"] + adjustment, 1)}
+        for p in forecast_points
+    ]
+
     con.close()
     return {
         "city": city,
@@ -400,6 +434,8 @@ async def forecast_curve(city: str, date: str = None):
         "observations": obs_points,
         "ribbon": ribbon,
         "prior_runs": prior_runs,
+        "bias_adjusted_forecasts": bias_adjusted_points,
+        "adjustment": adjustment,
         "drift": drift,
         "bias": bias_val,
         "now_utc": now.isoformat(),
