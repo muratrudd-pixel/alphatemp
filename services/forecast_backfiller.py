@@ -1,4 +1,4 @@
-"""HRRR 12z forecast backfiller — pulls 90 days of historical runs via Herbie."""
+"""HRRR forecast backfiller — pulls historical runs via Herbie."""
 
 import time
 from datetime import datetime, timedelta, timezone
@@ -11,16 +11,18 @@ from services.forecast import HRRRFetcher
 
 def backfill_forecasts(
     days_back: int = 90,
+    run_hour: int = 12,
     db_path: str = "data/alphatemp.duckdb",
     delay_seconds: float = 2.0,
 ) -> int:
-    """Pull historical 12z HRRR runs for all settlement stations.
+    """Pull historical HRRR runs for all settlement stations.
 
-    One 12z run per day, forecast hours 1-18, 5 stations.
+    One run per day at the specified hour, forecast hours 1-18, 1 station.
     Idempotent: skips runs that already exist in the database.
 
     Args:
         days_back: Number of days to look back (default 90).
+        run_hour: UTC hour of the model run (default 12).
         db_path: Path to DuckDB database.
         delay_seconds: Pause between HRRR runs for rate limiting.
 
@@ -38,7 +40,7 @@ def backfill_forecasts(
     day_num = 0
 
     logger.info(
-        f"Backfilling 12z HRRR runs from {start_date} to {end_date} "
+        f"Backfilling {run_hour:02d}z HRRR runs from {start_date} to {end_date} "
         f"({days_back} days, {delay_seconds}s delay)"
     )
 
@@ -46,7 +48,7 @@ def backfill_forecasts(
     while current < end_date:
         day_num += 1
         pct = int(day_num / days_back * 100)
-        model_run = datetime(current.year, current.month, current.day, 12, tzinfo=timezone.utc)
+        model_run = datetime(current.year, current.month, current.day, run_hour, tzinfo=timezone.utc)
 
         # Idempotent check: skip if we already have data for this run
         existing = con.execute(
@@ -85,5 +87,8 @@ def backfill_forecasts(
 
 
 if __name__ == "__main__":
+    import sys
     init_db()
-    backfill_forecasts()
+    hour = int(sys.argv[1]) if len(sys.argv) > 1 else 12
+    days = int(sys.argv[2]) if len(sys.argv) > 2 else 90
+    backfill_forecasts(days_back=days, run_hour=hour)
