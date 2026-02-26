@@ -5,36 +5,25 @@
 
 ---
 
-## Current Phase: 0 — Data Foundation
+## Current Phase: 2 — Enhanced Variables
 
-### Status Snapshot
-| Task | Status | Notes |
-|------|--------|-------|
-| HRRR 06z backfill | DONE | 1,900 days |
-| HRRR 12z backfill | DONE | 1,900 days |
-| HRRR 00z backfill | IN PROGRESS | 463 days in main DB. Backfilling to temp DB (backfill_parallel.py). Previous run crashed DuckDB — WAL corrupted, recovered by removing WAL. Lost ~171 days of unflushed writes. |
-| HRRR 18z backfill | IN PROGRESS | Running via backfill_parallel.py to temp DB. Started fresh (old temp DB was deleted by script). |
-| Merge temp DBs | BLOCKED | Waiting for 00z + 18z backfills to complete. Run `scripts/backfill_merge.py` after both finish. |
-| NWS Daily | DONE | 1,900 days (ACIS backfill + 4 CLI entries) |
-| KNYC Observations | DONE | 57,692 rows, 1,900 days |
-| Market tick collection | ONGOING | Only 1 day of history. Collecting via MarketFetcher on deployed instance. SILENT BLOCKER for Phase 4. |
-| DataProvider interface | NOT STARTED | `services/data_provider.py` — ABC + Live + Backtest implementations |
-| Backtester class | NOT STARTED | `services/backtester.py` — replay engine |
-| ProbabilityEngine refactor | NOT STARTED | Refactor to accept DataProvider instead of direct DB queries |
+Phase 1 is complete. The walk-forward per-run-hour bias correction model scores 0.8356 Brier (18% better than uniform). Next: can additional variables (temperature regime, season, etc.) explain more of the HRRR error?
 
-### Known Issues
-- DuckDB 1.4.4 segfaults on long write sessions. Use `backfill_parallel.py` (temp DBs) for all future backfills. Consider periodic CHECKPOINT or DuckDB upgrade.
-- Venv pip is broken (old path). Use `python3 -m pip` for installs.
-- `backfill_parallel.py` deletes any existing temp DB on start — beware of re-running.
+### What's Proven
+- Per-run-hour expanding-window bias correction works (Brier 0.84)
+- Each run hour has distinct bias: 00z=-0.9°F, 06z=-0.2°F, 12z=-0.3°F, 18z=-0.7°F
+- Student-t distribution doesn't help despite heavy tails — Gaussian wins
+- Kalshi market scores ~0.63 at overnight hours — we need to roughly halve our score to compete
+
+### Key Files
+- `services/backtester.py` — walk_forward_model, walk_forward_t_model, all model functions
+- `scripts/phase1_analysis.py` — runs all 4 models and outputs comparison table
+- `tests/test_data_provider.py` — 26 tests including 6 walk-forward tests
 
 ### Next Steps (in order)
-1. Wait for 00z + 18z backfills to complete
-2. Run `scripts/backfill_merge.py` to merge temp DBs into main
-3. Verify all 4 run hours show ~1,900 days in main DB
-4. Build DataProvider interface + BacktestDataProvider
-5. Build Backtester class
-6. Refactor ProbabilityEngine to use DataProvider
-7. Run backtester with dummy model (uniform distribution) to verify infrastructure
+1. Decide whether to productionize walk-forward (schema migration) or move straight to Phase 2
+2. Phase 2: test additional variables against HRRR error (season, temperature regime, etc.)
+3. Continue market tick collection (silent blocker for Phase 4)
 
 ---
 
@@ -42,8 +31,8 @@
 
 | Phase | Gate | Result | Date |
 |-------|------|--------|------|
-| 0 | Backtester runs end-to-end with dummy model | — | — |
-| 1 | Bias-corrected HRRR beats naive baseline (Brier score) | — | — |
+| 0 | Backtester runs end-to-end with dummy model | PASSED | 2026-02-25 |
+| 1 | Walk-forward per-run-hour beats baselines (Brier 0.84 vs 1.02) | PASSED | 2026-02-25 |
 | 2 | Enhanced variables improve Brier score over flat bias | — | — |
 | 3 | Ensemble beats best single model | — | — |
 | 4 | Simulated P&L positive net of fees | — | — |
@@ -61,3 +50,11 @@
 - Reviewed and revised master plan — shifted from theory-first to data-first approach
 - Key decision: evaluate on Kalshi bracket Brier score from Phase 1 onward
 - Created MASTER-PLAN.md and this PROGRESS.md
+
+### 2026-02-25
+- Phase 0 gate passed: backtester runs end-to-end (7,607 evaluations, ~3s)
+- Built walk-forward per-run-hour bias correction (Phase 1)
+- Results: Brier 0.8356 (18% over uniform, 13% over single-bias)
+- Student-t tested and killed (doesn't beat Gaussian)
+- Computed Kalshi market Brier scores by time of day — market scores 0.63 overnight, 0.14 by 18z
+- Phase 1 gate passed

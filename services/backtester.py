@@ -11,6 +11,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import duckdb
 from loguru import logger
+from scipy.stats import norm, t as student_t
 
 from core.constants import CITIES
 from core.db import get_connection
@@ -189,6 +190,137 @@ def bias_corrected_model(provider: BacktestDataProvider, ref_time: datetime) -> 
     if forecast is None:
         return None
     return forecast.bracket_probs
+
+
+# ---------------------------------------------------------------------------
+# Walk-forward bias-corrected models (Phase 1)
+# ---------------------------------------------------------------------------
+
+# Minimum number of prior dates required before we trust the bias estimate
+WALK_FORWARD_MIN_DAYS = 90
+
+
+def _compute_bracket_probs_from_dist(dist, center, std, radius=15):
+    # type: (object, float, float, int) -> Dict[int, float]
+    """Compute P(high = k°F) for 1°F integer brackets using any scipy dist.
+
+    dist must support .cdf(x) — e.g. norm(0,1) or t(df).
+    """
+    center_int = round(center)
+    probs = {}
+    for k in range(center_int - radius, center_int + radius + 1):
+        p = dist.cdf((k + 0.5 - center) / std) - dist.cdf((k - 0.5 - center) / std)
+        if p > 0.0001:
+            probs[k] = round(p, 4)
+
+    total = sum(probs.values())
+    if total > 0:
+        probs = {k: round(v / total, 4) for k, v in probs.items()}
+    return probs
+
+
+def _walk_forward_bias_query(con, run_hour, station_id, current_date):
+    # type: (duckdb.DuckDBPyConnection, int, str, date) -> Optional[tuple]
+    """Expanding-window bias stats from all dates BEFORE current_date for one run_hour.
+
+    Returns (mean_bias, std_error, n, excess_kurtosis) or None.
+    Error = MAX(forecast_high) - nws_daily.max_temp_f (NWS settlement truth).
+    """
+    row = con.execute("""
+        SELECT
+            AVG(error) as mean_bias,
+            STDDEV(error) as std_error,
+            COUNT(*) as n,
+            (AVG(POWER(error - sub.global_mean, 4)) /
+             POWER(GREATEST(STDDEV(error), 0.01), 4)) - 3.0 as excess_kurtosis
+        FROM (
+            SELECT
+                MAX(f.temp_f) - n.max_temp_f as error,
+                AVG(MAX(f.temp_f) - n.max_temp_f) OVER () as global_mean
+            FROM nws_daily n
+            JOIN forecasts f ON f.station_id = n.station_id
+                AND f.model_run::DATE = n.obs_date
+                AND EXTRACT(HOUR FROM f.model_run) = ?
+            WHERE n.station_id = ?
+                AND n.obs_date < ?
+                AND n.max_temp_f IS NOT NULL
+            GROUP BY n.obs_date, n.max_temp_f
+        ) sub
+    """, [run_hour, station_id, current_date]).fetchone()
+
+    if not row or row[2] is None or row[2] < WALK_FORWARD_MIN_DAYS:
+        return None
+    return row  # (mean_bias, std_error, n, excess_kurtosis)
+
+
+def walk_forward_model(provider, ref_time):
+    # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+    """Walk-forward bias-corrected Gaussian using per-run-hour stats.
+
+    For each evaluation:
+    1. Computes expanding-window mean bias and std from ALL prior dates
+       (strict walk-forward: obs_date < current_date, no peeking)
+    2. Uses NWS settlement truth (nws_daily.max_temp_f), not observations
+    3. Per-run-hour: 00z, 06z, 12z, 18z each get their own bias/std
+    4. No drift, stability, or convergence factors — isolate the bias correction effect
+    """
+    con = provider._shared_con
+    station_id = provider.station_id
+    run_hour = provider.model_run.hour
+    current_date = provider.model_run.date()
+
+    fcst_high = provider.get_forecast_high(station_id)
+    if fcst_high is None:
+        return None
+
+    stats = _walk_forward_bias_query(con, run_hour, station_id, current_date)
+    if stats is None:
+        return None
+
+    mean_bias, std_error = stats[0], stats[1]
+    std = max(0.3, std_error if std_error else 2.0)
+    center = fcst_high - mean_bias
+
+    return _compute_bracket_probs_from_dist(norm(0, 1), center, std)
+
+
+def walk_forward_t_model(provider, ref_time):
+    # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+    """Walk-forward bias-corrected Student-t for heavy tails.
+
+    Same as walk_forward_model but uses Student-t distribution instead of
+    Gaussian. Heavier tails put more probability mass on extreme outcomes,
+    which should reduce Brier score when forecast errors are leptokurtic.
+
+    Degrees of freedom estimated from excess kurtosis:
+      df = 6/kurtosis + 4  (for kurtosis > 0)
+      Clamped to [3, 30] — below 3 the variance is infinite, above 30 is ~Gaussian.
+    """
+    con = provider._shared_con
+    station_id = provider.station_id
+    run_hour = provider.model_run.hour
+    current_date = provider.model_run.date()
+
+    fcst_high = provider.get_forecast_high(station_id)
+    if fcst_high is None:
+        return None
+
+    stats = _walk_forward_bias_query(con, run_hour, station_id, current_date)
+    if stats is None:
+        return None
+
+    mean_bias, std_error, n, excess_kurtosis = stats
+    std = max(0.3, std_error if std_error else 2.0)
+    center = fcst_high - mean_bias
+
+    # Estimate df from excess kurtosis (kurtosis of t-dist = 6/(df-4) for df>4)
+    if excess_kurtosis is not None and excess_kurtosis > 0:
+        df = 6.0 / excess_kurtosis + 4.0
+        df = max(3.0, min(30.0, df))
+    else:
+        df = 30.0  # Near-Gaussian when kurtosis <= 0
+
+    return _compute_bracket_probs_from_dist(student_t(df), center, std)
 
 
 # ---------------------------------------------------------------------------

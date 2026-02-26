@@ -17,7 +17,7 @@
 
 ## Phase 0: Data Foundation
 
-**Status:** IN PROGRESS
+**Status:** COMPLETE (2026-02-25)
 **Depends on:** Nothing
 
 ### What
@@ -31,8 +31,8 @@ Complete the historical dataset needed for backtesting:
 |---------|--------|---------|--------|
 | Forecasts 06z | 1,900 days | 1,900 | DONE |
 | Forecasts 12z | 1,900 days | 1,900 | DONE |
-| Forecasts 00z | 1,900 days | 463 | BACKFILLING |
-| Forecasts 18z | 1,900 days | 0 (in temp DB) | BACKFILLING |
+| Forecasts 00z | 1,900 days | 1,900 | DONE |
+| Forecasts 18z | 1,900 days | 1,900 | DONE |
 | NWS Daily (settlement) | 1,900 days | 1,900 | DONE |
 | KNYC Observations | 1,900 days | 1,900 days (57K rows) | DONE |
 | Market Ticks | Ongoing | 1 day | COLLECTING (start ASAP) |
@@ -53,32 +53,44 @@ Backtester runs end-to-end on historical data with a dummy model (e.g., uniform 
 
 ## Phase 1: HRRR Error Analysis ("Is there signal?")
 
-**Status:** NOT STARTED
+**Status:** COMPLETE (2026-02-25)
 **Depends on:** Phase 0 complete
 
 ### The Question
 For each historical day, the HRRR predicted some max temperature. NWS settled on an actual high. What does the error distribution look like, and can we use it to build a better probability distribution over 2°F brackets than just trusting HRRR's raw number?
 
-### Concrete Steps
-1. For each day x run hour, compute `error = HRRR_predicted_high - actual_settlement`
-2. Analyze the error distribution:
-   - Is it normally distributed? (histogram + Shapiro-Wilk test)
-   - What's the mean (systematic bias) and std (uncertainty)?
-   - Does the distribution tighten across run hours? (00z -> 06z -> 12z -> 18z)
-3. Build a simple model:
-   - `predicted_high = HRRR_high - mean_bias`
-   - Uncertainty = historical std for that run hour
-   - Convert to bracket probabilities via Gaussian CDF over 2°F bins
-4. Run through the backtester at each run hour checkpoint
+### What We Built
+Walk-forward bias correction with per-run-hour stats:
+- For each evaluation, computes expanding-window mean bias and std from ALL prior dates only (no data leakage)
+- Each run hour (00z, 06z, 12z, 18z) gets its own bias/std correction
+- Uses NWS settlement truth (`nws_daily.max_temp_f`), not observations
+- Minimum 90-day training window before scoring
+- Also tested Student-t distribution for heavy tails (excess kurtosis up to +13.9 at 18z)
 
-### Evaluation Metric
-Brier score of bias-corrected Gaussian brackets vs naive baseline ("HRRR says 31F, put 100% on the 30-31 bracket").
+### Results
+| Model | Brier Score | vs Uniform Baseline |
+|-------|------------|-------------------|
+| Uniform (clueless) | 1.0196 | — |
+| Single-bias (old) | 0.9582 | +6.0% |
+| **Walk-forward per-hour** | **0.8356** | **+18.0%** |
+| Walk-forward Student-t | 0.8394 | +17.7% |
 
-### Kill Condition
-If the HRRR error distribution is uniform/unpredictable and bias correction doesn't improve Brier score. (Unlikely — but we check.)
+Per-run-hour bias discovered:
+- 00z: -0.9°F (runs coldest), 06z: -0.2°F (most accurate), 12z: -0.3°F, 18z: -0.7°F
 
-### Expected Outcome
-This should show clear value. A distribution beats a point estimate. The question is how much.
+Market comparison (Kalshi's Brier score at same prediction times):
+- After 00z: 0.63, After 06z: 0.62, After 12z: 0.44, After 18z: 0.14
+- We need to roughly halve our score to compete with the market
+
+### Key Findings
+- Per-run-hour bias correction is 3x the improvement of single-bias
+- The old single-bias model made 00z WORSE than uniform (1.10 vs 1.02)
+- Student-t doesn't beat Gaussian despite heavy tails — killed
+- Only 4.7% evaluations lost to the 90-day minimum training window
+- Overnight hours (00z, 06z) have thinnest market — most likely edge opportunity
+
+### Gate
+PASSED. Walk-forward per-run-hour Gaussian beats all baselines.
 
 ---
 

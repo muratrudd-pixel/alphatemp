@@ -3,6 +3,7 @@
 import os
 from datetime import date, datetime, timedelta, timezone
 
+import duckdb
 import pytest
 
 from core.db import init_db, get_connection
@@ -15,6 +16,10 @@ from services.backtester import (
     compute_brier_score_1f,
     map_probs_to_kalshi_brackets,
     uniform_model,
+    walk_forward_model,
+    walk_forward_t_model,
+    _walk_forward_bias_query,
+    WALK_FORWARD_MIN_DAYS,
 )
 
 TEST_DB = "data/test_backtest.duckdb"
@@ -382,3 +387,206 @@ def test_engine_with_backtest_provider(seeded_db):
     assert forecast.center == pytest.approx(48.5, abs=0.1)
     total = sum(forecast.bracket_probs.values())
     assert total == pytest.approx(1.0, abs=0.01)
+
+
+# -----------------------------------------------------------------------
+# Walk-forward model tests
+# -----------------------------------------------------------------------
+
+WALK_FORWARD_DB = "data/test_walkforward.duckdb"
+
+
+def _seed_walk_forward_data(db_path, n_days=120):
+    """Seed n_days of 12z+00z forecasts + nws_daily for walk-forward testing.
+
+    Forecast bias is intentionally different per run hour:
+      - 12z forecasts: peak = actual + 2.0 (positive bias)
+      - 00z forecasts: peak = actual + 0.5 (smaller bias)
+    This lets us verify per-run-hour differentiation.
+    """
+    con = get_connection(db_path)
+    base_date = date(2024, 1, 1)
+
+    for i in range(n_days):
+        obs_date = base_date + timedelta(days=i)
+        actual_high = 50.0 + (i % 10)  # Cycles 50-59°F
+
+        # NWS settlement truth
+        con.execute(
+            "INSERT INTO nws_daily (station_id, obs_date, max_temp_f, min_temp_f, source, ingested_at) "
+            "VALUES ('KNYC', ?, ?, NULL, 'test', CURRENT_TIMESTAMP)",
+            [obs_date.isoformat(), actual_high],
+        )
+
+        # 12z forecast: intentional +2.0 bias
+        fcst_peak_12z = actual_high + 2.0
+        temps_12z = [fcst_peak_12z - 3, fcst_peak_12z - 1, fcst_peak_12z,
+                     fcst_peak_12z - 1, fcst_peak_12z - 3]
+        model_run_12z = datetime(obs_date.year, obs_date.month, obs_date.day, 12, 0)
+        for j, temp_f in enumerate(temps_12z):
+            valid_at = model_run_12z + timedelta(hours=j + 1)
+            temp_c = round((temp_f - 32) * 5 / 9, 2)
+            con.execute(
+                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at) "
+                "VALUES ('KNYC', ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                [model_run_12z, valid_at, temp_f, temp_c],
+            )
+
+        # 00z forecast: intentional +0.5 bias
+        fcst_peak_00z = actual_high + 0.5
+        temps_00z = [fcst_peak_00z - 3, fcst_peak_00z - 1, fcst_peak_00z,
+                     fcst_peak_00z - 1, fcst_peak_00z - 3]
+        model_run_00z = datetime(obs_date.year, obs_date.month, obs_date.day, 0, 0)
+        for j, temp_f in enumerate(temps_00z):
+            valid_at = model_run_00z + timedelta(hours=j + 1)
+            temp_c = round((temp_f - 32) * 5 / 9, 2)
+            con.execute(
+                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at) "
+                "VALUES ('KNYC', ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                [model_run_00z, valid_at, temp_f, temp_c],
+            )
+
+    con.close()
+
+
+def _cleanup_db(path):
+    """Remove DuckDB file and its WAL."""
+    for suffix in ("", ".wal"):
+        p = path + suffix if suffix else path
+        if os.path.exists(p):
+            os.remove(p)
+
+
+@pytest.fixture
+def walk_forward_db():
+    """Create a test DB with 120 days of walk-forward-friendly data."""
+    _cleanup_db(WALK_FORWARD_DB)
+    init_db(WALK_FORWARD_DB)
+    _seed_walk_forward_data(WALK_FORWARD_DB, n_days=120)
+    yield WALK_FORWARD_DB
+    _cleanup_db(WALK_FORWARD_DB)
+
+
+def test_walk_forward_no_future_data(walk_forward_db):
+    """Walk-forward model only uses dates strictly before current_date."""
+    con = duckdb.connect(walk_forward_db, read_only=True)
+
+    # Query bias as of day 100 (2024-04-10)
+    test_date = date(2024, 4, 10)
+    stats = _walk_forward_bias_query(con, 12, "KNYC", test_date)
+    assert stats is not None
+    n_dates = int(stats[2])
+
+    # Query bias as of day 101 (2024-04-11) — should have exactly 1 more date
+    next_date = date(2024, 4, 11)
+    stats_next = _walk_forward_bias_query(con, 12, "KNYC", next_date)
+    assert stats_next is not None
+    assert int(stats_next[2]) == n_dates + 1
+
+    # Query bias as of day 1 — should be None (no prior data)
+    first_date = date(2024, 1, 1)
+    stats_first = _walk_forward_bias_query(con, 12, "KNYC", first_date)
+    assert stats_first is None  # 0 prior dates < min window
+
+    con.close()
+
+
+def test_walk_forward_min_window(walk_forward_db):
+    """Returns None when fewer than WALK_FORWARD_MIN_DAYS of history."""
+    con = duckdb.connect(walk_forward_db, read_only=True)
+
+    # Day 89 (2024-03-30) — only 89 prior dates, below 90-day minimum
+    too_early = date(2024, 3, 30)
+    stats = _walk_forward_bias_query(con, 12, "KNYC", too_early)
+    assert stats is None
+
+    # Day 91 (2024-04-01) — 91 prior dates, above minimum
+    enough = date(2024, 4, 1)
+    stats_ok = _walk_forward_bias_query(con, 12, "KNYC", enough)
+    assert stats_ok is not None
+    assert int(stats_ok[2]) >= WALK_FORWARD_MIN_DAYS
+
+    con.close()
+
+
+def test_walk_forward_per_run_hour(walk_forward_db):
+    """Different run hours produce different bias values."""
+    con = duckdb.connect(walk_forward_db, read_only=True)
+
+    test_date = date(2024, 5, 1)  # Well past the 90-day window
+
+    stats_12z = _walk_forward_bias_query(con, 12, "KNYC", test_date)
+    stats_00z = _walk_forward_bias_query(con, 0, "KNYC", test_date)
+
+    assert stats_12z is not None
+    assert stats_00z is not None
+
+    # 12z bias should be ~2.0, 00z bias should be ~0.5
+    assert abs(stats_12z[0] - 2.0) < 0.3, f"12z bias {stats_12z[0]} not near 2.0"
+    assert abs(stats_00z[0] - 0.5) < 0.3, f"00z bias {stats_00z[0]} not near 0.5"
+
+    # They must be different from each other
+    assert abs(stats_12z[0] - stats_00z[0]) > 1.0
+
+    con.close()
+
+
+def test_walk_forward_uses_nws_truth(walk_forward_db):
+    """Error is computed against nws_daily.max_temp_f, not observations."""
+    con = duckdb.connect(walk_forward_db, read_only=True)
+
+    test_date = date(2024, 5, 1)
+    stats = _walk_forward_bias_query(con, 12, "KNYC", test_date)
+    assert stats is not None
+
+    # Our seeded data has forecast = actual + 2.0 for 12z,
+    # so mean bias should be ~2.0 (forecast - nws_truth)
+    mean_bias = stats[0]
+    assert abs(mean_bias - 2.0) < 0.3, (
+        f"Mean bias {mean_bias} suggests error is NOT computed against NWS truth"
+    )
+
+    con.close()
+
+
+def test_walk_forward_model_returns_probs(walk_forward_db):
+    """walk_forward_model returns valid bracket probabilities."""
+    con = duckdb.connect(walk_forward_db, read_only=True)
+    try:
+        # Date within seeded range (day 110) with >90 days prior history
+        test_run = datetime(2024, 4, 20, 12, 0, tzinfo=timezone.utc)
+        provider = BacktestDataProvider(
+            db_path=walk_forward_db,
+            station_id="KNYC",
+            model_run=test_run,
+            ref_time=test_run + timedelta(hours=2),
+            connection=con,
+        )
+
+        probs = walk_forward_model(provider, test_run)
+        assert probs is not None
+        assert len(probs) > 0
+        assert abs(sum(probs.values()) - 1.0) < 0.01
+    finally:
+        con.close()
+
+
+def test_walk_forward_t_model_returns_probs(walk_forward_db):
+    """walk_forward_t_model returns valid bracket probabilities."""
+    con = duckdb.connect(walk_forward_db, read_only=True)
+    try:
+        test_run = datetime(2024, 4, 20, 12, 0, tzinfo=timezone.utc)
+        provider = BacktestDataProvider(
+            db_path=walk_forward_db,
+            station_id="KNYC",
+            model_run=test_run,
+            ref_time=test_run + timedelta(hours=2),
+            connection=con,
+        )
+
+        probs = walk_forward_t_model(provider, test_run)
+        assert probs is not None
+        assert len(probs) > 0
+        assert abs(sum(probs.values()) - 1.0) < 0.01
+    finally:
+        con.close()
