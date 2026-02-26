@@ -150,8 +150,10 @@ class LiveDataProvider(DataProvider):
         row = con.execute(
             """SELECT MAX(f.temp_f) FROM forecasts f
                WHERE f.station_id = ?
+               AND f.model_name = 'hrrr'
                AND f.model_run = (
-                   SELECT MAX(model_run) FROM forecasts WHERE station_id = ?
+                   SELECT MAX(model_run) FROM forecasts
+                   WHERE station_id = ? AND model_name = 'hrrr'
                )""",
             [station_id, station_id],
         ).fetchone()
@@ -190,6 +192,7 @@ class LiveDataProvider(DataProvider):
             """SELECT model_run, MAX(temp_f) as fcst_high
                FROM forecasts
                WHERE station_id = ?
+               AND model_name = 'hrrr'
                GROUP BY model_run
                ORDER BY model_run DESC
                LIMIT ?""",
@@ -203,7 +206,11 @@ class LiveDataProvider(DataProvider):
         rows = con.execute(
             """SELECT valid_at, temp_f FROM forecasts
                WHERE station_id = ?
-               AND model_run = (SELECT MAX(model_run) FROM forecasts WHERE station_id = ?)
+               AND model_name = 'hrrr'
+               AND model_run = (
+                   SELECT MAX(model_run) FROM forecasts
+                   WHERE station_id = ? AND model_name = 'hrrr'
+               )
                ORDER BY valid_at""",
             [station_id, station_id],
         ).fetchall()
@@ -253,11 +260,13 @@ class BacktestDataProvider(DataProvider):
         model_run: datetime,
         ref_time: datetime,
         connection: Optional[duckdb.DuckDBPyConnection] = None,
+        model_name: str = 'hrrr',
     ):
         self.db_path = db_path
         self.station_id = station_id
         self.model_run = _strip_tz(model_run)
         self.ref_time = _strip_tz(ref_time)
+        self.model_name = model_name
         self._shared_con = connection
         self._bias_cache = {}  # type: Dict[str, StationBias]
         self._bias_loaded = False
@@ -292,8 +301,9 @@ class BacktestDataProvider(DataProvider):
         try:
             row = con.execute(
                 """SELECT MAX(temp_f) FROM forecasts
-                   WHERE station_id = ? AND model_run = ?""",
-                [station_id, self.model_run],
+                   WHERE station_id = ? AND model_run = ?
+                   AND model_name = ?""",
+                [station_id, self.model_run, self.model_name],
             ).fetchone()
             return row[0] if row and row[0] is not None else None
         finally:
@@ -317,10 +327,11 @@ class BacktestDataProvider(DataProvider):
                 """SELECT model_run, MAX(temp_f) as fcst_high
                    FROM forecasts
                    WHERE station_id = ? AND model_run <= ?
+                   AND model_name = ?
                    GROUP BY model_run
                    ORDER BY model_run DESC
                    LIMIT ?""",
-                [station_id, self.model_run, limit],
+                [station_id, self.model_run, self.model_name, limit],
             ).fetchall()
             return [r[1] for r in rows if r[1] is not None]
         finally:
@@ -333,8 +344,9 @@ class BacktestDataProvider(DataProvider):
             return con.execute(
                 """SELECT valid_at, temp_f FROM forecasts
                    WHERE station_id = ? AND model_run = ?
+                   AND model_name = ?
                    ORDER BY valid_at""",
-                [station_id, self.model_run],
+                [station_id, self.model_run, self.model_name],
             ).fetchall()
         finally:
             if self._shared_con is None:
