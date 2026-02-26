@@ -31,7 +31,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             temp_f      DOUBLE,
             temp_c      DOUBLE,
             ingested_at TIMESTAMP NOT NULL,
-            UNIQUE (station_id, model_run, valid_at)
+            model_name  VARCHAR NOT NULL DEFAULT 'hrrr',
+            UNIQUE (station_id, model_run, valid_at, model_name)
         )
     """)
 
@@ -76,6 +77,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
 
     # One-time backfill: tag existing rows with ingest_source based on heuristics
     _backfill_ingest_source(con)
+
+    # Migration: add model_name column to forecasts (table-rebuild for UNIQUE change)
+    _migrate_forecasts_model_name(con)
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS drift_signals (
@@ -168,6 +172,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         "CREATE INDEX IF NOT EXISTS idx_obs_station_time ON observations (station_id, observed_at)",
         "CREATE INDEX IF NOT EXISTS idx_fcst_station_run ON forecasts (station_id, model_run)",
         "CREATE INDEX IF NOT EXISTS idx_fcst_station_valid ON forecasts (station_id, valid_at)",
+        "CREATE INDEX IF NOT EXISTS idx_fcst_model ON forecasts (model_name)",
         "CREATE INDEX IF NOT EXISTS idx_drift_city_time ON drift_signals (city, calculated_at)",
         "CREATE INDEX IF NOT EXISTS idx_market_city_time ON market_ticks (city, captured_at)",
         "CREATE INDEX IF NOT EXISTS idx_bias_station_time ON station_bias (station_id, calculated_at)",
@@ -235,6 +240,46 @@ def _backfill_ingest_source(con: duckdb.DuckDBPyConnection) -> None:
     count = con.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
     if count:
         logger.info(f"Backfilled ingest_source for {count} existing observations")
+
+
+def _migrate_forecasts_model_name(con: duckdb.DuckDBPyConnection) -> None:
+    """Add model_name column to forecasts and rebuild UNIQUE constraint.
+
+    DuckDB can't drop inline UNIQUE constraints, so we rebuild the table.
+    Only runs if model_name column is missing.
+    """
+    try:
+        has_col = con.execute("""
+            SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_name = 'forecasts' AND column_name = 'model_name'
+        """).fetchone()[0]
+        if has_col > 0:
+            return  # Already migrated
+
+        logger.info("Migrating forecasts table: adding model_name column")
+        con.execute("""
+            CREATE TABLE forecasts_new (
+                station_id  VARCHAR NOT NULL,
+                model_run   TIMESTAMP NOT NULL,
+                valid_at    TIMESTAMP NOT NULL,
+                temp_f      DOUBLE,
+                temp_c      DOUBLE,
+                ingested_at TIMESTAMP NOT NULL,
+                model_name  VARCHAR NOT NULL DEFAULT 'hrrr',
+                UNIQUE (station_id, model_run, valid_at, model_name)
+            )
+        """)
+        con.execute("""
+            INSERT INTO forecasts_new
+            SELECT station_id, model_run, valid_at, temp_f, temp_c, ingested_at,
+                   'hrrr' AS model_name
+            FROM forecasts
+        """)
+        con.execute("DROP TABLE forecasts")
+        con.execute("ALTER TABLE forecasts_new RENAME TO forecasts")
+        logger.info("Forecasts table migrated — model_name column added")
+    except Exception:
+        logger.warning("Failed to migrate forecasts table for model_name", exc_info=True)
 
 
 def get_connection(db_path: str = DEFAULT_DB_PATH) -> duckdb.DuckDBPyConnection:

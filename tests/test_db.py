@@ -101,6 +101,51 @@ def test_forecasts_unique_constraint():
     con.close()
 
 
+def test_forecasts_has_model_name_column():
+    """model_name column exists and defaults to 'hrrr' when not specified."""
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB)
+    try:
+        con.execute("""
+            INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at)
+            VALUES ('KNYC', '2026-02-22 12:00:00', '2026-02-22 13:00:00', 45.0, 7.2, CURRENT_TIMESTAMP)
+        """)
+        row = con.execute("SELECT model_name FROM forecasts WHERE station_id = 'KNYC'").fetchone()
+        assert row is not None
+        assert row[0] == "hrrr"
+    finally:
+        con.close()
+
+
+def test_forecasts_unique_constraint_includes_model_name():
+    """Same (station_id, model_run, valid_at) with different model_name should succeed;
+    full duplicate should raise ConstraintException."""
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB)
+    try:
+        # First insert — hrrr
+        con.execute("""
+            INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name)
+            VALUES ('KNYC', '2026-02-22 12:00:00', '2026-02-22 13:00:00', 45.0, 7.2, CURRENT_TIMESTAMP, 'hrrr')
+        """)
+        # Second insert — different model_name, same composite key otherwise → should succeed
+        con.execute("""
+            INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name)
+            VALUES ('KNYC', '2026-02-22 12:00:00', '2026-02-22 13:00:00', 46.0, 7.8, CURRENT_TIMESTAMP, 'gfs')
+        """)
+        count = con.execute("SELECT COUNT(*) FROM forecasts").fetchone()[0]
+        assert count == 2
+
+        # Third insert — full duplicate (same model_name too) → should fail
+        with pytest.raises(duckdb.ConstraintException):
+            con.execute("""
+                INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name)
+                VALUES ('KNYC', '2026-02-22 12:00:00', '2026-02-22 13:00:00', 47.0, 8.3, CURRENT_TIMESTAMP, 'hrrr')
+            """)
+    finally:
+        con.close()
+
+
 def test_drift_signals_table_exists():
     init_db(TEST_DB)
     con = duckdb.connect(TEST_DB)
@@ -176,7 +221,7 @@ def test_drift_signals_unique_constraint():
 
 
 def test_indexes_created():
-    """All 6 performance indexes should exist after init_db."""
+    """All performance indexes should exist after init_db."""
     init_db(TEST_DB)
     con = duckdb.connect(TEST_DB)
     rows = con.execute("SELECT index_name FROM duckdb_indexes()").fetchall()
@@ -187,6 +232,7 @@ def test_indexes_created():
         "idx_obs_station_time",
         "idx_fcst_station_run",
         "idx_fcst_station_valid",
+        "idx_fcst_model",
         "idx_drift_city_time",
         "idx_market_city_time",
         "idx_bias_station_time",
