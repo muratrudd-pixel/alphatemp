@@ -302,6 +302,26 @@ def walk_forward_model(provider, ref_time, model_name='hrrr'):
 walk_forward_model.raw = _walk_forward_raw  # Expose raw (center, std) for ensemble
 
 
+def _make_phase1_model(model_name):
+    # type: (str,) -> ModelFn
+    """Factory: create a Phase 1 walk-forward bias model bound to a specific model_name."""
+
+    def _raw(provider, ref_time):
+        return _walk_forward_raw(provider, ref_time, model_name=model_name)
+
+    def model_fn(provider, ref_time):
+        return walk_forward_model(provider, ref_time, model_name=model_name)
+
+    model_fn.__name__ = "wf_bias_{}".format(model_name)
+    model_fn.raw = _raw
+    return model_fn
+
+
+wf_bias_hrrr = _make_phase1_model('hrrr')
+wf_bias_gfs = _make_phase1_model('gfs')
+wf_bias_ecmwf = _make_phase1_model('ecmwf')
+
+
 def walk_forward_t_model(provider, ref_time, model_name='hrrr'):
     # type: (BacktestDataProvider, datetime, str) -> Optional[Dict[int, float]]
     """Walk-forward bias-corrected Student-t for heavy tails.
@@ -1022,6 +1042,7 @@ class Backtester:
         end_date: Optional[date] = None,
         run_hours: Optional[List[int]] = None,
         update_hours_et: Optional[List[int]] = None,
+        model_name: str = 'hrrr',
     ) -> BacktestResult:
         """Execute the backtest and return scored results.
 
@@ -1068,7 +1089,7 @@ class Backtester:
                     )
                     model_run_naive = _strip_tz(model_run_utc)
 
-                    if not self._has_forecast_data(con, model_run_naive):
+                    if not self._has_forecast_data(con, model_run_naive, model_name=model_name):
                         skipped += n_updates
                         continue
 
@@ -1104,6 +1125,7 @@ class Backtester:
                             model_run=model_run_utc,
                             ref_time=ref_time,
                             connection=con,
+                            model_name=model_name,
                         )
 
                         bracket_probs = model_fn(provider, ref_time)
