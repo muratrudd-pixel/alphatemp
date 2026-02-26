@@ -1,7 +1,7 @@
 import os
 import duckdb
 import pytest
-from core.db import init_db, get_connection
+from core.db import init_db, get_connection, _migrate_forecasts_model_name
 
 TEST_DB = "data/test_alphatemp.duckdb"
 
@@ -238,3 +238,64 @@ def test_indexes_created():
         "idx_bias_station_time",
     }
     assert expected.issubset(index_names), f"Missing indexes: {expected - index_names}"
+
+
+def test_migrate_forecasts_model_name_from_old_schema():
+    """Exercise the actual migration path: old schema -> new schema with model_name."""
+    con = duckdb.connect(TEST_DB)
+    try:
+        # Create the OLD schema (no model_name, old UNIQUE constraint)
+        con.execute("""
+            CREATE TABLE forecasts (
+                station_id  VARCHAR NOT NULL,
+                model_run   TIMESTAMP NOT NULL,
+                valid_at    TIMESTAMP NOT NULL,
+                temp_f      DOUBLE,
+                temp_c      DOUBLE,
+                ingested_at TIMESTAMP NOT NULL,
+                UNIQUE (station_id, model_run, valid_at)
+            )
+        """)
+        # Insert a row into old schema
+        con.execute("""
+            INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at)
+            VALUES ('KNYC', '2026-02-22 12:00:00', '2026-02-22 13:00:00', 45.0, 7.2,
+                    '2026-02-22 12:05:00')
+        """)
+
+        # Run the migration
+        _migrate_forecasts_model_name(con)
+
+        # Verify model_name column exists
+        cols = con.execute("DESCRIBE forecasts").fetchall()
+        col_names = {c[0] for c in cols}
+        assert "model_name" in col_names, "model_name column missing after migration"
+
+        # Verify row data preserved with model_name defaulted to 'hrrr'
+        row = con.execute(
+            "SELECT station_id, temp_f, temp_c, model_name FROM forecasts"
+        ).fetchone()
+        assert row is not None, "Row lost during migration"
+        assert row[0] == "KNYC"
+        assert row[1] == 45.0
+        assert row[2] == 7.2
+        assert row[3] == "hrrr"
+
+        # Verify new UNIQUE constraint includes model_name:
+        # same composite key with different model_name should succeed
+        con.execute("""
+            INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name)
+            VALUES ('KNYC', '2026-02-22 12:00:00', '2026-02-22 13:00:00', 46.0, 7.8,
+                    '2026-02-22 12:05:00', 'gfs')
+        """)
+        assert con.execute("SELECT COUNT(*) FROM forecasts").fetchone()[0] == 2
+
+        # full duplicate (same model_name) should fail
+        with pytest.raises(duckdb.ConstraintException):
+            con.execute("""
+                INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name)
+                VALUES ('KNYC', '2026-02-22 12:00:00', '2026-02-22 13:00:00', 47.0, 8.3,
+                        '2026-02-22 12:05:00', 'hrrr')
+            """)
+    finally:
+        con.close()

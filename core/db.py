@@ -249,6 +249,9 @@ def _migrate_forecasts_model_name(con: duckdb.DuckDBPyConnection) -> None:
     Only runs if model_name column is missing.
     """
     try:
+        # Clean up any leftover from a previous failed migration
+        con.execute("DROP TABLE IF EXISTS forecasts_new")
+
         has_col = con.execute("""
             SELECT COUNT(*) FROM information_schema.columns
             WHERE table_name = 'forecasts' AND column_name = 'model_name'
@@ -275,6 +278,16 @@ def _migrate_forecasts_model_name(con: duckdb.DuckDBPyConnection) -> None:
                    'hrrr' AS model_name
             FROM forecasts
         """)
+
+        # Verify row counts match before destructive DROP
+        old_count = con.execute("SELECT COUNT(*) FROM forecasts").fetchone()[0]
+        new_count = con.execute("SELECT COUNT(*) FROM forecasts_new").fetchone()[0]
+        if old_count != new_count:
+            con.execute("DROP TABLE forecasts_new")
+            raise RuntimeError(
+                f"Migration data mismatch: forecasts={old_count} vs forecasts_new={new_count}"
+            )
+
         con.execute("DROP TABLE forecasts")
         con.execute("ALTER TABLE forecasts_new RENAME TO forecasts")
         logger.info("Forecasts table migrated — model_name column added")
