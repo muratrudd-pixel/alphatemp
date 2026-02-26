@@ -258,17 +258,9 @@ def _walk_forward_bias_query(con, run_hour, station_id, current_date, model_name
     return row  # (mean_bias, std_error, n, excess_kurtosis)
 
 
-def walk_forward_model(provider, ref_time, model_name='hrrr'):
-    # type: (BacktestDataProvider, datetime, str) -> Optional[Dict[int, float]]
-    """Walk-forward bias-corrected Gaussian using per-run-hour stats.
-
-    For each evaluation:
-    1. Computes expanding-window mean bias and std from ALL prior dates
-       (strict walk-forward: obs_date < current_date, no peeking)
-    2. Uses NWS settlement truth (nws_daily.max_temp_f), not observations
-    3. Per-run-hour: 00z, 06z, 12z, 18z each get their own bias/std
-    4. No drift, stability, or convergence factors — isolate the bias correction effect
-    """
+def _walk_forward_raw(provider, ref_time, model_name='hrrr'):
+    # type: (BacktestDataProvider, datetime, str) -> Optional[Tuple[float, float]]
+    """Return (center, std) for walk-forward bias-corrected Gaussian, or None."""
     con = provider._shared_con
     station_id = provider.station_id
     run_hour = provider.model_run.hour
@@ -286,7 +278,28 @@ def walk_forward_model(provider, ref_time, model_name='hrrr'):
     std = max(0.3, std_error if std_error else 2.0)
     center = fcst_high - mean_bias
 
+    return (center, std)
+
+
+def walk_forward_model(provider, ref_time, model_name='hrrr'):
+    # type: (BacktestDataProvider, datetime, str) -> Optional[Dict[int, float]]
+    """Walk-forward bias-corrected Gaussian using per-run-hour stats.
+
+    For each evaluation:
+    1. Computes expanding-window mean bias and std from ALL prior dates
+       (strict walk-forward: obs_date < current_date, no peeking)
+    2. Uses NWS settlement truth (nws_daily.max_temp_f), not observations
+    3. Per-run-hour: 00z, 06z, 12z, 18z each get their own bias/std
+    4. No drift, stability, or convergence factors — isolate the bias correction effect
+    """
+    params = _walk_forward_raw(provider, ref_time, model_name=model_name)
+    if params is None:
+        return None
+    center, std = params
     return _compute_bracket_probs_from_dist(norm(0, 1), center, std)
+
+
+walk_forward_model.raw = _walk_forward_raw  # Expose raw (center, std) for ensemble
 
 
 def walk_forward_t_model(provider, ref_time, model_name='hrrr'):
@@ -465,8 +478,9 @@ def _make_regression_model(name, feature_indices, model_name='hrrr'):
     # type: (str, list, str) -> ModelFn
     """Factory: create a walk-forward regression ModelFn for a given feature subset."""
 
-    def model_fn(provider, ref_time):
-        # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+    def _raw(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Tuple[float, float]]
+        """Return (center, residual_std) or None."""
         con = provider._shared_con
         station_id = provider.station_id
         run_hour = provider.model_run.hour
@@ -495,10 +509,19 @@ def _make_regression_model(name, feature_indices, model_name='hrrr'):
 
         predicted_bias, residual_std = result
         center = fcst_high - predicted_bias
+        return (center, residual_std)
+
+    def model_fn(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+        params = _raw(provider, ref_time)
+        if params is None:
+            return None
+        center, residual_std = params
         return _compute_bracket_probs_from_dist(norm(0, 1), center, residual_std)
 
     model_fn.__name__ = name
     model_fn.__doc__ = "Walk-forward regression: {}".format(name)
+    model_fn.raw = _raw  # Expose raw (center, std) for ensemble
     return model_fn
 
 
@@ -792,8 +815,9 @@ def _make_phase2b_model(name, feature_indices, model_name='hrrr'):
     Performance: bulk data + Phase 2 predictions cached at module level.
     Per-evaluation cost is one OLS fit on the filtered training matrix.
     """
-    def model_fn(provider, ref_time):
-        # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+    def _raw(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Tuple[float, float]]
+        """Return (center, residual_std) or None."""
         con = provider._shared_con
         station_id = provider.station_id
         run_hour = provider.model_run.hour
@@ -819,7 +843,7 @@ def _make_phase2b_model(name, feature_indices, model_name='hrrr'):
         curves = l1["curves"]
         if current_date not in curves or len(curves[current_date]) < 2:
             center = fcst_high - phase2_bias
-            return _compute_bracket_probs_from_dist(norm(0, 1), center, p2_std)
+            return (center, p2_std)
 
         curve = curves[current_date]
         obs_by_date = l1["obs_by_date"]
@@ -827,7 +851,7 @@ def _make_phase2b_model(name, feature_indices, model_name='hrrr'):
         truncated = [(ts, temp) for ts, temp in day_obs if ts <= cutoff_ts]
         if len(truncated) < 2:
             center = fcst_high - phase2_bias
-            return _compute_bracket_probs_from_dist(norm(0, 1), center, p2_std)
+            return (center, p2_std)
 
         obs_ts = [o[0] for o in truncated]
         obs_temps = [o[1] for o in truncated]
@@ -844,7 +868,7 @@ def _make_phase2b_model(name, feature_indices, model_name='hrrr'):
         )
         if today_feats is None:
             center = fcst_high - phase2_bias
-            return _compute_bracket_probs_from_dist(norm(0, 1), center, p2_std)
+            return (center, p2_std)
 
         today_feat_vec = [today_feats[k] for k in _PHASE2B_FEATURE_KEYS]
 
@@ -859,14 +883,23 @@ def _make_phase2b_model(name, feature_indices, model_name='hrrr'):
         p2b_result = _fit_and_predict_phase2b(filtered, today_feat_vec, feature_indices)
         if p2b_result is None:
             center = fcst_high - phase2_bias
-            return _compute_bracket_probs_from_dist(norm(0, 1), center, p2_std)
+            return (center, p2_std)
 
         phase2b_residual, p2b_std = p2b_result
         center = fcst_high - (phase2_bias + phase2b_residual)
-        return _compute_bracket_probs_from_dist(norm(0, 1), center, p2b_std)
+        return (center, p2b_std)
+
+    def model_fn(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+        params = _raw(provider, ref_time)
+        if params is None:
+            return None
+        center, residual_std = params
+        return _compute_bracket_probs_from_dist(norm(0, 1), center, residual_std)
 
     model_fn.__name__ = name
     model_fn.__doc__ = "Phase 2B residual regression: {}".format(name)
+    model_fn.raw = _raw  # Expose raw (center, std) for ensemble
     return model_fn
 
 
