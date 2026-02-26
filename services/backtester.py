@@ -150,6 +150,7 @@ class RunResult:
     hit: bool                  # predicted_bracket == round(actual_high)
     used_kalshi_brackets: bool  # True if scored with 2°F Kalshi brackets
     n_brackets: int            # Number of brackets scored against
+    update_hour_et: Optional[int] = None  # Phase 2B: ET hour of intraday update
 
 
 @dataclass
@@ -507,6 +508,362 @@ wf_regression_delta = _make_regression_model("wf_regression_delta", _FEATURE_SET
 
 
 # ---------------------------------------------------------------------------
+# Walk-forward PHASE 2B models — observation-based residual correction
+# ---------------------------------------------------------------------------
+
+from zoneinfo import ZoneInfo
+from services.divergence import (
+    interpolate_forecast,
+    compute_divergence_features,
+)
+
+_ET = ZoneInfo("America/New_York")
+
+# Phase 2B divergence feature index mapping:
+#   0 = temp_divergence, 1 = cumulative_divergence,
+#   2 = running_max_divergence, 3 = slope_divergence
+_PHASE2B_FEATURE_KEYS = [
+    "temp_divergence",
+    "cumulative_divergence",
+    "running_max_divergence",
+    "slope_divergence",
+]
+
+_PHASE2B_FEATURE_SETS = {
+    "wf_phase2b_full":    [0, 1, 2, 3],  # all 4 features
+    "wf_phase2b_core":    [0, 1, 2, 3],  # same as full (reserved for synoptic variant)
+    "wf_phase2b_instant": [0],            # temp_divergence only
+    "wf_phase2b_cumul":   [1],            # cumulative only
+    "wf_phase2b_runmax":  [2],            # running max only
+    "wf_phase2b_slope":   [3],            # slope only
+}
+
+# Phase 2 feature set used inside Phase 2B (fcst_high + sin/cos month)
+_P2_FEATURES_FOR_P2B = [0, 1, 2]
+
+# ---------------------------------------------------------------------------
+# Two-level cache: avoids redundant SQL + Phase 2 expanding-window fits.
+#
+# Level 1: (con_id, run_hour, station_id)
+#   -> bulk data + Phase 2 predictions for ALL dates (once per run_hour)
+#
+# Level 2: (con_id, run_hour, station_id, update_hour_et)
+#   -> Phase 2B training rows: (date, residual, [feat0..3]) per update hour
+# ---------------------------------------------------------------------------
+_p2b_level1 = {}  # type: Dict  # level 1 cache
+_p2b_level2 = {}  # type: Dict  # level 2 cache
+
+
+def _compute_features_for_date(curve, day_obs, cutoff_ts):
+    # type: (List[Tuple[float, float]], List[Tuple[float, float]], float) -> Optional[Dict[str, float]]
+    """Compute divergence features for one date at one update time."""
+    truncated = [(ts, temp) for ts, temp in day_obs if ts <= cutoff_ts]
+    if len(truncated) < 2:
+        return None
+
+    obs_ts = [o[0] for o in truncated]
+    obs_temps = [o[1] for o in truncated]
+    fc_ts = [c[0] for c in curve]
+    fc_temps = [c[1] for c in curve]
+
+    fcst_interp = interpolate_forecast(fc_ts, fc_temps, obs_ts)
+    t0 = obs_ts[0]
+    obs_hours = [(t - t0) / 3600.0 for t in obs_ts]
+    fcst_up_to_t = [temp for ts, temp in curve if ts <= cutoff_ts]
+
+    return compute_divergence_features(obs_temps, fcst_interp, obs_hours, fcst_up_to_t)
+
+
+def _ensure_level1(con, run_hour, station_id):
+    # type: (duckdb.DuckDBPyConnection, int, str) -> dict
+    """Populate level-1 cache: bulk data + Phase 2 predictions for all dates.
+
+    Called once per (connection, run_hour). Returns cached dict with keys:
+      curves, obs_by_date, errors_list, p2_preds
+    """
+    key = (id(con), run_hour, station_id)
+    if key in _p2b_level1:
+        return _p2b_level1[key]
+
+    # Clear stale entries from old connections
+    stale = [k for k in _p2b_level1 if k[0] != id(con)]
+    for k in stale:
+        del _p2b_level1[k]
+    stale2 = [k for k in _p2b_level2 if k[0] != id(con)]
+    for k in stale2:
+        del _p2b_level2[k]
+
+    logger.info(f"Phase 2B: bulk-fetching data for run_hour={run_hour:02d}z...")
+
+    # --- Forecast curves ---
+    curve_rows = con.execute("""
+        SELECT f.model_run::DATE as obs_date, f.valid_at, f.temp_f
+        FROM forecasts f
+        WHERE f.station_id = ? AND EXTRACT(HOUR FROM f.model_run) = ?
+        ORDER BY f.model_run::DATE, f.valid_at
+    """, [station_id, run_hour]).fetchall()
+
+    curves = {}  # type: Dict[date, List[Tuple[float, float]]]
+    for obs_date, valid_at, temp_f in curve_rows:
+        if obs_date not in curves:
+            curves[obs_date] = []
+        ts = valid_at.timestamp() if hasattr(valid_at, 'timestamp') else float(valid_at)
+        curves[obs_date].append((ts, temp_f))
+
+    # --- Observations ---
+    obs_rows = con.execute("""
+        SELECT observed_at, temp_f
+        FROM observations
+        WHERE station_id = ? AND temp_f IS NOT NULL
+        ORDER BY observed_at
+    """, [station_id]).fetchall()
+
+    obs_by_date = {}  # type: Dict[date, List[Tuple[float, float]]]
+    for observed_at, temp_f in obs_rows:
+        obs_utc = observed_at.replace(tzinfo=timezone.utc) if hasattr(observed_at, 'replace') \
+            else datetime.fromtimestamp(float(observed_at), tz=timezone.utc)
+        et_date = obs_utc.astimezone(_ET).date()
+        ts = observed_at.timestamp() if hasattr(observed_at, 'timestamp') else float(observed_at)
+        if et_date not in obs_by_date:
+            obs_by_date[et_date] = []
+        obs_by_date[et_date].append((ts, temp_f))
+
+    # --- Errors + Phase 2 features ---
+    error_rows = con.execute("""
+        WITH daily_errors AS (
+            SELECT
+                n.obs_date,
+                MAX(f.temp_f) - n.max_temp_f AS error,
+                MAX(f.temp_f) AS fcst_high,
+                EXTRACT(MONTH FROM n.obs_date) AS month,
+                n.max_temp_f AS actual_high
+            FROM nws_daily n
+            JOIN forecasts f ON f.station_id = n.station_id
+                AND f.model_run::DATE = n.obs_date
+                AND EXTRACT(HOUR FROM f.model_run) = ?
+            WHERE n.station_id = ? AND n.max_temp_f IS NOT NULL
+            GROUP BY n.obs_date, n.max_temp_f
+            ORDER BY n.obs_date
+        )
+        SELECT
+            obs_date, error, fcst_high, month,
+            LAG(actual_high, 1) OVER (ORDER BY obs_date)
+                - LAG(actual_high, 2) OVER (ORDER BY obs_date) AS delta_temp
+        FROM daily_errors
+        ORDER BY obs_date
+    """, [run_hour, station_id]).fetchall()
+
+    errors_list = [(d, e, fh, m, dt) for d, e, fh, m, dt in error_rows]
+
+    # --- Phase 2 expanding-window predictions for ALL dates ---
+    # Compute once, reuse across all update_hours
+    p2_preds = {}  # type: Dict[date, Tuple[float, float]]  # date -> (predicted_bias, p2_std)
+    phase2_training = []  # type: list
+    for obs_date, actual_error, fcst_high, month, delta_temp in errors_list:
+        # Predict BEFORE adding this date to training (walk-forward)
+        if len(phase2_training) >= WALK_FORWARD_MIN_DAYS:
+            features_today = (fcst_high, month, delta_temp if delta_temp is not None else 0.0)
+            p2_result = _fit_and_predict(phase2_training, features_today, _P2_FEATURES_FOR_P2B)
+            if p2_result is not None:
+                p2_preds[obs_date] = p2_result  # (predicted_bias, p2_std)
+
+        # Then add to training
+        if delta_temp is not None:
+            phase2_training.append((actual_error, fcst_high, month, delta_temp))
+
+    result = {
+        "curves": curves,
+        "obs_by_date": obs_by_date,
+        "errors_list": errors_list,
+        "p2_preds": p2_preds,
+    }
+    _p2b_level1[key] = result
+    logger.info(
+        f"Phase 2B: {len(curves)} curves, {len(obs_by_date)} obs-dates, "
+        f"{len(p2_preds)} Phase 2 predictions cached for {run_hour:02d}z"
+    )
+    return result
+
+
+def _ensure_level2(con, run_hour, station_id, update_hour_et):
+    # type: (duckdb.DuckDBPyConnection, int, str, int) -> List[Tuple[date, float, List[float]]]
+    """Populate level-2 cache: Phase 2B training rows for one update_hour.
+
+    Returns list of (date, residual, [feat0..3]) sorted by date.
+    For a given current_date D, filter to entries where date < D.
+    """
+    key = (id(con), run_hour, station_id, update_hour_et)
+    if key in _p2b_level2:
+        return _p2b_level2[key]
+
+    l1 = _ensure_level1(con, run_hour, station_id)
+    curves = l1["curves"]
+    obs_by_date = l1["obs_by_date"]
+    errors_list = l1["errors_list"]
+    p2_preds = l1["p2_preds"]
+
+    training = []  # type: List[Tuple[date, float, List[float]]]
+    for obs_date, actual_error, fcst_high, month, delta_temp in errors_list:
+        if obs_date not in p2_preds:
+            continue
+        predicted_bias, _ = p2_preds[obs_date]
+        residual = actual_error - predicted_bias
+
+        if obs_date not in curves or obs_date not in obs_by_date:
+            continue
+
+        cutoff_ts = datetime(
+            obs_date.year, obs_date.month, obs_date.day,
+            update_hour_et, 0, tzinfo=_ET,
+        ).astimezone(timezone.utc).timestamp()
+
+        feats = _compute_features_for_date(curves[obs_date], obs_by_date[obs_date], cutoff_ts)
+        if feats is None:
+            continue
+
+        feat_vector = [feats[k] for k in _PHASE2B_FEATURE_KEYS]
+        training.append((obs_date, residual, feat_vector))
+
+    _p2b_level2[key] = training
+    return training
+
+
+def _fit_and_predict_phase2b(training_rows, features_today, feature_indices):
+    # type: (list, List[float], List[int]) -> Optional[Tuple[float, float]]
+    """OLS regression on Phase 2B training data.
+
+    training_rows: list of (residual, [feat0..3])
+    features_today: divergence feature values for current eval
+    feature_indices: which of the 4 features to use
+
+    Returns (predicted_residual, residual_std) or None.
+    """
+    n = len(training_rows)
+    if n < WALK_FORWARD_MIN_DAYS:
+        return None
+
+    n_feats = len(feature_indices)
+    A = np.empty((n, 1 + n_feats), dtype=np.float64)
+    y = np.empty(n, dtype=np.float64)
+
+    for i, (residual, feat_vec) in enumerate(training_rows):
+        A[i, 0] = 1.0
+        for j, idx in enumerate(feature_indices):
+            A[i, 1 + j] = feat_vec[idx]
+        y[i] = residual
+
+    result = lstsq(A, y)
+    coeffs = result[0]
+
+    x_today = np.array([1.0] + [features_today[idx] for idx in feature_indices])
+    predicted_residual = float(np.dot(coeffs, x_today))
+
+    residuals = y - A @ coeffs
+    residual_std = float(np.std(residuals, ddof=1 + n_feats))
+
+    return (predicted_residual, max(0.3, residual_std))
+
+
+def _make_phase2b_model(name, feature_indices):
+    # type: (str, list) -> ModelFn
+    """Factory: Phase 2B walk-forward residual regression model.
+
+    Phase 2B predicts what Phase 2 couldn't — the day-specific deviation
+    visible in real-time observations vs the raw HRRR curve.
+
+    Final: center = fcst_high - (Phase2_bias + Phase2B_residual)
+
+    Performance: bulk data + Phase 2 predictions cached at module level.
+    Per-evaluation cost is one OLS fit on the filtered training matrix.
+    """
+    def model_fn(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+        con = provider._shared_con
+        station_id = provider.station_id
+        run_hour = provider.model_run.hour
+        current_date = provider.model_run.date()
+
+        fcst_high = provider.get_forecast_high(station_id)
+        if fcst_high is None:
+            return None
+
+        # --- Phase 2 prediction (from cache) ---
+        l1 = _ensure_level1(con, run_hour, station_id)
+        p2_pred = l1["p2_preds"].get(current_date)
+        if p2_pred is None:
+            return None
+        phase2_bias, p2_std = p2_pred
+
+        # --- Determine update hour from ref_time ---
+        ref_utc = ref_time if ref_time.tzinfo else ref_time.replace(tzinfo=timezone.utc)
+        update_hour_et = ref_utc.astimezone(_ET).hour
+        cutoff_ts = ref_utc.timestamp()
+
+        # --- Today's divergence features ---
+        curves = l1["curves"]
+        if current_date not in curves or len(curves[current_date]) < 2:
+            center = fcst_high - phase2_bias
+            return _compute_bracket_probs_from_dist(norm(0, 1), center, p2_std)
+
+        curve = curves[current_date]
+        obs_by_date = l1["obs_by_date"]
+        day_obs = obs_by_date.get(current_date, [])
+        truncated = [(ts, temp) for ts, temp in day_obs if ts <= cutoff_ts]
+        if len(truncated) < 2:
+            center = fcst_high - phase2_bias
+            return _compute_bracket_probs_from_dist(norm(0, 1), center, p2_std)
+
+        obs_ts = [o[0] for o in truncated]
+        obs_temps = [o[1] for o in truncated]
+        fc_ts = [c[0] for c in curve]
+        fc_temps = [c[1] for c in curve]
+
+        fcst_interp = interpolate_forecast(fc_ts, fc_temps, obs_ts)
+        t0 = obs_ts[0]
+        obs_hours = [(t - t0) / 3600.0 for t in obs_ts]
+        fcst_up_to_t = [temp for ts, temp in curve if ts <= cutoff_ts]
+
+        today_feats = compute_divergence_features(
+            obs_temps, fcst_interp, obs_hours, fcst_up_to_t
+        )
+        if today_feats is None:
+            center = fcst_high - phase2_bias
+            return _compute_bracket_probs_from_dist(norm(0, 1), center, p2_std)
+
+        today_feat_vec = [today_feats[k] for k in _PHASE2B_FEATURE_KEYS]
+
+        # --- Phase 2B training (from cache, filtered to dates < current_date) ---
+        all_training = _ensure_level2(con, run_hour, station_id, update_hour_et)
+        filtered = [
+            (residual, feat_vec)
+            for d, residual, feat_vec in all_training
+            if d < current_date
+        ]
+
+        p2b_result = _fit_and_predict_phase2b(filtered, today_feat_vec, feature_indices)
+        if p2b_result is None:
+            center = fcst_high - phase2_bias
+            return _compute_bracket_probs_from_dist(norm(0, 1), center, p2_std)
+
+        phase2b_residual, p2b_std = p2b_result
+        center = fcst_high - (phase2_bias + phase2b_residual)
+        return _compute_bracket_probs_from_dist(norm(0, 1), center, p2b_std)
+
+    model_fn.__name__ = name
+    model_fn.__doc__ = "Phase 2B residual regression: {}".format(name)
+    return model_fn
+
+
+# Pre-built Phase 2B model functions
+wf_phase2b_full = _make_phase2b_model("wf_phase2b_full", _PHASE2B_FEATURE_SETS["wf_phase2b_full"])
+wf_phase2b_core = _make_phase2b_model("wf_phase2b_core", _PHASE2B_FEATURE_SETS["wf_phase2b_core"])
+wf_phase2b_instant = _make_phase2b_model("wf_phase2b_instant", _PHASE2B_FEATURE_SETS["wf_phase2b_instant"])
+wf_phase2b_cumul = _make_phase2b_model("wf_phase2b_cumul", _PHASE2B_FEATURE_SETS["wf_phase2b_cumul"])
+wf_phase2b_runmax = _make_phase2b_model("wf_phase2b_runmax", _PHASE2B_FEATURE_SETS["wf_phase2b_runmax"])
+wf_phase2b_slope = _make_phase2b_model("wf_phase2b_slope", _PHASE2B_FEATURE_SETS["wf_phase2b_slope"])
+
+
+# ---------------------------------------------------------------------------
 # Backtester
 # ---------------------------------------------------------------------------
 
@@ -598,11 +955,17 @@ class Backtester:
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         run_hours: Optional[List[int]] = None,
+        update_hours_et: Optional[List[int]] = None,
     ) -> BacktestResult:
         """Execute the backtest and return scored results.
 
-        Uses a single persistent read-only connection shared across all
-        BacktestDataProvider instances to minimize DuckDB overhead.
+        Parameters
+        ----------
+        update_hours_et : list of int, optional
+            Eastern Time hours for intraday updates (Phase 2B).
+            When provided, each (date, run_hour) is evaluated at every
+            update hour, with ref_time set to that ET hour converted to UTC.
+            When None (default): Phase 1/2 behavior (ref_time = model_run + 2h).
         """
         if run_hours is None:
             run_hours = RUN_HOURS
@@ -611,9 +974,13 @@ class Backtester:
 
         try:
             settlement_dates = self._get_settlement_dates(con, start_date, end_date)
+            n_updates = len(update_hours_et) if update_hours_et else 1
             logger.info(
-                f"Backtesting {len(settlement_dates)} settlement dates, "
-                f"run hours: {run_hours}"
+                "Backtesting {} settlement dates, run hours: {}, "
+                "update hours: {}".format(
+                    len(settlement_dates), run_hours,
+                    update_hours_et or "default (model_run+2h)",
+                )
             )
 
             results = []  # type: List[RunResult]
@@ -621,11 +988,9 @@ class Backtester:
             kalshi_scored = 0
             fallback_scored = 0
 
-            # Pre-fetch Kalshi brackets for all dates (batch is faster than per-date)
             kalshi_cache = {}  # type: Dict[date, Optional[List[KalshiBracket]]]
 
             for i, (obs_date, actual_high) in enumerate(settlement_dates):
-                # Fetch Kalshi brackets for this date (cached per date)
                 if obs_date not in kalshi_cache:
                     kalshi_cache[obs_date] = self._get_kalshi_brackets(con, obs_date)
                 kalshi_brackets = kalshi_cache[obs_date]
@@ -635,60 +1000,83 @@ class Backtester:
                         obs_date.year, obs_date.month, obs_date.day,
                         hour, 0, tzinfo=timezone.utc,
                     )
-                    # Strip tz for DuckDB queries (TIMESTAMP columns are naive UTC)
                     model_run_naive = _strip_tz(model_run_utc)
 
                     if not self._has_forecast_data(con, model_run_naive):
-                        skipped += 1
+                        skipped += n_updates
                         continue
 
-                    ref_time = model_run_utc + timedelta(hours=HRRR_AVAILABILITY_LAG_HOURS)
-
-                    provider = BacktestDataProvider(
-                        db_path=self.db_path,
-                        station_id=self.station_id,
-                        model_run=model_run_utc,
-                        ref_time=ref_time,
-                        connection=con,
-                    )
-
-                    bracket_probs = model_fn(provider, ref_time)
-                    if bracket_probs is None:
-                        skipped += 1
-                        continue
-
-                    # Score with Kalshi 2°F brackets if available, else 1°F fallback
-                    if kalshi_brackets:
-                        mapped = map_probs_to_kalshi_brackets(bracket_probs, kalshi_brackets)
-                        brier = compute_brier_score(mapped, kalshi_brackets)
-                        used_kalshi = True
-                        n_brackets = len(kalshi_brackets)
-                        kalshi_scored += 1
+                    # Determine ref_times to evaluate
+                    if update_hours_et is None:
+                        # Phase 1/2 default: single eval at model_run + lag
+                        ref_times_and_labels = [
+                            (model_run_utc + timedelta(hours=HRRR_AVAILABILITY_LAG_HOURS), None)
+                        ]
                     else:
-                        brier = compute_brier_score_1f(bracket_probs, actual_high)
-                        used_kalshi = False
-                        n_brackets = len(bracket_probs)
-                        fallback_scored += 1
+                        ref_times_and_labels = []
+                        for uhr in update_hours_et:
+                            from zoneinfo import ZoneInfo
+                            _et_tz = ZoneInfo("America/New_York")
+                            ref_et = datetime(
+                                obs_date.year, obs_date.month, obs_date.day,
+                                uhr, 0, tzinfo=_et_tz,
+                            )
+                            ref_utc = ref_et.astimezone(timezone.utc)
+                            # Skip if forecast wouldn't be available yet
+                            earliest = model_run_utc + timedelta(
+                                hours=HRRR_AVAILABILITY_LAG_HOURS,
+                            )
+                            if ref_utc < earliest:
+                                skipped += 1
+                                continue
+                            ref_times_and_labels.append((ref_utc, uhr))
 
-                    predicted_bracket = max(bracket_probs, key=bracket_probs.get)
-                    hit = predicted_bracket == round(actual_high)
+                    for ref_time, update_label in ref_times_and_labels:
+                        provider = BacktestDataProvider(
+                            db_path=self.db_path,
+                            station_id=self.station_id,
+                            model_run=model_run_utc,
+                            ref_time=ref_time,
+                            connection=con,
+                        )
 
-                    fcst_high = provider.get_forecast_high(self.station_id)
+                        bracket_probs = model_fn(provider, ref_time)
+                        if bracket_probs is None:
+                            skipped += 1
+                            continue
 
-                    results.append(RunResult(
-                        settlement_date=obs_date,
-                        run_hour=hour,
-                        station_id=self.station_id,
-                        forecast_high=fcst_high,
-                        actual_high=actual_high,
-                        brier_score=brier,
-                        predicted_bracket=predicted_bracket,
-                        hit=hit,
-                        used_kalshi_brackets=used_kalshi,
-                        n_brackets=n_brackets,
-                    ))
+                        if kalshi_brackets:
+                            mapped = map_probs_to_kalshi_brackets(
+                                bracket_probs, kalshi_brackets,
+                            )
+                            brier = compute_brier_score(mapped, kalshi_brackets)
+                            used_kalshi = True
+                            n_brackets = len(kalshi_brackets)
+                            kalshi_scored += 1
+                        else:
+                            brier = compute_brier_score_1f(bracket_probs, actual_high)
+                            used_kalshi = False
+                            n_brackets = len(bracket_probs)
+                            fallback_scored += 1
 
-                # Progress logging every 200 days
+                        predicted_bracket = max(bracket_probs, key=bracket_probs.get)
+                        hit = predicted_bracket == round(actual_high)
+                        fcst_high = provider.get_forecast_high(self.station_id)
+
+                        results.append(RunResult(
+                            settlement_date=obs_date,
+                            run_hour=hour,
+                            station_id=self.station_id,
+                            forecast_high=fcst_high,
+                            actual_high=actual_high,
+                            brier_score=brier,
+                            predicted_bracket=predicted_bracket,
+                            hit=hit,
+                            used_kalshi_brackets=used_kalshi,
+                            n_brackets=n_brackets,
+                            update_hour_et=update_label,
+                        ))
+
                 if (i + 1) % 200 == 0:
                     logger.info(f"  Processed {i + 1}/{len(settlement_dates)} days...")
 
@@ -724,10 +1112,7 @@ class Backtester:
         mean_brier = sum(r.brier_score for r in results) / len(results)
         top1_hits = sum(1 for r in results if r.hit)
         top1_rate = top1_hits / len(results)
-
-        # Top-2: not applicable to Kalshi bracket scoring (only meaningful for 1°F)
-        # Keep it based on the 1°F bracket_probs argmax vs actual
-        top2_rate = top1_rate  # Placeholder — real top-2 needs the full probs
+        top2_rate = top1_rate  # Placeholder
 
         # Per-run-hour breakdown
         by_hour = {}  # type: Dict[int, dict]
@@ -744,7 +1129,25 @@ class Backtester:
                     ),
                 }
 
-        return BacktestResult(
+        # Per-update-hour breakdown (Phase 2B)
+        update_hours_seen = sorted(set(
+            r.update_hour_et for r in results if r.update_hour_et is not None
+        ))
+        by_update_hour = {}  # type: Dict[int, dict]
+        for uhr in update_hours_seen:
+            uhr_results = [r for r in results if r.update_hour_et == uhr]
+            if uhr_results:
+                by_update_hour[uhr] = {
+                    "count": len(uhr_results),
+                    "mean_brier": round(
+                        sum(r.brier_score for r in uhr_results) / len(uhr_results), 4
+                    ),
+                    "top1_hit_rate": round(
+                        sum(1 for r in uhr_results if r.hit) / len(uhr_results), 4
+                    ),
+                }
+
+        result = BacktestResult(
             run_results=results,
             mean_brier=round(mean_brier, 4),
             top1_hit_rate=round(top1_rate, 4),
@@ -756,6 +1159,9 @@ class Backtester:
             fallback_scored=fallback_scored,
             by_run_hour=by_hour,
         )
+        # Attach update-hour breakdown as extra attribute (avoids changing dataclass)
+        result.by_update_hour = by_update_hour  # type: ignore[attr-defined]
+        return result
 
     def print_summary(self, result: BacktestResult) -> None:
         """Print a human-readable summary of backtest results."""

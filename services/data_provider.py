@@ -36,7 +36,7 @@ def _strip_tz(dt: datetime) -> datetime:
 class DataProvider(ABC):
     """Abstract data provider for ProbabilityEngine.
 
-    Implementations supply 5 data access methods that ProbabilityEngine
+    Implementations supply data access methods that ProbabilityEngine
     previously did via direct DB queries.
     """
 
@@ -82,6 +82,25 @@ class DataProvider(ABC):
 
         Live: last N distinct model_run groups.
         Backtest: last N model runs where model_run <= current run.
+        """
+        ...
+
+    @abstractmethod
+    def get_forecast_curve(self, station_id: str) -> List[tuple]:
+        """Full HRRR hourly forecast curve: [(valid_at, temp_f), ...].
+
+        Live: curve from the latest model run.
+        Backtest: curve from the specific model_run being evaluated.
+        """
+        ...
+
+    @abstractmethod
+    def get_observations_in_range(
+        self, station_id: str, start_utc: datetime, end_utc: datetime,
+    ) -> List[tuple]:
+        """Observations within a UTC time range: [(observed_at, temp_f), ...].
+
+        Backtest: enforces observed_at <= ref_time for walk-forward safety.
         """
         ...
 
@@ -178,6 +197,32 @@ class LiveDataProvider(DataProvider):
         ).fetchall()
         con.close()
         return [r[1] for r in rows if r[1] is not None]
+
+    def get_forecast_curve(self, station_id: str) -> List[tuple]:
+        con = get_connection(self.db_path)
+        rows = con.execute(
+            """SELECT valid_at, temp_f FROM forecasts
+               WHERE station_id = ?
+               AND model_run = (SELECT MAX(model_run) FROM forecasts WHERE station_id = ?)
+               ORDER BY valid_at""",
+            [station_id, station_id],
+        ).fetchall()
+        con.close()
+        return rows
+
+    def get_observations_in_range(
+        self, station_id: str, start_utc: datetime, end_utc: datetime,
+    ) -> List[tuple]:
+        con = get_connection(self.db_path)
+        rows = con.execute(
+            """SELECT observed_at, temp_f FROM observations
+               WHERE station_id = ? AND observed_at BETWEEN ? AND ?
+               AND temp_f IS NOT NULL
+               ORDER BY observed_at""",
+            [station_id, _strip_tz(start_utc), _strip_tz(end_utc)],
+        ).fetchall()
+        con.close()
+        return rows
 
 
 class BacktestDataProvider(DataProvider):
@@ -278,6 +323,37 @@ class BacktestDataProvider(DataProvider):
                 [station_id, self.model_run, limit],
             ).fetchall()
             return [r[1] for r in rows if r[1] is not None]
+        finally:
+            if self._shared_con is None:
+                con.close()
+
+    def get_forecast_curve(self, station_id: str) -> List[tuple]:
+        con = self._shared_con if self._shared_con else get_connection(self.db_path)
+        try:
+            return con.execute(
+                """SELECT valid_at, temp_f FROM forecasts
+                   WHERE station_id = ? AND model_run = ?
+                   ORDER BY valid_at""",
+                [station_id, self.model_run],
+            ).fetchall()
+        finally:
+            if self._shared_con is None:
+                con.close()
+
+    def get_observations_in_range(
+        self, station_id: str, start_utc: datetime, end_utc: datetime,
+    ) -> List[tuple]:
+        # Enforce walk-forward: never see obs beyond ref_time
+        effective_end = min(_strip_tz(end_utc), self.ref_time)
+        con = self._shared_con if self._shared_con else get_connection(self.db_path)
+        try:
+            return con.execute(
+                """SELECT observed_at, temp_f FROM observations
+                   WHERE station_id = ? AND observed_at BETWEEN ? AND ?
+                   AND temp_f IS NOT NULL
+                   ORDER BY observed_at""",
+                [station_id, _strip_tz(start_utc), effective_end],
+            ).fetchall()
         finally:
             if self._shared_con is None:
                 con.close()
