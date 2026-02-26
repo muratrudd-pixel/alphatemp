@@ -13,6 +13,7 @@ from core.db import init_db
 MAIN_DB = "data/alphatemp.duckdb"
 
 HRRR_DBS = ["data/backfill_00z.duckdb", "data/backfill_18z.duckdb"]
+OPENMETEO_DBS = ["data/backfill_gfs.duckdb", "data/backfill_ecmwf.duckdb"]
 KALSHI_TRADES_DB = "data/backfill_kalshi_trades.duckdb"
 KALSHI_CANDLES_DB = "data/backfill_kalshi_candles.duckdb"
 
@@ -101,6 +102,14 @@ def main():
         logger.info(f"Merging {temp_path}...")
         merge_forecasts(con, temp_path)
 
+    # --- GFS / ECMWF forecasts (Open-Meteo) ---
+    for temp_path in OPENMETEO_DBS:
+        if not os.path.exists(temp_path):
+            logger.warning(f"{temp_path} not found, skipping")
+            continue
+        logger.info(f"Merging {temp_path}...")
+        merge_forecasts(con, temp_path)
+
     # --- Kalshi trades ---
     if os.path.exists(KALSHI_TRADES_DB):
         logger.info(f"Merging {KALSHI_TRADES_DB}...")
@@ -131,7 +140,7 @@ def main():
     con.close()
 
     # Clean up temp files
-    all_temps = HRRR_DBS + [KALSHI_TRADES_DB, KALSHI_CANDLES_DB]
+    all_temps = HRRR_DBS + OPENMETEO_DBS + [KALSHI_TRADES_DB, KALSHI_CANDLES_DB]
     for temp_path in all_temps:
         for f in [temp_path, temp_path + ".wal"]:
             if os.path.exists(f):
