@@ -258,8 +258,8 @@ def _walk_forward_bias_query(con, run_hour, station_id, current_date, model_name
     return row  # (mean_bias, std_error, n, excess_kurtosis)
 
 
-def walk_forward_model(provider, ref_time):
-    # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+def walk_forward_model(provider, ref_time, model_name='hrrr'):
+    # type: (BacktestDataProvider, datetime, str) -> Optional[Dict[int, float]]
     """Walk-forward bias-corrected Gaussian using per-run-hour stats.
 
     For each evaluation:
@@ -278,7 +278,7 @@ def walk_forward_model(provider, ref_time):
     if fcst_high is None:
         return None
 
-    stats = _walk_forward_bias_query(con, run_hour, station_id, current_date)
+    stats = _walk_forward_bias_query(con, run_hour, station_id, current_date, model_name=model_name)
     if stats is None:
         return None
 
@@ -289,8 +289,8 @@ def walk_forward_model(provider, ref_time):
     return _compute_bracket_probs_from_dist(norm(0, 1), center, std)
 
 
-def walk_forward_t_model(provider, ref_time):
-    # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+def walk_forward_t_model(provider, ref_time, model_name='hrrr'):
+    # type: (BacktestDataProvider, datetime, str) -> Optional[Dict[int, float]]
     """Walk-forward bias-corrected Student-t for heavy tails.
 
     Same as walk_forward_model but uses Student-t distribution instead of
@@ -310,7 +310,7 @@ def walk_forward_t_model(provider, ref_time):
     if fcst_high is None:
         return None
 
-    stats = _walk_forward_bias_query(con, run_hour, station_id, current_date)
+    stats = _walk_forward_bias_query(con, run_hour, station_id, current_date, model_name=model_name)
     if stats is None:
         return None
 
@@ -461,8 +461,8 @@ _FEATURE_SETS = {
 }
 
 
-def _make_regression_model(name, feature_indices):
-    # type: (str, list) -> ModelFn
+def _make_regression_model(name, feature_indices, model_name='hrrr'):
+    # type: (str, list, str) -> ModelFn
     """Factory: create a walk-forward regression ModelFn for a given feature subset."""
 
     def model_fn(provider, ref_time):
@@ -477,7 +477,7 @@ def _make_regression_model(name, feature_indices):
             return None
 
         # Get training data (expanding window, all prior dates)
-        training = _walk_forward_regression_data(con, run_hour, station_id, current_date)
+        training = _walk_forward_regression_data(con, run_hour, station_id, current_date, model_name=model_name)
         if training is None:
             return None
 
@@ -502,11 +502,23 @@ def _make_regression_model(name, feature_indices):
     return model_fn
 
 
-# Pre-built regression model functions
+# Pre-built regression model functions (HRRR — default)
 wf_regression_full = _make_regression_model("wf_regression_full", _FEATURE_SETS["wf_regression_full"])
 wf_regression_fcst = _make_regression_model("wf_regression_fcst", _FEATURE_SETS["wf_regression_fcst"])
 wf_regression_month = _make_regression_model("wf_regression_month", _FEATURE_SETS["wf_regression_month"])
 wf_regression_delta = _make_regression_model("wf_regression_delta", _FEATURE_SETS["wf_regression_delta"])
+
+# --- GFS regression models (Phase 3) ---
+wf_regression_full_gfs = _make_regression_model("wf_regression_full_gfs", _FEATURE_SETS["wf_regression_full"], model_name="gfs")
+wf_regression_fcst_gfs = _make_regression_model("wf_regression_fcst_gfs", _FEATURE_SETS["wf_regression_fcst"], model_name="gfs")
+wf_regression_month_gfs = _make_regression_model("wf_regression_month_gfs", _FEATURE_SETS["wf_regression_month"], model_name="gfs")
+wf_regression_delta_gfs = _make_regression_model("wf_regression_delta_gfs", _FEATURE_SETS["wf_regression_delta"], model_name="gfs")
+
+# --- ECMWF regression models (Phase 3) ---
+wf_regression_full_ecmwf = _make_regression_model("wf_regression_full_ecmwf", _FEATURE_SETS["wf_regression_full"], model_name="ecmwf")
+wf_regression_fcst_ecmwf = _make_regression_model("wf_regression_fcst_ecmwf", _FEATURE_SETS["wf_regression_fcst"], model_name="ecmwf")
+wf_regression_month_ecmwf = _make_regression_model("wf_regression_month_ecmwf", _FEATURE_SETS["wf_regression_month"], model_name="ecmwf")
+wf_regression_delta_ecmwf = _make_regression_model("wf_regression_delta_ecmwf", _FEATURE_SETS["wf_regression_delta"], model_name="ecmwf")
 
 
 # ---------------------------------------------------------------------------
@@ -689,18 +701,18 @@ def _ensure_level1(con, run_hour, station_id, model_name='hrrr'):
     return result
 
 
-def _ensure_level2(con, run_hour, station_id, update_hour_et):
-    # type: (duckdb.DuckDBPyConnection, int, str, int) -> List[Tuple[date, float, List[float]]]
+def _ensure_level2(con, run_hour, station_id, update_hour_et, model_name='hrrr'):
+    # type: (duckdb.DuckDBPyConnection, int, str, int, str) -> List[Tuple[date, float, List[float]]]
     """Populate level-2 cache: Phase 2B training rows for one update_hour.
 
     Returns list of (date, residual, [feat0..3]) sorted by date.
     For a given current_date D, filter to entries where date < D.
     """
-    key = (id(con), run_hour, station_id, update_hour_et)
+    key = (id(con), run_hour, station_id, update_hour_et, model_name)
     if key in _p2b_level2:
         return _p2b_level2[key]
 
-    l1 = _ensure_level1(con, run_hour, station_id)
+    l1 = _ensure_level1(con, run_hour, station_id, model_name=model_name)
     curves = l1["curves"]
     obs_by_date = l1["obs_by_date"]
     errors_list = l1["errors_list"]
@@ -768,8 +780,8 @@ def _fit_and_predict_phase2b(training_rows, features_today, feature_indices):
     return (predicted_residual, max(0.3, residual_std))
 
 
-def _make_phase2b_model(name, feature_indices):
-    # type: (str, list) -> ModelFn
+def _make_phase2b_model(name, feature_indices, model_name='hrrr'):
+    # type: (str, list, str) -> ModelFn
     """Factory: Phase 2B walk-forward residual regression model.
 
     Phase 2B predicts what Phase 2 couldn't — the day-specific deviation
@@ -792,7 +804,7 @@ def _make_phase2b_model(name, feature_indices):
             return None
 
         # --- Phase 2 prediction (from cache) ---
-        l1 = _ensure_level1(con, run_hour, station_id)
+        l1 = _ensure_level1(con, run_hour, station_id, model_name=model_name)
         p2_pred = l1["p2_preds"].get(current_date)
         if p2_pred is None:
             return None
@@ -837,7 +849,7 @@ def _make_phase2b_model(name, feature_indices):
         today_feat_vec = [today_feats[k] for k in _PHASE2B_FEATURE_KEYS]
 
         # --- Phase 2B training (from cache, filtered to dates < current_date) ---
-        all_training = _ensure_level2(con, run_hour, station_id, update_hour_et)
+        all_training = _ensure_level2(con, run_hour, station_id, update_hour_et, model_name=model_name)
         filtered = [
             (residual, feat_vec)
             for d, residual, feat_vec in all_training
@@ -858,13 +870,29 @@ def _make_phase2b_model(name, feature_indices):
     return model_fn
 
 
-# Pre-built Phase 2B model functions
+# Pre-built Phase 2B model functions (HRRR — default)
 wf_phase2b_full = _make_phase2b_model("wf_phase2b_full", _PHASE2B_FEATURE_SETS["wf_phase2b_full"])
 wf_phase2b_core = _make_phase2b_model("wf_phase2b_core", _PHASE2B_FEATURE_SETS["wf_phase2b_core"])
 wf_phase2b_instant = _make_phase2b_model("wf_phase2b_instant", _PHASE2B_FEATURE_SETS["wf_phase2b_instant"])
 wf_phase2b_cumul = _make_phase2b_model("wf_phase2b_cumul", _PHASE2B_FEATURE_SETS["wf_phase2b_cumul"])
 wf_phase2b_runmax = _make_phase2b_model("wf_phase2b_runmax", _PHASE2B_FEATURE_SETS["wf_phase2b_runmax"])
 wf_phase2b_slope = _make_phase2b_model("wf_phase2b_slope", _PHASE2B_FEATURE_SETS["wf_phase2b_slope"])
+
+# --- GFS Phase 2B models (Phase 3) ---
+wf_phase2b_full_gfs = _make_phase2b_model("wf_phase2b_full_gfs", _PHASE2B_FEATURE_SETS["wf_phase2b_full"], model_name="gfs")
+wf_phase2b_core_gfs = _make_phase2b_model("wf_phase2b_core_gfs", _PHASE2B_FEATURE_SETS["wf_phase2b_core"], model_name="gfs")
+wf_phase2b_instant_gfs = _make_phase2b_model("wf_phase2b_instant_gfs", _PHASE2B_FEATURE_SETS["wf_phase2b_instant"], model_name="gfs")
+wf_phase2b_cumul_gfs = _make_phase2b_model("wf_phase2b_cumul_gfs", _PHASE2B_FEATURE_SETS["wf_phase2b_cumul"], model_name="gfs")
+wf_phase2b_runmax_gfs = _make_phase2b_model("wf_phase2b_runmax_gfs", _PHASE2B_FEATURE_SETS["wf_phase2b_runmax"], model_name="gfs")
+wf_phase2b_slope_gfs = _make_phase2b_model("wf_phase2b_slope_gfs", _PHASE2B_FEATURE_SETS["wf_phase2b_slope"], model_name="gfs")
+
+# --- ECMWF Phase 2B models (Phase 3) ---
+wf_phase2b_full_ecmwf = _make_phase2b_model("wf_phase2b_full_ecmwf", _PHASE2B_FEATURE_SETS["wf_phase2b_full"], model_name="ecmwf")
+wf_phase2b_core_ecmwf = _make_phase2b_model("wf_phase2b_core_ecmwf", _PHASE2B_FEATURE_SETS["wf_phase2b_core"], model_name="ecmwf")
+wf_phase2b_instant_ecmwf = _make_phase2b_model("wf_phase2b_instant_ecmwf", _PHASE2B_FEATURE_SETS["wf_phase2b_instant"], model_name="ecmwf")
+wf_phase2b_cumul_ecmwf = _make_phase2b_model("wf_phase2b_cumul_ecmwf", _PHASE2B_FEATURE_SETS["wf_phase2b_cumul"], model_name="ecmwf")
+wf_phase2b_runmax_ecmwf = _make_phase2b_model("wf_phase2b_runmax_ecmwf", _PHASE2B_FEATURE_SETS["wf_phase2b_runmax"], model_name="ecmwf")
+wf_phase2b_slope_ecmwf = _make_phase2b_model("wf_phase2b_slope_ecmwf", _PHASE2B_FEATURE_SETS["wf_phase2b_slope"], model_name="ecmwf")
 
 
 # ---------------------------------------------------------------------------
