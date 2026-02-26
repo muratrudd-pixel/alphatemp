@@ -50,7 +50,7 @@ class HRRRFetcher:
     def _get_latest_stored_run(self) -> Optional[datetime]:
         """Return the latest model_run already in the DB, or None."""
         con = get_connection(self.db_path)
-        row = con.execute("SELECT MAX(model_run) FROM forecasts").fetchone()
+        row = con.execute("SELECT MAX(model_run) FROM forecasts WHERE model_name = 'hrrr'").fetchone()
         con.close()
         if row and row[0] is not None:
             mr = row[0]
@@ -123,8 +123,8 @@ class HRRRFetcher:
 
                     con.execute(
                         """INSERT INTO forecasts
-                           (station_id, model_run, valid_at, temp_f, temp_c, ingested_at)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
+                           (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name)
+                           VALUES (?, ?, ?, ?, ?, ?, 'hrrr')""",
                         [stid, model_run.replace(tzinfo=None), valid_at.replace(tzinfo=None),
                          temp_f, temp_c, now.replace(tzinfo=None)],
                     )

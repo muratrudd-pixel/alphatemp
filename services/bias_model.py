@@ -47,6 +47,7 @@ class BiasModel:
         runs = con.execute(
             """SELECT DISTINCT model_run FROM forecasts
                WHERE station_id = ? AND EXTRACT(HOUR FROM model_run) = 12
+               AND model_name = 'hrrr'
                ORDER BY model_run""",
             [station_id],
         ).fetchall()
@@ -60,7 +61,7 @@ class BiasModel:
         for (model_run,) in runs:
             # Forecast high for this run
             fcst_row = con.execute(
-                "SELECT MAX(temp_f) FROM forecasts WHERE station_id = ? AND model_run = ?",
+                "SELECT MAX(temp_f) FROM forecasts WHERE station_id = ? AND model_run = ? AND model_name = 'hrrr'",
                 [station_id, model_run],
             ).fetchone()
             fcst_high = fcst_row[0] if fcst_row and fcst_row[0] is not None else None
@@ -69,7 +70,7 @@ class BiasModel:
 
             # Get the forecast time window
             window = con.execute(
-                "SELECT MIN(valid_at), MAX(valid_at) FROM forecasts WHERE station_id = ? AND model_run = ?",
+                "SELECT MIN(valid_at), MAX(valid_at) FROM forecasts WHERE station_id = ? AND model_run = ? AND model_name = 'hrrr'",
                 [station_id, model_run],
             ).fetchone()
             if not window or window[0] is None:

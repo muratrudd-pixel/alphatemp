@@ -71,7 +71,7 @@ async def health():
 
         # Latest forecast age
         fcst_row = con.execute(
-            "SELECT MAX(ingested_at) FROM forecasts"
+            "SELECT MAX(ingested_at) FROM forecasts WHERE model_name = 'hrrr'"
         ).fetchone()
         if fcst_row and fcst_row[0] is not None:
             fcst_ts = fcst_row[0]
@@ -233,6 +233,7 @@ async def forecast_point_feed(city: str, date: str = None):
            FROM forecasts
            WHERE station_id = ?
            AND valid_at >= ? AND valid_at < ?
+           AND model_name = 'hrrr'
            ORDER BY model_run ASC, valid_at ASC""",
         [station_id, day_start_utc, day_end_utc],
     ).fetchall()
@@ -329,9 +330,11 @@ async def forecast_curve(city: str, date: str = None):
         forecasts = con.execute(
             """SELECT valid_at, temp_f, model_run, ingested_at FROM forecasts
                WHERE station_id = ?
+               AND model_name = 'hrrr'
                AND model_run = (
                    SELECT MAX(model_run) FROM forecasts
                    WHERE station_id = ? AND valid_at >= ? AND valid_at < ?
+                   AND model_name = 'hrrr'
                )
                AND valid_at >= ? AND valid_at < ?
                ORDER BY valid_at""",
@@ -342,7 +345,8 @@ async def forecast_curve(city: str, date: str = None):
         forecasts = con.execute(
             """SELECT valid_at, temp_f, model_run, ingested_at FROM forecasts
                WHERE station_id = ?
-               AND model_run = (SELECT MAX(model_run) FROM forecasts WHERE station_id = ?)
+               AND model_name = 'hrrr'
+               AND model_run = (SELECT MAX(model_run) FROM forecasts WHERE station_id = ? AND model_name = 'hrrr')
                ORDER BY valid_at""",
             [station_id, station_id],
         ).fetchall()
@@ -396,7 +400,8 @@ async def forecast_curve(city: str, date: str = None):
     if day_start_utc:
         latest_mr = con.execute(
             """SELECT MAX(model_run) FROM forecasts
-               WHERE station_id = ? AND valid_at >= ? AND valid_at < ?""",
+               WHERE station_id = ? AND valid_at >= ? AND valid_at < ?
+               AND model_name = 'hrrr'""",
             [station_id, day_start_utc, day_end_utc],
         ).fetchone()[0]
 
@@ -406,6 +411,7 @@ async def forecast_curve(city: str, date: str = None):
                    WHERE station_id = ?
                    AND valid_at >= ? AND valid_at < ?
                    AND model_run != ?
+                   AND model_name = 'hrrr'
                    ORDER BY model_run DESC, valid_at ASC""",
                 [station_id, day_start_utc, day_end_utc, latest_mr],
             ).fetchall()
@@ -423,7 +429,7 @@ async def forecast_curve(city: str, date: str = None):
     else:
         # Live mode: prior runs overlapping the current forecast window
         latest_mr = con.execute(
-            "SELECT MAX(model_run) FROM forecasts WHERE station_id = ?",
+            "SELECT MAX(model_run) FROM forecasts WHERE station_id = ? AND model_name = 'hrrr'",
             [station_id],
         ).fetchone()[0]
         if latest_mr:
@@ -432,6 +438,7 @@ async def forecast_curve(city: str, date: str = None):
                 """SELECT model_run, valid_at, temp_f FROM forecasts
                    WHERE station_id = ? AND model_run != ?
                    AND valid_at >= ?
+                   AND model_name = 'hrrr'
                    ORDER BY model_run DESC, valid_at ASC""",
                 [station_id, latest_mr, first_valid],
             ).fetchall()

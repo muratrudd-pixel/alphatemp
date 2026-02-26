@@ -52,7 +52,7 @@ def backfill_forecasts(
 
         # Idempotent check: skip if we already have data for this run
         existing = con.execute(
-            "SELECT COUNT(*) FROM forecasts WHERE model_run = ?",
+            "SELECT COUNT(*) FROM forecasts WHERE model_run = ? AND model_name = 'hrrr'",
             [model_run.replace(tzinfo=None)],
         ).fetchone()[0]
 

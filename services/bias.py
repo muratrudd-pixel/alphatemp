@@ -42,7 +42,7 @@ class BiasEngine:
 
     def _get_forecast_curve(self, con, station_id: str, model_run) -> List[tuple]:
         rows = con.execute(
-            "SELECT valid_at, temp_f FROM forecasts WHERE station_id = ? AND model_run = ? ORDER BY valid_at",
+            "SELECT valid_at, temp_f FROM forecasts WHERE station_id = ? AND model_run = ? AND model_name = 'hrrr' ORDER BY valid_at",
             [station_id, model_run],
         ).fetchall()
         return rows
@@ -56,7 +56,7 @@ class BiasEngine:
 
     def _get_model_runs(self, con, station_id: str) -> List:
         rows = con.execute(
-            "SELECT DISTINCT model_run FROM forecasts WHERE station_id = ? ORDER BY model_run DESC LIMIT 3",
+            "SELECT DISTINCT model_run FROM forecasts WHERE station_id = ? AND model_name = 'hrrr' ORDER BY model_run DESC LIMIT 3",
             [station_id],
         ).fetchall()
         return [r[0] for r in rows]
@@ -97,7 +97,7 @@ class BiasEngine:
         highs = []
         for run in model_runs:
             row = con.execute(
-                "SELECT MAX(temp_f) FROM forecasts WHERE station_id = ? AND model_run = ?",
+                "SELECT MAX(temp_f) FROM forecasts WHERE station_id = ? AND model_run = ? AND model_name = 'hrrr'",
                 [station_id, run],
             ).fetchone()
             if row and row[0] is not None:
@@ -168,7 +168,7 @@ class BiasEngine:
             forecast_trend = self._compute_forecast_trend(con, stid, model_runs)
 
             fcst_max_row = con.execute(
-                "SELECT MAX(temp_f) FROM forecasts WHERE station_id = ? AND model_run = ?",
+                "SELECT MAX(temp_f) FROM forecasts WHERE station_id = ? AND model_run = ? AND model_name = 'hrrr'",
                 [stid, latest_run],
             ).fetchone()
             fcst_high = fcst_max_row[0] if fcst_max_row else 0.0

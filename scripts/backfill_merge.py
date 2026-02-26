@@ -31,6 +31,7 @@ def merge_forecasts(con, temp_path):
             WHERE m.station_id = s.station_id
               AND m.model_run  = s.model_run
               AND m.valid_at   = s.valid_at
+              AND m.model_name = s.model_name
         )
     """)
 
