@@ -223,8 +223,8 @@ def _compute_bracket_probs_from_dist(dist, center, std, radius=15):
     return probs
 
 
-def _walk_forward_bias_query(con, run_hour, station_id, current_date):
-    # type: (duckdb.DuckDBPyConnection, int, str, date) -> Optional[tuple]
+def _walk_forward_bias_query(con, run_hour, station_id, current_date, model_name='hrrr'):
+    # type: (duckdb.DuckDBPyConnection, int, str, date, str) -> Optional[tuple]
     """Expanding-window bias stats from all dates BEFORE current_date for one run_hour.
 
     Returns (mean_bias, std_error, n, excess_kurtosis) or None.
@@ -245,12 +245,13 @@ def _walk_forward_bias_query(con, run_hour, station_id, current_date):
             JOIN forecasts f ON f.station_id = n.station_id
                 AND f.model_run::DATE = n.obs_date
                 AND EXTRACT(HOUR FROM f.model_run) = ?
+                AND f.model_name = ?
             WHERE n.station_id = ?
                 AND n.obs_date < ?
                 AND n.max_temp_f IS NOT NULL
             GROUP BY n.obs_date, n.max_temp_f
         ) sub
-    """, [run_hour, station_id, current_date]).fetchone()
+    """, [run_hour, model_name, station_id, current_date]).fetchone()
 
     if not row or row[2] is None or row[2] < WALK_FORWARD_MIN_DAYS:
         return None
@@ -331,8 +332,8 @@ def walk_forward_t_model(provider, ref_time):
 # Walk-forward REGRESSION models (Phase 2)
 # ---------------------------------------------------------------------------
 
-def _walk_forward_regression_data(con, run_hour, station_id, current_date):
-    # type: (duckdb.DuckDBPyConnection, int, str, date) -> Optional[list]
+def _walk_forward_regression_data(con, run_hour, station_id, current_date, model_name='hrrr'):
+    # type: (duckdb.DuckDBPyConnection, int, str, date, str) -> Optional[list]
     """Expanding-window training data: (error, fcst_high, month, delta_temp) from prior dates.
 
     delta_temp = actual(D-1) - actual(D-2) — only uses prior actuals.
@@ -350,6 +351,7 @@ def _walk_forward_regression_data(con, run_hour, station_id, current_date):
             JOIN forecasts f ON f.station_id = n.station_id
                 AND f.model_run::DATE = n.obs_date
                 AND EXTRACT(HOUR FROM f.model_run) = ?
+                AND f.model_name = ?
             WHERE n.station_id = ?
                 AND n.obs_date < ?
                 AND n.max_temp_f IS NOT NULL
@@ -363,7 +365,7 @@ def _walk_forward_regression_data(con, run_hour, station_id, current_date):
             LAG(actual_high, 1) OVER (ORDER BY obs_date)
                 - LAG(actual_high, 2) OVER (ORDER BY obs_date) AS delta_temp
         FROM daily_errors
-    """, [run_hour, station_id, current_date]).fetchall()
+    """, [run_hour, model_name, station_id, current_date]).fetchall()
 
     # Filter out rows where delta_temp is NULL (first 2 dates in the window)
     complete = [(e, fh, m, dt) for e, fh, m, dt in rows if dt is not None]
@@ -574,14 +576,14 @@ def _compute_features_for_date(curve, day_obs, cutoff_ts):
     return compute_divergence_features(obs_temps, fcst_interp, obs_hours, fcst_up_to_t)
 
 
-def _ensure_level1(con, run_hour, station_id):
-    # type: (duckdb.DuckDBPyConnection, int, str) -> dict
+def _ensure_level1(con, run_hour, station_id, model_name='hrrr'):
+    # type: (duckdb.DuckDBPyConnection, int, str, str) -> dict
     """Populate level-1 cache: bulk data + Phase 2 predictions for all dates.
 
-    Called once per (connection, run_hour). Returns cached dict with keys:
+    Called once per (connection, run_hour, model_name). Returns cached dict with keys:
       curves, obs_by_date, errors_list, p2_preds
     """
-    key = (id(con), run_hour, station_id)
+    key = (id(con), run_hour, station_id, model_name)
     if key in _p2b_level1:
         return _p2b_level1[key]
 
@@ -600,8 +602,9 @@ def _ensure_level1(con, run_hour, station_id):
         SELECT f.model_run::DATE as obs_date, f.valid_at, f.temp_f
         FROM forecasts f
         WHERE f.station_id = ? AND EXTRACT(HOUR FROM f.model_run) = ?
+            AND f.model_name = ?
         ORDER BY f.model_run::DATE, f.valid_at
-    """, [station_id, run_hour]).fetchall()
+    """, [station_id, run_hour, model_name]).fetchall()
 
     curves = {}  # type: Dict[date, List[Tuple[float, float]]]
     for obs_date, valid_at, temp_f in curve_rows:
@@ -641,6 +644,7 @@ def _ensure_level1(con, run_hour, station_id):
             JOIN forecasts f ON f.station_id = n.station_id
                 AND f.model_run::DATE = n.obs_date
                 AND EXTRACT(HOUR FROM f.model_run) = ?
+                AND f.model_name = ?
             WHERE n.station_id = ? AND n.max_temp_f IS NOT NULL
             GROUP BY n.obs_date, n.max_temp_f
             ORDER BY n.obs_date
@@ -651,7 +655,7 @@ def _ensure_level1(con, run_hour, station_id):
                 - LAG(actual_high, 2) OVER (ORDER BY obs_date) AS delta_temp
         FROM daily_errors
         ORDER BY obs_date
-    """, [run_hour, station_id]).fetchall()
+    """, [run_hour, model_name, station_id]).fetchall()
 
     errors_list = [(d, e, fh, m, dt) for d, e, fh, m, dt in error_rows]
 
@@ -941,11 +945,12 @@ class Backtester:
         self,
         con: duckdb.DuckDBPyConnection,
         model_run: datetime,
+        model_name: str = 'hrrr',
     ) -> bool:
-        """Check if forecast data exists for this model_run."""
+        """Check if forecast data exists for this model_run and model_name."""
         row = con.execute(
-            "SELECT COUNT(*) FROM forecasts WHERE station_id = ? AND model_run = ?",
-            [self.station_id, model_run],
+            "SELECT COUNT(*) FROM forecasts WHERE station_id = ? AND model_run = ? AND model_name = ?",
+            [self.station_id, model_run, model_name],
         ).fetchone()
         return row[0] > 0
 
