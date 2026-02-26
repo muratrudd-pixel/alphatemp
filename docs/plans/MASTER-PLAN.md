@@ -96,34 +96,57 @@ PASSED. Walk-forward per-run-hour Gaussian beats all baselines.
 
 ## Phase 2: Enhanced Variables ("Can I explain more of the error?")
 
-**Status:** NOT STARTED
+**Status:** COMPLETE (2026-02-26)
 **Depends on:** Phase 1 passes its gate
 
 ### The Question
 The HRRR misses by some amount each day. Can we predict HOW MUCH it will miss using additional variables available at forecast time?
 
-### Variables to Test
-- Forecasted temperature itself (does HRRR miss more on hot vs cold days?)
-- Season / day of year
-- Dew point (from METAR obs or HRRR forecast)
-- Wind speed + direction
-- Cloud cover indicators
-- Day-over-day temperature change (regime transitions)
+### Variables Tested
+| Feature | Source | Signal? | Details |
+|---------|--------|---------|---------|
+| **Forecast high** | `MAX(f.temp_f)` | **YES — r=0.39-0.52** | HRRR warm bias scales with temperature |
+| **Month (season)** | `EXTRACT(MONTH)` | **YES — F-test p≈0** | Summer overpredict +1-2.3°F, winter underpredict -1.5-2.5°F |
+| Day-over-day delta | `LAG(actual, 1) - LAG(actual, 2)` | **NO — r≈0** | Only 00z shows marginal signal (r=0.11), dead elsewhere |
+
+### HRRR Bias Pattern Discovered
+HRRR has a **temperature-dependent bias** — it systematically overpredicts more on hot days:
+- Regression coefficient: ~+0.09-0.12°F per 1°F of forecast temperature
+- Intercept: ~-7 to -8°F (overcorrects cold, undercorrects hot)
+- This means on a 30°F day, predicted bias ≈ -4.3°F. On an 80°F day, predicted bias ≈ +0.2°F.
+- Seasonal effect partially overlaps with temperature (hot days = summer) but sin/cos month encoding captures the remaining independent seasonal pattern.
 
 ### Approach
-- Start with linear regression on HRRR error using these features
-- If a variable doesn't explain >5% of error variance, drop it
-- Keep it simple — no deep learning, no over-fitting a thin dataset
-- Convert the regression-predicted error distribution to bracket probabilities
+Walk-forward expanding-window OLS regression on HRRR error, conditioned on features available at prediction time:
+- `error = β₀ + β₁·fcst_high + β₂·sin(2π·month/12) + β₃·cos(2π·month/12) + β₄·delta_temp`
+- Predicted error replaces flat mean_bias; residual std replaces flat std_error
+- Month encoded as sin/cos pair (2 continuous features instead of 11 dummies — well-conditioned with ~400+ samples per run hour)
+- Manual OLS via `scipy.linalg.lstsq` — no sklearn dependency needed
+- Same walk-forward discipline as Phase 1: strict `obs_date < current_date`, 90-day minimum
 
-### Evaluation Metric
-Brier score improvement over Phase 1's flat bias model.
+### Results
+| Model | Brier | vs Phase 1 |
+|-------|-------|-----------|
+| walk_forward (P1 baseline) | 0.8356 | — |
+| **wf_regression_full** (fcst + month + delta) | **0.7979** | **+4.5%** |
+| wf_regression_fcst (fcst only) | 0.7998 | +4.3% |
+| wf_regression_month (month only) | 0.8139 | +2.6% |
+| wf_regression_delta (delta only) | 0.8356 | +0.0% |
 
-### Kill Condition
-If no variable adds meaningful explanatory power beyond the flat bias. In that case, stick with Phase 1's model and move to Phase 3.
+Improvement consistent across all run hours (06z and 12z benefit most).
 
-### Expected Outcome
-Forecasted temperature range and season will probably help. Wind and dew point — marginal. Cloud cover — unlikely to move the needle. Expect 2-3 useful features, not all of them.
+### Key Findings
+- **fcst_high is the dominant feature** — alone gets 4.3% of the 4.5% total improvement
+- Month adds 0.2% on top (partial overlap with temperature)
+- delta_temp is worthless — regime transitions don't predict HRRR error
+- Regression coefficients stable as training window grows (564→1,813 rows)
+- Residual std: 2.4-3.0°F (down from flat std of 2.8-3.4°F in Phase 1)
+
+### Gate
+PASSED. +4.5% clears the >2% threshold. `wf_regression_full` is the new champion model.
+
+### Possible Phase 2B: Intra-Day Observation Updates
+Not yet started. The biggest remaining edge: update predictions as real-time observations arrive during the day. Kalshi market improves from 0.63→0.44→0.14 Brier through the day because traders watch the thermometer. Phase 2B would replay historical observations and shift predictions accordingly.
 
 ---
 

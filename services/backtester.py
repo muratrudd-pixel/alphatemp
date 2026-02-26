@@ -5,12 +5,15 @@ any model function via BacktestDataProvider, scores against NWS settlement
 using Kalshi's standard 2°F bracket structure.
 """
 
+import math
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional, Tuple
 
 import duckdb
+import numpy as np
 from loguru import logger
+from scipy.linalg import lstsq
 from scipy.stats import norm, t as student_t
 
 from core.constants import CITIES
@@ -321,6 +324,186 @@ def walk_forward_t_model(provider, ref_time):
         df = 30.0  # Near-Gaussian when kurtosis <= 0
 
     return _compute_bracket_probs_from_dist(student_t(df), center, std)
+
+
+# ---------------------------------------------------------------------------
+# Walk-forward REGRESSION models (Phase 2)
+# ---------------------------------------------------------------------------
+
+def _walk_forward_regression_data(con, run_hour, station_id, current_date):
+    # type: (duckdb.DuckDBPyConnection, int, str, date) -> Optional[list]
+    """Expanding-window training data: (error, fcst_high, month, delta_temp) from prior dates.
+
+    delta_temp = actual(D-1) - actual(D-2) — only uses prior actuals.
+    Returns None if fewer than WALK_FORWARD_MIN_DAYS complete rows.
+    """
+    rows = con.execute("""
+        WITH daily_errors AS (
+            SELECT
+                n.obs_date,
+                MAX(f.temp_f) - n.max_temp_f AS error,
+                MAX(f.temp_f) AS fcst_high,
+                EXTRACT(MONTH FROM n.obs_date) AS month,
+                n.max_temp_f AS actual_high
+            FROM nws_daily n
+            JOIN forecasts f ON f.station_id = n.station_id
+                AND f.model_run::DATE = n.obs_date
+                AND EXTRACT(HOUR FROM f.model_run) = ?
+            WHERE n.station_id = ?
+                AND n.obs_date < ?
+                AND n.max_temp_f IS NOT NULL
+            GROUP BY n.obs_date, n.max_temp_f
+            ORDER BY n.obs_date
+        )
+        SELECT
+            error,
+            fcst_high,
+            month,
+            LAG(actual_high, 1) OVER (ORDER BY obs_date)
+                - LAG(actual_high, 2) OVER (ORDER BY obs_date) AS delta_temp
+        FROM daily_errors
+    """, [run_hour, station_id, current_date]).fetchall()
+
+    # Filter out rows where delta_temp is NULL (first 2 dates in the window)
+    complete = [(e, fh, m, dt) for e, fh, m, dt in rows if dt is not None]
+    if len(complete) < WALK_FORWARD_MIN_DAYS:
+        return None
+    return complete
+
+
+def _encode_month(month):
+    # type: (float,) -> Tuple[float, float]
+    """Encode month as (sin, cos) pair for smooth seasonal capture."""
+    angle = 2.0 * math.pi * month / 12.0
+    return (math.sin(angle), math.cos(angle))
+
+
+def _fit_and_predict(rows, features_today, feature_indices):
+    # type: (list, tuple, list) -> Optional[Tuple[float, float]]
+    """Manual OLS via scipy.linalg.lstsq.
+
+    rows: list of (error, fcst_high, month, delta_temp)
+    features_today: (fcst_high, month, delta_temp) for the prediction date
+    feature_indices: which columns to use from the feature set:
+        0 = fcst_high, 1 = sin(month), 2 = cos(month), 3 = delta_temp
+
+    Returns (predicted_bias, residual_std) or None on failure.
+    """
+    n = len(rows)
+    if n < WALK_FORWARD_MIN_DAYS:
+        return None
+
+    # Build feature matrix: each row = [1 (intercept), selected features...]
+    n_features = len(feature_indices)
+    A = np.empty((n, 1 + n_features), dtype=np.float64)
+    y = np.empty(n, dtype=np.float64)
+
+    for i, (error, fcst_high, month, delta_temp) in enumerate(rows):
+        sin_m, cos_m = _encode_month(month)
+        all_features = [fcst_high, sin_m, cos_m, delta_temp]
+        A[i, 0] = 1.0  # intercept
+        for j, idx in enumerate(feature_indices):
+            A[i, 1 + j] = all_features[idx]
+        y[i] = error
+
+    # Solve via least squares
+    result = lstsq(A, y)
+    coeffs = result[0]
+
+    # Predict for today
+    fcst_today, month_today, delta_today = features_today
+    sin_m, cos_m = _encode_month(month_today)
+    all_today = [fcst_today, sin_m, cos_m, delta_today]
+    x_today = np.array([1.0] + [all_today[idx] for idx in feature_indices])
+    predicted_bias = float(np.dot(coeffs, x_today))
+
+    # Residual std from training data
+    residuals = y - A @ coeffs
+    residual_std = float(np.std(residuals, ddof=1 + n_features))
+
+    return (predicted_bias, max(0.3, residual_std))
+
+
+def _get_delta_temp(con, station_id, current_date):
+    # type: (duckdb.DuckDBPyConnection, str, date) -> Optional[float]
+    """Get actual(D-1) - actual(D-2) using only data BEFORE current_date.
+
+    D-1 = the day before current_date, D-2 = two days before.
+    Both must exist in nws_daily.
+    """
+    rows = con.execute("""
+        SELECT max_temp_f
+        FROM nws_daily
+        WHERE station_id = ?
+            AND obs_date < ?
+            AND max_temp_f IS NOT NULL
+        ORDER BY obs_date DESC
+        LIMIT 2
+    """, [station_id, current_date]).fetchall()
+
+    if len(rows) < 2:
+        return None
+    # rows[0] = D-1, rows[1] = D-2 (descending order)
+    return rows[0][0] - rows[1][0]
+
+
+# Feature index mapping for _fit_and_predict:
+#   0 = fcst_high, 1 = sin(month), 2 = cos(month), 3 = delta_temp
+
+_FEATURE_SETS = {
+    "wf_regression_full":  [0, 1, 2, 3],       # fcst_high + month + delta
+    "wf_regression_fcst":  [0],                  # fcst_high only
+    "wf_regression_month": [1, 2],               # month (sin/cos) only
+    "wf_regression_delta": [3],                   # delta_temp only
+}
+
+
+def _make_regression_model(name, feature_indices):
+    # type: (str, list) -> ModelFn
+    """Factory: create a walk-forward regression ModelFn for a given feature subset."""
+
+    def model_fn(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+        con = provider._shared_con
+        station_id = provider.station_id
+        run_hour = provider.model_run.hour
+        current_date = provider.model_run.date()
+
+        fcst_high = provider.get_forecast_high(station_id)
+        if fcst_high is None:
+            return None
+
+        # Get training data (expanding window, all prior dates)
+        training = _walk_forward_regression_data(con, run_hour, station_id, current_date)
+        if training is None:
+            return None
+
+        # Get today's delta_temp
+        delta_temp = _get_delta_temp(con, station_id, current_date)
+        if delta_temp is None:
+            return None
+
+        month = float(current_date.month)
+        features_today = (fcst_high, month, delta_temp)
+
+        result = _fit_and_predict(training, features_today, feature_indices)
+        if result is None:
+            return None
+
+        predicted_bias, residual_std = result
+        center = fcst_high - predicted_bias
+        return _compute_bracket_probs_from_dist(norm(0, 1), center, residual_std)
+
+    model_fn.__name__ = name
+    model_fn.__doc__ = "Walk-forward regression: {}".format(name)
+    return model_fn
+
+
+# Pre-built regression model functions
+wf_regression_full = _make_regression_model("wf_regression_full", _FEATURE_SETS["wf_regression_full"])
+wf_regression_fcst = _make_regression_model("wf_regression_fcst", _FEATURE_SETS["wf_regression_fcst"])
+wf_regression_month = _make_regression_model("wf_regression_month", _FEATURE_SETS["wf_regression_month"])
+wf_regression_delta = _make_regression_model("wf_regression_delta", _FEATURE_SETS["wf_regression_delta"])
 
 
 # ---------------------------------------------------------------------------
