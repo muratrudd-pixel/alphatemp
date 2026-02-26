@@ -114,6 +114,55 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         )
     """)
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kalshi_settlements (
+            market_ticker   VARCHAR NOT NULL,
+            event_ticker    VARCHAR NOT NULL,
+            series_ticker   VARCHAR NOT NULL,
+            city            VARCHAR NOT NULL,
+            measure         VARCHAR NOT NULL,
+            event_date      DATE,
+            floor_strike    DOUBLE,
+            cap_strike      DOUBLE,
+            settled_yes     INTEGER,
+            volume          INTEGER,
+            close_time      TIMESTAMP,
+            ingested_at     TIMESTAMP NOT NULL,
+            UNIQUE(market_ticker)
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kalshi_candlesticks (
+            market_ticker   VARCHAR NOT NULL,
+            end_period_ts   TIMESTAMP NOT NULL,
+            period_minutes  INTEGER NOT NULL,
+            yes_bid_close   DOUBLE,
+            yes_ask_close   DOUBLE,
+            price_open      DOUBLE,
+            price_high      DOUBLE,
+            price_low       DOUBLE,
+            price_close     DOUBLE,
+            volume          INTEGER,
+            open_interest   INTEGER,
+            UNIQUE(market_ticker, end_period_ts)
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kalshi_trades (
+            trade_id        VARCHAR NOT NULL,
+            market_ticker   VARCHAR NOT NULL,
+            yes_price       INTEGER,
+            no_price        INTEGER,
+            count           INTEGER,
+            taker_side      VARCHAR,
+            created_time    TIMESTAMP NOT NULL,
+            ingested_at     TIMESTAMP NOT NULL,
+            UNIQUE(trade_id)
+        )
+    """)
+
     # Indexes — accelerate the most common query patterns
     for stmt in [
         "CREATE INDEX IF NOT EXISTS idx_obs_station_time ON observations (station_id, observed_at)",
@@ -123,6 +172,11 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         "CREATE INDEX IF NOT EXISTS idx_market_city_time ON market_ticks (city, captured_at)",
         "CREATE INDEX IF NOT EXISTS idx_bias_station_time ON station_bias (station_id, calculated_at)",
         "CREATE INDEX IF NOT EXISTS idx_nws_station_date ON nws_daily (station_id, obs_date)",
+        "CREATE INDEX IF NOT EXISTS idx_ks_series ON kalshi_settlements (series_ticker)",
+        "CREATE INDEX IF NOT EXISTS idx_ks_date ON kalshi_settlements (event_date)",
+        "CREATE INDEX IF NOT EXISTS idx_kc_ticker ON kalshi_candlesticks (market_ticker)",
+        "CREATE INDEX IF NOT EXISTS idx_kt_ticker ON kalshi_trades (market_ticker)",
+        "CREATE INDEX IF NOT EXISTS idx_kt_time ON kalshi_trades (created_time)",
     ]:
         con.execute(stmt)
 

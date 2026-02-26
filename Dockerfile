@@ -22,6 +22,7 @@ COPY core/ core/
 COPY services/ services/
 COPY ui/ ui/
 COPY templates/ templates/
+COPY scripts/ scripts/
 COPY main.py .
 
 RUN mkdir -p /app/data

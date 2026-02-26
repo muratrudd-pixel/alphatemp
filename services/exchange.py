@@ -160,6 +160,98 @@ class KalshiClient:
         """Get current orders."""
         return self._get("/portfolio/orders", params={"status": status})
 
+    # --- Historical / Backfill ---
+
+    def get_settled_markets(
+        self,
+        series_ticker: str,
+        cursor: Optional[str] = None,
+        limit: int = 1000,
+    ) -> Dict[str, Any]:
+        """Fetch settled markets for a series (paginated).
+
+        Returns raw response with 'markets' list and 'cursor' for pagination.
+        """
+        params = {
+            "series_ticker": series_ticker,
+            "status": "settled",
+            "limit": limit,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        return self._get("/markets", params=params)
+
+    def get_historical_markets(
+        self,
+        series_ticker: str,
+        cursor: Optional[str] = None,
+        limit: int = 1000,
+    ) -> Dict[str, Any]:
+        """Fetch historical markets (fallback for data past live cutoff)."""
+        params = {
+            "series_ticker": series_ticker,
+            "limit": limit,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        return self._get("/markets", params=params)
+
+    def get_candlesticks(
+        self,
+        series_ticker: str,
+        ticker: str,
+        start_ts: int,
+        end_ts: int,
+        period_interval: int = 1,
+    ) -> List[Dict[str, Any]]:
+        """Fetch candlestick data for a market.
+
+        Args:
+            series_ticker: Series ticker (e.g. KXHIGHNY)
+            ticker: Market ticker
+            start_ts: Start time (Unix seconds)
+            end_ts: End time (Unix seconds)
+            period_interval: Candle period in minutes (1 = 1-minute)
+        """
+        params = {
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "period_interval": period_interval,
+        }
+        path = f"/series/{series_ticker}/markets/{ticker}/candlesticks"
+        data = self._get(path, params=params)
+        return data.get("candlesticks", [])
+
+    def get_trades(
+        self,
+        ticker: Optional[str] = None,
+        min_ts: Optional[int] = None,
+        max_ts: Optional[int] = None,
+        cursor: Optional[str] = None,
+        limit: int = 1000,
+    ) -> Dict[str, Any]:
+        """Fetch trades (paginated).
+
+        Args:
+            ticker: Filter by market ticker (optional)
+            min_ts: Filter trades after this Unix timestamp (optional)
+            max_ts: Filter trades before this Unix timestamp (optional)
+            cursor: Pagination cursor
+            limit: Results per page (max 1000)
+
+        Returns raw response with 'trades' list and 'cursor' for pagination.
+        """
+        params = {"limit": limit}
+        if ticker:
+            params["ticker"] = ticker
+        if min_ts:
+            params["min_ts"] = min_ts
+        if max_ts:
+            params["max_ts"] = max_ts
+        if cursor:
+            params["cursor"] = cursor
+        return self._get("/markets/trades", params=params)
+
 
 def get_temperature_markets(client: KalshiClient, city: str) -> List[Dict[str, Any]]:
     """Get all open temperature high markets for a city."""

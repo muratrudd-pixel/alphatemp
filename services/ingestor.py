@@ -39,6 +39,8 @@ def parse_t_group(metar_remarks: str) -> Optional[float]:
     Sign: 0 = positive, 1 = negative
     Example: T0228 -> +22.8 C, T1005 -> -0.5 C
     """
+    if not metar_remarks:
+        return None
     match = T_GROUP_PATTERN.search(metar_remarks)
     if not match:
         return None
@@ -49,6 +51,8 @@ def parse_t_group(metar_remarks: str) -> Optional[float]:
 
 def parse_6h_max(metar_remarks: str) -> Optional[float]:
     """Extract 6-hour maximum temp (Celsius) from synoptic remark group 1xxxx."""
+    if not metar_remarks:
+        return None
     match = SIX_HR_MAX_PATTERN.search(metar_remarks)
     if not match:
         return None
@@ -58,6 +62,8 @@ def parse_6h_max(metar_remarks: str) -> Optional[float]:
 
 def parse_6h_min(metar_remarks: str) -> Optional[float]:
     """Extract 6-hour minimum temp (Celsius) from synoptic remark group 2xxxx."""
+    if not metar_remarks:
+        return None
     match = SIX_HR_MIN_PATTERN.search(metar_remarks)
     if not match:
         return None

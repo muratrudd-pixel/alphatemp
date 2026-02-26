@@ -29,10 +29,9 @@ def main():
     hour = int(sys.argv[1])
     db_path = f"data/backfill_{hour:02d}z.duckdb"
 
-    # Remove stale temp DB if it exists
+    # Resume from existing temp DB if it exists (backfill_forecasts is idempotent)
     if os.path.exists(db_path):
-        os.remove(db_path)
-        logger.info(f"Removed stale {db_path}")
+        logger.info(f"Resuming from existing {db_path}")
 
     init_db(db_path)
 

@@ -80,6 +80,9 @@ class MarketFetcher:
                     volume = m.get("volume", 0)
                     floor_strike = m.get("floor_strike")
                     cap_strike = m.get("cap_strike")
+                    open_interest = m.get("open_interest")
+                    liquidity = m.get("liquidity")
+                    volume_24h = m.get("volume_24h")
 
                     def to_decimal(v):
                         if v is None:
@@ -93,8 +96,9 @@ class MarketFetcher:
                         """INSERT INTO market_ticks
                             (market_id, city, captured_at, yes_bid, yes_ask,
                              no_bid, no_ask, last_trade, volume,
-                             floor_strike, cap_strike)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                             floor_strike, cap_strike,
+                             open_interest, liquidity, volume_24h)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         [
                             ticker, city, now,
                             to_decimal(yes_bid), to_decimal(yes_ask),
@@ -102,6 +106,7 @@ class MarketFetcher:
                             to_decimal(last_price),
                             volume,
                             floor_strike, cap_strike,
+                            open_interest, liquidity, volume_24h,
                         ],
                     )
                     total_stored += 1
