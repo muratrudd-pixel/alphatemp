@@ -1,0 +1,469 @@
+"""Backtester — replay model functions against historical data and score.
+
+Iterates settlement dates × HRRR run hours, feeds historical data through
+any model function via BacktestDataProvider, scores against NWS settlement
+using Kalshi's standard 2°F bracket structure.
+"""
+
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+from typing import Callable, Dict, List, Optional, Tuple
+
+import duckdb
+from loguru import logger
+
+from core.constants import CITIES
+from core.db import get_connection
+from services.data_provider import (
+    BacktestDataProvider,
+    HRRR_AVAILABILITY_LAG_HOURS,
+    _strip_tz,
+)
+
+
+# ---------------------------------------------------------------------------
+# Type alias for pluggable model functions.
+# (BacktestDataProvider, ref_time) -> Optional[Dict[int, float]]
+# Returns 1°F integer bracket probabilities, or None if it can't forecast.
+# ---------------------------------------------------------------------------
+ModelFn = Callable[[BacktestDataProvider, datetime], Optional[Dict[int, float]]]
+
+RUN_HOURS = [0, 6, 12, 18]
+
+
+# ---------------------------------------------------------------------------
+# Kalshi bracket helpers
+# ---------------------------------------------------------------------------
+
+@dataclass
+class KalshiBracket:
+    """One bracket from a Kalshi settlement event."""
+    floor_strike: Optional[float]  # None for lower tail
+    cap_strike: Optional[float]    # None for upper tail
+    settled_yes: int               # 1 if this bracket settled YES
+
+    def contains(self, temp: int) -> bool:
+        """Check if an integer temperature falls in this bracket.
+
+        Convention (verified against KXHIGHNY settlement data):
+        - Lower tail: temp < cap_strike  (strictly less than)
+        - Interior:   floor_strike <= temp <= cap_strike  (inclusive both)
+        - Upper tail:  temp > floor_strike  (strictly greater than)
+        """
+        if self.floor_strike is None:
+            # Lower tail
+            return temp < self.cap_strike
+        if self.cap_strike is None:
+            # Upper tail
+            return temp > self.floor_strike
+        # Interior bracket
+        return self.floor_strike <= temp <= self.cap_strike
+
+
+def map_probs_to_kalshi_brackets(
+    bracket_probs_1f: Dict[int, float],
+    kalshi_brackets: List[KalshiBracket],
+) -> List[float]:
+    """Map 1°F integer bracket probabilities to Kalshi's 2°F bracket structure.
+
+    Sums the model's probability mass for each integer temperature that falls
+    into each Kalshi bracket. Returns a list of probabilities aligned with
+    the kalshi_brackets list.
+    """
+    mapped = []
+    for kb in kalshi_brackets:
+        p = sum(prob for temp, prob in bracket_probs_1f.items() if kb.contains(temp))
+        mapped.append(p)
+
+    # Normalize — the model's 1°F probs may not cover all Kalshi brackets exactly
+    total = sum(mapped)
+    if total > 0 and abs(total - 1.0) > 0.01:
+        mapped = [p / total for p in mapped]
+
+    return mapped
+
+
+# ---------------------------------------------------------------------------
+# Brier score
+# ---------------------------------------------------------------------------
+
+def compute_brier_score(
+    mapped_probs: List[float],
+    kalshi_brackets: List[KalshiBracket],
+) -> float:
+    """Multi-category Brier score for Kalshi bracket predictions.
+
+    BS = sum_k (p_k - o_k)^2
+    where o_k = 1 if bracket k settled YES, 0 otherwise.
+
+    Lower is better. Perfect = 0.0.
+    """
+    n = len(mapped_probs)
+    if n == 0:
+        return 2.0  # Worst possible
+
+    total = 0.0
+    for i, kb in enumerate(kalshi_brackets):
+        outcome = 1.0 if kb.settled_yes else 0.0
+        total += (mapped_probs[i] - outcome) ** 2
+
+    return total
+
+
+def compute_brier_score_1f(
+    bracket_probs: Dict[int, float],
+    actual_high: float,
+) -> float:
+    """Brier score using 1°F integer brackets (fallback for dates without Kalshi data).
+
+    BS = sum_k (p_k - o_k)^2 where o_k = 1 if k == round(actual_high).
+    """
+    actual_bracket = round(actual_high)
+    total = 0.0
+    for k, p in bracket_probs.items():
+        outcome = 1.0 if k == actual_bracket else 0.0
+        total += (p - outcome) ** 2
+    # Penalize if actual bracket not in model's output
+    if actual_bracket not in bracket_probs:
+        total += 1.0
+    return total
+
+
+# ---------------------------------------------------------------------------
+# Result dataclasses
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RunResult:
+    """Result of a single model_run evaluation."""
+    settlement_date: date
+    run_hour: int
+    station_id: str
+    forecast_high: Optional[float]
+    actual_high: float
+    brier_score: float
+    predicted_bracket: int     # argmax of 1°F bracket probs
+    hit: bool                  # predicted_bracket == round(actual_high)
+    used_kalshi_brackets: bool  # True if scored with 2°F Kalshi brackets
+    n_brackets: int            # Number of brackets scored against
+
+
+@dataclass
+class BacktestResult:
+    """Aggregate results from a full backtest run."""
+    run_results: List[RunResult]
+    mean_brier: float
+    top1_hit_rate: float
+    top2_hit_rate: float
+    total_days: int
+    total_evaluations: int
+    skipped: int
+    kalshi_scored: int         # How many used real Kalshi bracket scoring
+    fallback_scored: int       # How many used 1°F fallback scoring
+    by_run_hour: Dict[int, dict]
+
+
+# ---------------------------------------------------------------------------
+# Dummy model for Phase 0 gate
+# ---------------------------------------------------------------------------
+
+def uniform_model(provider: BacktestDataProvider, ref_time: datetime) -> Optional[Dict[int, float]]:
+    """Dummy model: uniform distribution over 31 brackets around forecast high."""
+    fcst_high = provider.get_forecast_high(provider.station_id)
+    if fcst_high is None:
+        return None
+    center = round(fcst_high)
+    radius = 15
+    n = 2 * radius + 1
+    return {k: 1.0 / n for k in range(center - radius, center + radius + 1)}
+
+
+def bias_corrected_model(provider: BacktestDataProvider, ref_time: datetime) -> Optional[Dict[int, float]]:
+    """Phase 1 model: bias-corrected Gaussian via ProbabilityEngine.
+
+    Same code path as live — just different data source.
+    """
+    from services.probability import ProbabilityEngine
+    engine = ProbabilityEngine(data_provider=provider)
+    forecast = engine.calculate_city("NYC", ref_time=ref_time)
+    if forecast is None:
+        return None
+    return forecast.bracket_probs
+
+
+# ---------------------------------------------------------------------------
+# Backtester
+# ---------------------------------------------------------------------------
+
+class Backtester:
+    """Iterates historical dates, feeds data through a model function, scores results.
+
+    For each settlement date in nws_daily:
+      For each HRRR run hour (00z, 06z, 12z, 18z):
+        1. Construct a BacktestDataProvider for (station_id, model_run, ref_time)
+        2. Call model_fn(provider, ref_time) -> bracket_probs (1°F integers)
+        3. Map to Kalshi 2°F brackets if available for that date
+        4. Compute Brier score against settlement outcome
+    """
+
+    def __init__(
+        self,
+        db_path: str = "data/alphatemp.duckdb",
+        city: str = "NYC",
+    ):
+        self.db_path = db_path
+        self.city = city
+        self.station_id = CITIES[city]["settlement"]
+
+    def _get_settlement_dates(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> List[Tuple[date, float]]:
+        """Get (obs_date, max_temp_f) from nws_daily within range."""
+        query = """
+            SELECT obs_date, max_temp_f
+            FROM nws_daily
+            WHERE station_id = ?
+            AND max_temp_f IS NOT NULL
+        """
+        params = [self.station_id]  # type: list
+
+        if start_date:
+            query += " AND obs_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND obs_date <= ?"
+            params.append(end_date)
+
+        query += " ORDER BY obs_date"
+        return [(r[0], r[1]) for r in con.execute(query, params).fetchall()]
+
+    def _get_kalshi_brackets(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        settlement_date: date,
+    ) -> Optional[List[KalshiBracket]]:
+        """Get bracket definitions from kalshi_settlements for this date."""
+        rows = con.execute(
+            """SELECT floor_strike, cap_strike, settled_yes
+               FROM kalshi_settlements
+               WHERE event_date = ?
+               ORDER BY floor_strike NULLS FIRST""",
+            [settlement_date],
+        ).fetchall()
+
+        if not rows or len(rows) < 2:
+            return None
+
+        # Filter out brackets with both strikes NULL (unparsed ticker data)
+        brackets = [
+            KalshiBracket(floor_strike=r[0], cap_strike=r[1], settled_yes=r[2])
+            for r in rows
+            if r[0] is not None or r[1] is not None
+        ]
+        return brackets if len(brackets) >= 2 else None
+
+    def _has_forecast_data(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        model_run: datetime,
+    ) -> bool:
+        """Check if forecast data exists for this model_run."""
+        row = con.execute(
+            "SELECT COUNT(*) FROM forecasts WHERE station_id = ? AND model_run = ?",
+            [self.station_id, model_run],
+        ).fetchone()
+        return row[0] > 0
+
+    def run(
+        self,
+        model_fn: ModelFn,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        run_hours: Optional[List[int]] = None,
+    ) -> BacktestResult:
+        """Execute the backtest and return scored results.
+
+        Uses a single persistent read-only connection shared across all
+        BacktestDataProvider instances to minimize DuckDB overhead.
+        """
+        if run_hours is None:
+            run_hours = RUN_HOURS
+
+        con = duckdb.connect(self.db_path, read_only=True)
+
+        try:
+            settlement_dates = self._get_settlement_dates(con, start_date, end_date)
+            logger.info(
+                f"Backtesting {len(settlement_dates)} settlement dates, "
+                f"run hours: {run_hours}"
+            )
+
+            results = []  # type: List[RunResult]
+            skipped = 0
+            kalshi_scored = 0
+            fallback_scored = 0
+
+            # Pre-fetch Kalshi brackets for all dates (batch is faster than per-date)
+            kalshi_cache = {}  # type: Dict[date, Optional[List[KalshiBracket]]]
+
+            for i, (obs_date, actual_high) in enumerate(settlement_dates):
+                # Fetch Kalshi brackets for this date (cached per date)
+                if obs_date not in kalshi_cache:
+                    kalshi_cache[obs_date] = self._get_kalshi_brackets(con, obs_date)
+                kalshi_brackets = kalshi_cache[obs_date]
+
+                for hour in run_hours:
+                    model_run_utc = datetime(
+                        obs_date.year, obs_date.month, obs_date.day,
+                        hour, 0, tzinfo=timezone.utc,
+                    )
+                    # Strip tz for DuckDB queries (TIMESTAMP columns are naive UTC)
+                    model_run_naive = _strip_tz(model_run_utc)
+
+                    if not self._has_forecast_data(con, model_run_naive):
+                        skipped += 1
+                        continue
+
+                    ref_time = model_run_utc + timedelta(hours=HRRR_AVAILABILITY_LAG_HOURS)
+
+                    provider = BacktestDataProvider(
+                        db_path=self.db_path,
+                        station_id=self.station_id,
+                        model_run=model_run_utc,
+                        ref_time=ref_time,
+                        connection=con,
+                    )
+
+                    bracket_probs = model_fn(provider, ref_time)
+                    if bracket_probs is None:
+                        skipped += 1
+                        continue
+
+                    # Score with Kalshi 2°F brackets if available, else 1°F fallback
+                    if kalshi_brackets:
+                        mapped = map_probs_to_kalshi_brackets(bracket_probs, kalshi_brackets)
+                        brier = compute_brier_score(mapped, kalshi_brackets)
+                        used_kalshi = True
+                        n_brackets = len(kalshi_brackets)
+                        kalshi_scored += 1
+                    else:
+                        brier = compute_brier_score_1f(bracket_probs, actual_high)
+                        used_kalshi = False
+                        n_brackets = len(bracket_probs)
+                        fallback_scored += 1
+
+                    predicted_bracket = max(bracket_probs, key=bracket_probs.get)
+                    hit = predicted_bracket == round(actual_high)
+
+                    fcst_high = provider.get_forecast_high(self.station_id)
+
+                    results.append(RunResult(
+                        settlement_date=obs_date,
+                        run_hour=hour,
+                        station_id=self.station_id,
+                        forecast_high=fcst_high,
+                        actual_high=actual_high,
+                        brier_score=brier,
+                        predicted_bracket=predicted_bracket,
+                        hit=hit,
+                        used_kalshi_brackets=used_kalshi,
+                        n_brackets=n_brackets,
+                    ))
+
+                # Progress logging every 200 days
+                if (i + 1) % 200 == 0:
+                    logger.info(f"  Processed {i + 1}/{len(settlement_dates)} days...")
+
+            return self._aggregate(
+                results, len(settlement_dates), skipped, kalshi_scored, fallback_scored
+            )
+        finally:
+            con.close()
+
+    def _aggregate(
+        self,
+        results: List[RunResult],
+        total_days: int,
+        skipped: int,
+        kalshi_scored: int,
+        fallback_scored: int,
+    ) -> BacktestResult:
+        """Compute aggregate metrics from individual run results."""
+        if not results:
+            return BacktestResult(
+                run_results=results,
+                mean_brier=2.0,
+                top1_hit_rate=0.0,
+                top2_hit_rate=0.0,
+                total_days=total_days,
+                total_evaluations=0,
+                skipped=skipped,
+                kalshi_scored=0,
+                fallback_scored=0,
+                by_run_hour={},
+            )
+
+        mean_brier = sum(r.brier_score for r in results) / len(results)
+        top1_hits = sum(1 for r in results if r.hit)
+        top1_rate = top1_hits / len(results)
+
+        # Top-2: not applicable to Kalshi bracket scoring (only meaningful for 1°F)
+        # Keep it based on the 1°F bracket_probs argmax vs actual
+        top2_rate = top1_rate  # Placeholder — real top-2 needs the full probs
+
+        # Per-run-hour breakdown
+        by_hour = {}  # type: Dict[int, dict]
+        for hour in RUN_HOURS:
+            hour_results = [r for r in results if r.run_hour == hour]
+            if hour_results:
+                by_hour[hour] = {
+                    "count": len(hour_results),
+                    "mean_brier": round(
+                        sum(r.brier_score for r in hour_results) / len(hour_results), 4
+                    ),
+                    "top1_hit_rate": round(
+                        sum(1 for r in hour_results if r.hit) / len(hour_results), 4
+                    ),
+                }
+
+        return BacktestResult(
+            run_results=results,
+            mean_brier=round(mean_brier, 4),
+            top1_hit_rate=round(top1_rate, 4),
+            top2_hit_rate=round(top2_rate, 4),
+            total_days=total_days,
+            total_evaluations=len(results),
+            skipped=skipped,
+            kalshi_scored=kalshi_scored,
+            fallback_scored=fallback_scored,
+            by_run_hour=by_hour,
+        )
+
+    def print_summary(self, result: BacktestResult) -> None:
+        """Print a human-readable summary of backtest results."""
+        logger.info("=" * 60)
+        logger.info("Backtest Summary")
+        logger.info("=" * 60)
+        logger.info(
+            f"Days: {result.total_days} | Evaluations: {result.total_evaluations} "
+            f"| Skipped: {result.skipped}"
+        )
+        logger.info(
+            f"Scoring: {result.kalshi_scored} Kalshi 2°F, "
+            f"{result.fallback_scored} fallback 1°F"
+        )
+        logger.info(f"Mean Brier Score: {result.mean_brier:.4f}")
+        logger.info(f"Top-1 Hit Rate:   {result.top1_hit_rate:.1%}")
+        if result.by_run_hour:
+            logger.info("-" * 60)
+            logger.info("Per Run Hour:")
+            for hour, stats in sorted(result.by_run_hour.items()):
+                logger.info(
+                    f"  {hour:02d}z: n={stats['count']}, "
+                    f"brier={stats['mean_brier']:.4f}, "
+                    f"top1={stats['top1_hit_rate']:.1%}"
+                )
+        logger.info("=" * 60)

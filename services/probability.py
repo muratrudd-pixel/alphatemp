@@ -3,14 +3,13 @@
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from loguru import logger
 from scipy.stats import norm
 
 from core.constants import CITIES, STATION_COORDS, POLL_INTERVAL_SECONDS
-from core.db import get_connection
-from services.bias_model import BiasModel, StationBias
+from services.bias_model import StationBias
 
 
 @dataclass
@@ -28,58 +27,18 @@ class ProbabilityEngine:
 
     Center = forecast_high - historical_bias + same_day_drift
     Std = historical_std_error * time_factor * stability_factor * convergence_factor
+
+    Accepts a DataProvider for data access. If none is given, creates a
+    LiveDataProvider with the supplied db_path (backward-compatible).
     """
 
-    CACHE_TTL_SECONDS = 3600  # 1 hour
-
-    def __init__(self, db_path: str = "data/alphatemp.duckdb"):
-        self.db_path = db_path
-        self._bias_cache: Dict[str, StationBias] = {}
-        self._cache_loaded_at: Optional[datetime] = None
-
-    def load_bias_cache(self) -> None:
-        """Load the latest historical bias stats for all stations."""
-        con = get_connection(self.db_path)
-        for station_id in STATION_COORDS:
-            row = con.execute(
-                """SELECT mean_bias, std_error, sample_days
-                   FROM station_bias
-                   WHERE station_id = ?
-                   ORDER BY calculated_at DESC LIMIT 1""",
-                [station_id],
-            ).fetchone()
-            if row:
-                self._bias_cache[station_id] = StationBias(
-                    station_id=station_id,
-                    mean_bias=row[0],
-                    std_error=row[1],
-                    sample_days=row[2],
-                )
-        con.close()
-        self._cache_loaded_at = datetime.now(timezone.utc)
-        logger.info(f"Loaded bias cache for {len(self._bias_cache)} stations")
-
-    def _get_forecast_high(self, con, station_id: str) -> Optional[float]:
-        """Get the forecasted high from the latest model run."""
-        row = con.execute(
-            """SELECT MAX(f.temp_f) FROM forecasts f
-               WHERE f.station_id = ?
-               AND f.model_run = (
-                   SELECT MAX(model_run) FROM forecasts WHERE station_id = ?
-               )""",
-            [station_id, station_id],
-        ).fetchone()
-        return row[0] if row and row[0] is not None else None
-
-    def _get_drift_score(self, con, city: str) -> float:
-        """Get the latest drift score for a city."""
-        row = con.execute(
-            """SELECT drift_score FROM drift_signals
-               WHERE city = ?
-               ORDER BY calculated_at DESC LIMIT 1""",
-            [city],
-        ).fetchone()
-        return row[0] if row else 0.0
+    def __init__(self, data_provider=None, db_path: str = "data/alphatemp.duckdb"):
+        # type: (Optional[DataProvider], str) -> None
+        if data_provider is not None:
+            self.provider = data_provider
+        else:
+            from services.data_provider import LiveDataProvider
+            self.provider = LiveDataProvider(db_path)
 
     def _compute_time_factor(self, ref_time: datetime) -> float:
         """Time-based uncertainty reduction: 1.0 at 8am ET -> 0.3 by 3pm ET.
@@ -97,45 +56,22 @@ class ProbabilityEngine:
             # Linear interpolation from 1.0 at 8am to 0.3 at 3pm
             return 1.0 - 0.7 * (et_hour - 8) / 7.0
 
-    def _compute_stability_factor(self, con, city: str) -> float:
+    def _compute_stability_from_scores(self, scores: List[float]) -> float:
         """Low drift variance across recent signals = tighter distribution."""
-        rows = con.execute(
-            """SELECT drift_score FROM drift_signals
-               WHERE city = ?
-               ORDER BY calculated_at DESC LIMIT 10""",
-            [city],
-        ).fetchall()
-
-        if len(rows) < 2:
+        if len(scores) < 2:
             return 1.0
 
-        scores = [r[0] for r in rows]
         mean_d = sum(scores) / len(scores)
         variance = sum((s - mean_d) ** 2 for s in scores) / len(scores)
 
         # Low variance -> factor near 0.5, high variance -> factor near 1.5
         return max(0.5, min(1.5, 0.5 + variance))
 
-    def _compute_convergence_factor(self, con, station_id: str) -> float:
+    def _compute_convergence_from_highs(self, highs: List[float]) -> float:
         """Successive HRRR runs agreeing = tighter distribution."""
-        rows = con.execute(
-            """SELECT model_run, MAX(temp_f) as fcst_high
-               FROM forecasts
-               WHERE station_id = ?
-               GROUP BY model_run
-               ORDER BY model_run DESC
-               LIMIT 3""",
-            [station_id],
-        ).fetchall()
-
-        if len(rows) < 2:
-            return 1.0
-
-        highs = [r[1] for r in rows if r[1] is not None]
         if len(highs) < 2:
             return 1.0
 
-        # Spread of recent forecast highs
         spread = max(highs) - min(highs)
 
         # Tight convergence (< 1°F spread) -> 0.6, wide spread (> 4°F) -> 1.3
@@ -174,51 +110,37 @@ class ProbabilityEngine:
 
         return probs
 
-    def _refresh_cache_if_stale(self) -> None:
-        """Reload bias cache if older than TTL."""
-        if self._cache_loaded_at is None:
-            self.load_bias_cache()
-            return
-        age = (datetime.now(timezone.utc) - self._cache_loaded_at).total_seconds()
-        if age >= self.CACHE_TTL_SECONDS:
-            logger.info("Bias cache stale — refreshing")
-            self.load_bias_cache()
-
     def calculate_city(self, city: str, ref_time: Optional[datetime] = None) -> Optional[CityForecast]:
         """Produce a probability distribution for one city."""
-        self._refresh_cache_if_stale()
-
         if ref_time is None:
             ref_time = datetime.now(timezone.utc)
 
         station_id = CITIES[city]["settlement"]
-        con = get_connection(self.db_path)
 
-        # Get forecast high
-        fcst_high = self._get_forecast_high(con, station_id)
+        # Data from provider
+        fcst_high = self.provider.get_forecast_high(station_id)
         if fcst_high is None:
-            con.close()
             return None
 
-        # Get historical bias
-        bias = self._bias_cache.get(station_id)
+        bias = self.provider.get_bias_stats(station_id)
         historical_bias = bias.mean_bias if bias else 0.0
         historical_std = bias.std_error if bias else 2.0  # Conservative default
 
-        # Get same-day drift
-        drift = self._get_drift_score(con, city)
+        drift = self.provider.get_drift_score(city)
 
         # Center: adjust forecast by historical bias and current drift
         center = round(fcst_high - historical_bias + drift, 1)
 
         # Std: historical error scaled by time, stability, and convergence
         time_factor = self._compute_time_factor(ref_time)
-        stability_factor = self._compute_stability_factor(con, city)
-        convergence_factor = self._compute_convergence_factor(con, station_id)
+
+        drift_scores = self.provider.get_recent_drift_scores(city)
+        stability_factor = self._compute_stability_from_scores(drift_scores)
+
+        recent_highs = self.provider.get_recent_forecast_highs(station_id)
+        convergence_factor = self._compute_convergence_from_highs(recent_highs)
 
         std = round(max(0.3, historical_std * time_factor * stability_factor * convergence_factor), 2)
-
-        con.close()
 
         # 90% confidence interval
         z90 = 1.645
@@ -253,7 +175,6 @@ class ProbabilityEngine:
     async def run(self) -> None:
         """Run probability engine on the same loop as BiasEngine."""
         logger.info("Starting Probability Engine")
-        self.load_bias_cache()
         while True:
             try:
                 self.calculate_all()

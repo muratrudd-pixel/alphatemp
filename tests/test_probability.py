@@ -68,7 +68,6 @@ def seeded_db(test_db):
 def test_bracket_probs_sum_to_one(seeded_db):
     """Bracket probabilities must sum to ~1.0."""
     engine = ProbabilityEngine(db_path=seeded_db)
-    engine.load_bias_cache()
     forecast = engine.calculate_city("NYC", ref_time=datetime(2026, 2, 22, 14, 0, tzinfo=timezone.utc))
 
     assert forecast is not None
@@ -79,7 +78,6 @@ def test_bracket_probs_sum_to_one(seeded_db):
 def test_center_adjusts_for_bias_and_drift(seeded_db):
     """Center = fcst_high(52) - bias(0.8) + drift(0.5) = 51.7."""
     engine = ProbabilityEngine(db_path=seeded_db)
-    engine.load_bias_cache()
     forecast = engine.calculate_city("NYC", ref_time=datetime(2026, 2, 22, 14, 0, tzinfo=timezone.utc))
 
     assert forecast is not None
@@ -128,7 +126,6 @@ def test_time_factor_afternoon_is_low():
 def test_city_forecast_has_all_fields(seeded_db):
     """CityForecast should include city, center, std, interval_90, bracket_probs."""
     engine = ProbabilityEngine(db_path=seeded_db)
-    engine.load_bias_cache()
     forecast = engine.calculate_city("NYC", ref_time=datetime(2026, 2, 22, 14, 0, tzinfo=timezone.utc))
 
     assert forecast is not None
@@ -146,7 +143,6 @@ def test_city_forecast_has_all_fields(seeded_db):
 def test_no_forecast_data_returns_none(test_db):
     """Returns None when no forecast data exists for a city."""
     engine = ProbabilityEngine(db_path=test_db)
-    engine.load_bias_cache()
     forecast = engine.calculate_city("NYC")
     assert forecast is None
 
@@ -154,7 +150,6 @@ def test_no_forecast_data_returns_none(test_db):
 def test_calculate_all_returns_dict(seeded_db):
     """calculate_all should return a dict of CityForecasts."""
     engine = ProbabilityEngine(db_path=seeded_db)
-    engine.load_bias_cache()
     results = engine.calculate_all(ref_time=datetime(2026, 2, 22, 14, 0, tzinfo=timezone.utc))
 
     assert isinstance(results, dict)
@@ -165,9 +160,12 @@ def test_calculate_all_returns_dict(seeded_db):
 def test_bias_cache_auto_refreshes(seeded_db):
     """Cache should auto-refresh when TTL expires."""
     engine = ProbabilityEngine(db_path=seeded_db)
-    engine.load_bias_cache()
 
-    original_bias = engine._bias_cache["KNYC"].mean_bias
+    # Trigger initial cache load via calculate_city
+    engine.calculate_city("NYC", ref_time=datetime(2026, 2, 22, 14, 0, tzinfo=timezone.utc))
+    provider = engine.provider
+
+    original_bias = provider._bias_cache["KNYC"].mean_bias
     assert original_bias == pytest.approx(0.8, abs=0.01)
 
     # Insert newer bias data
@@ -180,11 +178,11 @@ def test_bias_cache_auto_refreshes(seeded_db):
 
     # Cache not stale yet — should still return old value
     engine.calculate_city("NYC", ref_time=datetime(2026, 2, 22, 14, 0, tzinfo=timezone.utc))
-    assert engine._bias_cache["KNYC"].mean_bias == pytest.approx(0.8, abs=0.01)
+    assert provider._bias_cache["KNYC"].mean_bias == pytest.approx(0.8, abs=0.01)
 
     # Force cache to appear stale
-    engine._cache_loaded_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    provider._cache_loaded_at = datetime.now(timezone.utc) - timedelta(hours=2)
 
     # Next call should trigger refresh
     engine.calculate_city("NYC", ref_time=datetime(2026, 2, 22, 14, 0, tzinfo=timezone.utc))
-    assert engine._bias_cache["KNYC"].mean_bias == pytest.approx(1.5, abs=0.01)
+    assert provider._bias_cache["KNYC"].mean_bias == pytest.approx(1.5, abs=0.01)

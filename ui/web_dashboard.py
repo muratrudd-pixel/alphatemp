@@ -353,11 +353,13 @@ async def forecast_curve(city: str, date: str = None):
                 "ribbon": [], "prior_runs": []}
 
     # Build ribbon bounds using the engine's uncertainty model
-    bias = engine._bias_cache.get(station_id)
+    bias = engine.provider.get_bias_stats(station_id)
     historical_std = bias.std_error if bias else 2.0
 
-    stability = engine._compute_stability_factor(con, city)
-    convergence = engine._compute_convergence_factor(con, station_id)
+    drift_scores = engine.provider.get_recent_drift_scores(city)
+    stability = engine._compute_stability_from_scores(drift_scores)
+    recent_highs = engine.provider.get_recent_forecast_highs(station_id)
+    convergence = engine._compute_convergence_from_highs(recent_highs)
 
     ribbon = []
     forecast_points = []
