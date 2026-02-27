@@ -152,7 +152,7 @@ Not yet started. The biggest remaining edge: update predictions as real-time obs
 
 ## Phase 3: Multi-Model Ensemble
 
-**Status:** NOT STARTED
+**Status:** COMPLETE (2026-02-26)
 **Depends on:** Phase 1 or 2 produces a model worth ensembling with
 **Prerequisite:** Backfill historical GFS/NAM/ECMWF data via Open-Meteo historical API
 
@@ -175,12 +175,66 @@ Ensemble Brier score vs best single-model Brier score.
 ### Kill Condition
 If naive average of all models doesn't beat the best single model. In that case, stick with the single-model approach from Phase 1/2.
 
+### Results
+- HRRR-GFS error correlation: 0.5965, HRRR-ECMWF: 0.5684, GFS-ECMWF: 0.6421 (all < 0.7 — ensemble viable)
+- Equal-weight ensemble + Phase 2B at 18 ET: Brier 0.7808
+- Phase 3.5 walk-forward adaptive weights (inverse-Brier, 90-day expanding window): Brier 0.7705 (+1.31%)
+- GFS gets highest weight (~35%), ECMWF (~34%), HRRR (~32%)
+- Extended weather variables (dewpoint, humidity, wind, pressure, cloud, radiation, CAPE) all killed — none cleared 2% gate
+
+### Gate
+PASSED. Ensemble beats best single model. Adaptive weights beat equal weights.
+
+---
+
+## Phase 3.6: Neighbor Station Observations
+
+**Status:** DESIGNED (2026-02-26)
+**Depends on:** Phase 3.5 complete
+**Design doc:** [2026-02-26-neighbor-obs-design.md](2026-02-26-neighbor-obs-design.md)
+
+### The Question
+Can 1-minute ASOS data from KLGA (LaGuardia) and KEWR (Newark) — already in the DB with 583K obs each — improve the Phase 2B divergence features and push the obs crossover earlier than 14 ET?
+
+### Why It Matters
+The Kalshi market is weakest overnight through early morning (Brier ~0.63-0.87). Current obs features are harmful before 14 ET because KNYC's hourly reports are too sparse. KLGA/KEWR report every minute. If neighbor data makes obs features useful at midnight or 6 AM, that opens the hours with the highest edge potential.
+
+### Approach
+6 ablation variants (3 station-mapping strategies x 2 integration methods) + a neighbor_peak_signal feature that detects when airports start cooling (leading indicator for Central Park's peak). Evaluated across all 3 models at every hour 0-18 ET.
+
+### Gate
+- PASS: >2% Brier improvement across any sustained block of hours
+- KILL: No improvement anywhere in 0-18 ET
+
+---
+
+## Phase 3.7: Dynamic Uncertainty
+
+**Status:** NOT STARTED
+**Depends on:** Phase 3.6 (more obs data = better confidence estimation)
+
+### The Problem
+The model outputs a Gaussian with roughly fixed std regardless of evidence. At midnight, a 2-3F spread is reasonable. By late afternoon with the high clearly observed, it should be near-certain but can't collapse. The market does this — Brier drops from 0.63 to 0.14 through the day.
+
+### Why It Matters
+Edge calculation and position sizing (Kelly criterion) require calibrated probabilities. Under/over-confidence both cost money.
+
+### Critical: Re-evaluate killed features as variance predictors
+All prior go/no-go gates evaluated features as mean predictors under fixed std. Features that predict variance are invisible under that setup. When building dynamic uncertainty, re-test:
+- cumulative_divergence (killed at +0.6%) — may predict trajectory certainty
+- slope_divergence (killed at +0.6%) — slope near zero may signal "peak locked in"
+- Extended weather vars (killed in Phase 3.5) — may predict forecast certainty, not direction
+- neighbor_peak_signal (Phase 3.6) — direct confidence indicator
+
+### Gate
+Calibration curve: when model says 80%, it should be right ~80% of the time.
+
 ---
 
 ## Phase 4: Kalshi Strategy Layer
 
 **Status:** NOT STARTED
-**Depends on:** A model from Phases 1-3 that beats naive baselines
+**Depends on:** A calibrated model from Phases 1-3.7
 
 ### What
 Map the model's bracket probabilities to actual Kalshi trading decisions.
