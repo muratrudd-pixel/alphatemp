@@ -26,11 +26,15 @@ from services.backtester import (
     _p2b_level1,
     _p2b_level2,
     _p2b_level2_nbr,
+    _p2b_level2_blend,
     wf_phase2b_full,
     wf_phase2b_runmax,
     wf_phase2b_neighbor_a1,
     wf_phase2b_neighbor_b1,
     wf_phase2b_neighbor_c1,
+    wf_phase2b_neighbor_a2,
+    wf_phase2b_neighbor_b2,
+    wf_phase2b_neighbor_c2,
     wf_regression_full,
     Backtester,
     WALK_FORWARD_MIN_DAYS,
@@ -53,6 +57,7 @@ def test_db():
     _p2b_level1.clear()
     _p2b_level2.clear()
     _p2b_level2_nbr.clear()
+    _p2b_level2_blend.clear()
     init_db(TEST_DB)
     yield TEST_DB
     _cleanup_db()
@@ -537,3 +542,54 @@ class TestNeighborModelsNewFeatures:
             assert abs(total - 1.0) < 0.01, "Probs sum to {}".format(total)
         finally:
             con.close()
+
+
+# ---------------------------------------------------------------------------
+# Test: Phase 3.6 blended curve model factories (A2/B2/C2)
+# ---------------------------------------------------------------------------
+
+class TestNeighborModelsBlended:
+    def test_a2_returns_valid_probs(self, test_db):
+        """A2 model (raw blended curve) produces valid Brier scores."""
+        _seed_phase2b_data(TEST_DB, n_days=200, run_hour=12)
+        _seed_neighbor_obs(TEST_DB, n_days=200)
+        bt = Backtester(TEST_DB, "NYC")
+        result = bt.run(
+            wf_phase2b_neighbor_a2,
+            start_date=date(2023, 6, 1),
+            end_date=date(2023, 6, 10),
+            run_hours=[12],
+            update_hours_et=[14, 16, 18],
+        )
+        assert result.mean_brier > 0
+        assert result.mean_brier < 2.0
+
+    def test_b2_returns_valid_probs(self, test_db):
+        """B2 model (offset-corrected blended curve) produces valid Brier scores."""
+        _seed_phase2b_data(TEST_DB, n_days=200, run_hour=12)
+        _seed_neighbor_obs(TEST_DB, n_days=200)
+        bt = Backtester(TEST_DB, "NYC")
+        result = bt.run(
+            wf_phase2b_neighbor_b2,
+            start_date=date(2023, 6, 1),
+            end_date=date(2023, 6, 10),
+            run_hours=[12],
+            update_hours_et=[14, 16, 18],
+        )
+        assert result.mean_brier > 0
+        assert result.mean_brier < 2.0
+
+    def test_c2_returns_valid_probs(self, test_db):
+        """C2 model (trend-interpolated blended curve) produces valid Brier scores."""
+        _seed_phase2b_data(TEST_DB, n_days=200, run_hour=12)
+        _seed_neighbor_obs(TEST_DB, n_days=200)
+        bt = Backtester(TEST_DB, "NYC")
+        result = bt.run(
+            wf_phase2b_neighbor_c2,
+            start_date=date(2023, 6, 1),
+            end_date=date(2023, 6, 10),
+            run_hours=[12],
+            update_hours_et=[14, 16, 18],
+        )
+        assert result.mean_brier > 0
+        assert result.mean_brier < 2.0

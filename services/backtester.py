@@ -691,9 +691,10 @@ from services.divergence import (
     compute_divergence_features,
 )
 from services.neighbor_obs import (
+    build_blended_curve,
     compute_neighbor_divergence,
-    compute_peak_signal,
     compute_neighbor_trend,
+    compute_peak_signal,
 )
 
 _ET = ZoneInfo("America/New_York")
@@ -732,6 +733,7 @@ _P2_FEATURES_FOR_P2B = [0, 1, 2]
 _p2b_level1 = {}  # type: Dict  # level 1 cache
 _p2b_level2 = {}  # type: Dict  # level 2 cache
 _p2b_level2_nbr = {}  # type: Dict  # level 2 cache for neighbor-extended training
+_p2b_level2_blend = {}  # type: Dict  # level 2 cache for blended curve training
 
 
 def _compute_features_for_date(curve, day_obs, cutoff_ts):
@@ -775,6 +777,9 @@ def _ensure_level1(con, run_hour, station_id, model_name='hrrr'):
     stale3 = [k for k in _p2b_level2_nbr if k[0] != id(con)]
     for k in stale3:
         del _p2b_level2_nbr[k]
+    stale4 = [k for k in _p2b_level2_blend if k[0] != id(con)]
+    for k in stale4:
+        del _p2b_level2_blend[k]
 
     logger.info(f"Phase 2B: bulk-fetching data for run_hour={run_hour:02d}z...")
 
@@ -1061,6 +1066,140 @@ def _ensure_level2_neighbor(con, run_hour, station_id, update_hour_et, variant, 
         training.append((obs_date, residual, extended_vec))
 
     _p2b_level2_nbr[key] = training
+    return training
+
+
+def _ensure_level2_blended(con, run_hour, station_id, update_hour_et, variant, model_name='hrrr'):
+    # type: (duckdb.DuckDBPyConnection, int, str, int, str, str) -> List[Tuple[date, float, List[float]]]
+    """Level-2 cache with blended KNYC+neighbor curve divergence features.
+
+    Instead of computing divergence from KNYC-only obs, builds a blended
+    curve and computes standard 4 features from higher-resolution data.
+
+    variant: "A" (raw offset=0), "B" (learned offset), "C" (trend interpolation)
+    Returns list of (date, residual, [feat0..3]) sorted by date.
+    """
+    key = (id(con), run_hour, station_id, update_hour_et, variant, model_name)
+    if key in _p2b_level2_blend:
+        return _p2b_level2_blend[key]
+
+    l1 = _ensure_level1(con, run_hour, station_id, model_name=model_name)
+    curves = l1["curves"]
+    obs_by_date = l1["obs_by_date"]
+    errors_list = l1["errors_list"]
+    p2_preds = l1["p2_preds"]
+    neighbor_obs = l1.get("neighbor_obs", {})
+
+    # For B variant: expanding-window offset tracking
+    klga_diffs = []  # type: List[float]
+    kewr_diffs = []  # type: List[float]
+
+    training = []  # type: List[Tuple[date, float, List[float]]]
+    for obs_date, actual_error, fcst_high, month, delta_temp in errors_list:
+        if obs_date not in p2_preds:
+            continue
+        predicted_bias, _ = p2_preds[obs_date]
+        residual = actual_error - predicted_bias
+
+        if obs_date not in curves:
+            continue
+
+        cutoff_ts = datetime(
+            obs_date.year, obs_date.month, obs_date.day,
+            update_hour_et, 0, tzinfo=_ET,
+        ).astimezone(timezone.utc).timestamp()
+
+        curve = curves[obs_date]
+
+        # Get KNYC obs truncated to cutoff (as epoch timestamp tuples)
+        knyc_day = obs_by_date.get(obs_date, [])
+        knyc_truncated = [(ts, temp) for ts, temp in knyc_day if ts <= cutoff_ts]
+
+        if len(knyc_truncated) < 2:
+            continue
+
+        # Get all neighbor obs truncated to cutoff
+        all_nbr = []  # type: List[Tuple[float, float]]
+        for nbr_station in ["KLGA", "KEWR"]:
+            nbr_day = neighbor_obs.get(nbr_station, {}).get(obs_date, [])
+            for ts, temp in nbr_day:
+                if ts <= cutoff_ts:
+                    all_nbr.append((ts, temp))
+
+        # For B variant: update expanding-window offset from this date's data
+        if variant == "B":
+            for nbr_station, diffs_list in [("KLGA", klga_diffs), ("KEWR", kewr_diffs)]:
+                nbr_day = neighbor_obs.get(nbr_station, {}).get(obs_date, [])
+                for k_ts, k_temp in knyc_truncated:
+                    for n_ts, n_temp in nbr_day:
+                        if n_ts > cutoff_ts:
+                            continue
+                        if abs(k_ts - n_ts) < 300:
+                            diffs_list.append(n_temp - k_temp)
+                            break
+
+        # Compute offset for this date
+        if variant == "B":
+            offset_klga = sum(klga_diffs) / len(klga_diffs) if len(klga_diffs) >= 30 else 0.0
+            offset_kewr = sum(kewr_diffs) / len(kewr_diffs) if len(kewr_diffs) >= 30 else 0.0
+            offset = (offset_klga + offset_kewr) / 2.0
+        else:
+            offset = 0.0
+
+        if variant == "C":
+            # C2: Use neighbor trend to create synthetic interpolation between KNYC reports
+            if len(all_nbr) >= 3:
+                all_nbr.sort()
+                nbr_temps = [t for _, t in all_nbr]
+                nbr_ts = [t for t, _ in all_nbr]
+                trend = compute_neighbor_trend(nbr_temps, nbr_ts)
+                if trend and trend["trend_slope_f_per_hr"] != 0:
+                    # Create synthetic interpolated points between KNYC reports
+                    synthetic = list(knyc_truncated)
+                    for i in range(len(knyc_truncated) - 1):
+                        t_start, temp_start = knyc_truncated[i]
+                        t_end, _ = knyc_truncated[i + 1]
+                        gap_hours = (t_end - t_start) / 3600.0
+                        n_points = int(gap_hours * 12)  # every 5 min
+                        for j in range(1, n_points):
+                            t_interp = t_start + j * 300  # 5 min intervals
+                            if t_interp >= t_end:
+                                break
+                            hours_elapsed = (t_interp - t_start) / 3600.0
+                            temp_interp = temp_start + trend["trend_slope_f_per_hr"] * hours_elapsed
+                            synthetic.append((t_interp, temp_interp))
+                    synthetic.sort()
+                    blended = synthetic
+                else:
+                    blended = list(knyc_truncated)
+            else:
+                blended = list(knyc_truncated)
+        else:
+            # A2/B2: merge KNYC + offset-corrected neighbor obs
+            blended = build_blended_curve(knyc_truncated, all_nbr, offset=offset)
+
+        if len(blended) < 2:
+            continue
+
+        # Compute standard divergence features from blended curve
+        blended_ts = [b[0] for b in blended]
+        blended_temps = [b[1] for b in blended]
+        fc_ts = [c[0] for c in curve]
+        fc_temps = [c[1] for c in curve]
+
+        fcst_interp = interpolate_forecast(fc_ts, fc_temps, blended_ts)
+        t0 = blended_ts[0]
+        obs_hours = [(t - t0) / 3600.0 for t in blended_ts]
+        fcst_up_to_t = [temp for ts, temp in curve if ts <= cutoff_ts]
+
+        feats = compute_divergence_features(blended_temps, fcst_interp, obs_hours, fcst_up_to_t)
+        if feats is None:
+            continue
+
+        feat_vector = [feats[k] for k in _PHASE2B_FEATURE_KEYS]
+        training.append((obs_date, residual, feat_vector))
+
+    _p2b_level2_blend[key] = training
     return training
 
 
@@ -1403,6 +1542,183 @@ def _make_phase2b_neighbor_model(name, variant, model_name='hrrr'):
 wf_phase2b_neighbor_a1 = _make_phase2b_neighbor_model("wf_phase2b_neighbor_a1", "A")
 wf_phase2b_neighbor_b1 = _make_phase2b_neighbor_model("wf_phase2b_neighbor_b1", "B")
 wf_phase2b_neighbor_c1 = _make_phase2b_neighbor_model("wf_phase2b_neighbor_c1", "C")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.6 Blended Curve Model Factory (x2 integration: richer obs curve)
+# ---------------------------------------------------------------------------
+
+def _make_phase2b_blended_model(name, variant, model_name='hrrr'):
+    # type: (str, str, str) -> ModelFn
+    """Factory: Phase 3.6 blended curve models (x2 integration).
+
+    Builds a blended temperature curve from KNYC + neighbor obs, then
+    computes the standard 4 divergence features from higher-resolution data.
+    Same 4-feature regression as standard Phase 2B — only the input obs are richer.
+
+    variant: "A" (raw offset=0), "B" (learned offset), "C" (trend interpolation)
+    """
+    feature_indices = [0, 1, 2, 3]  # all 4 standard features
+
+    def _raw(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Tuple[float, float]]
+        """Return (center, residual_std) or None."""
+        con = provider._shared_con
+        station_id = provider.station_id
+        run_hour = provider.model_run.hour
+        current_date = provider.model_run.date()
+
+        fcst_high = provider.get_forecast_high(station_id)
+        if fcst_high is None:
+            return None
+
+        # --- Phase 2 prediction (from cache) ---
+        l1 = _ensure_level1(con, run_hour, station_id, model_name=model_name)
+        p2_pred = l1["p2_preds"].get(current_date)
+        if p2_pred is None:
+            return None
+        phase2_bias, p2_std = p2_pred
+
+        # --- Determine update hour from ref_time ---
+        ref_utc = ref_time if ref_time.tzinfo else ref_time.replace(tzinfo=timezone.utc)
+        update_hour_et = ref_utc.astimezone(_ET).hour
+        cutoff_ts = ref_utc.timestamp()
+
+        # --- Today's blended curve divergence features ---
+        curves = l1["curves"]
+        if current_date not in curves or len(curves[current_date]) < 2:
+            center = fcst_high - phase2_bias
+            return (center, p2_std)
+
+        curve = curves[current_date]
+        obs_by_date = l1["obs_by_date"]
+        knyc_day = obs_by_date.get(current_date, [])
+        knyc_truncated = [(ts, temp) for ts, temp in knyc_day if ts <= cutoff_ts]
+
+        if len(knyc_truncated) < 2:
+            center = fcst_high - phase2_bias
+            return (center, p2_std)
+
+        # Collect neighbor obs truncated to cutoff
+        neighbor_obs = l1.get("neighbor_obs", {})
+        all_nbr = []  # type: List[Tuple[float, float]]
+        for nbr_station in ["KLGA", "KEWR"]:
+            nbr_day = neighbor_obs.get(nbr_station, {}).get(current_date, [])
+            for ts, temp in nbr_day:
+                if ts <= cutoff_ts:
+                    all_nbr.append((ts, temp))
+
+        # Compute offset for B variant (walk-forward from all prior dates)
+        offset = 0.0
+        if variant == "B":
+            klga_diffs = []  # type: List[float]
+            kewr_diffs = []  # type: List[float]
+            for d in sorted(obs_by_date.keys()):
+                if d >= current_date:
+                    break
+                kd = obs_by_date.get(d, [])
+                for nbr_station, diffs_list in [("KLGA", klga_diffs), ("KEWR", kewr_diffs)]:
+                    nbr_day = neighbor_obs.get(nbr_station, {}).get(d, [])
+                    for k_ts, k_temp in kd:
+                        for n_ts, n_temp in nbr_day:
+                            if abs(k_ts - n_ts) < 300:
+                                diffs_list.append(n_temp - k_temp)
+                                break
+            offset_klga = sum(klga_diffs) / len(klga_diffs) if len(klga_diffs) >= 30 else 0.0
+            offset_kewr = sum(kewr_diffs) / len(kewr_diffs) if len(kewr_diffs) >= 30 else 0.0
+            offset = (offset_klga + offset_kewr) / 2.0
+
+        # Build the blended curve for today
+        if variant == "C":
+            if len(all_nbr) >= 3:
+                all_nbr.sort()
+                nbr_temps = [t for _, t in all_nbr]
+                nbr_ts = [t for t, _ in all_nbr]
+                trend = compute_neighbor_trend(nbr_temps, nbr_ts)
+                if trend and trend["trend_slope_f_per_hr"] != 0:
+                    synthetic = list(knyc_truncated)
+                    for i in range(len(knyc_truncated) - 1):
+                        t_start, temp_start = knyc_truncated[i]
+                        t_end, _ = knyc_truncated[i + 1]
+                        gap_hours = (t_end - t_start) / 3600.0
+                        n_points = int(gap_hours * 12)
+                        for j in range(1, n_points):
+                            t_interp = t_start + j * 300
+                            if t_interp >= t_end:
+                                break
+                            hours_elapsed = (t_interp - t_start) / 3600.0
+                            temp_interp = temp_start + trend["trend_slope_f_per_hr"] * hours_elapsed
+                            synthetic.append((t_interp, temp_interp))
+                    synthetic.sort()
+                    blended = synthetic
+                else:
+                    blended = list(knyc_truncated)
+            else:
+                blended = list(knyc_truncated)
+        else:
+            blended = build_blended_curve(knyc_truncated, all_nbr, offset=offset)
+
+        if len(blended) < 2:
+            center = fcst_high - phase2_bias
+            return (center, p2_std)
+
+        # Compute standard divergence features from blended curve
+        blended_ts = [b[0] for b in blended]
+        blended_temps = [b[1] for b in blended]
+        fc_ts = [c[0] for c in curve]
+        fc_temps = [c[1] for c in curve]
+
+        fcst_interp = interpolate_forecast(fc_ts, fc_temps, blended_ts)
+        t0 = blended_ts[0]
+        obs_hours_bl = [(t - t0) / 3600.0 for t in blended_ts]
+        fcst_up_to_t = [temp for ts, temp in curve if ts <= cutoff_ts]
+
+        today_feats = compute_divergence_features(
+            blended_temps, fcst_interp, obs_hours_bl, fcst_up_to_t,
+        )
+        if today_feats is None:
+            center = fcst_high - phase2_bias
+            return (center, p2_std)
+
+        today_feat_vec = [today_feats[k] for k in _PHASE2B_FEATURE_KEYS]
+
+        # --- Phase 2B training (from blended cache, filtered to dates < current_date) ---
+        all_training = _ensure_level2_blended(
+            con, run_hour, station_id, update_hour_et, variant, model_name=model_name,
+        )
+        filtered = [
+            (residual, feat_vec)
+            for d, residual, feat_vec in all_training
+            if d < current_date
+        ]
+
+        p2b_result = _fit_and_predict_phase2b(filtered, today_feat_vec, feature_indices)
+        if p2b_result is None:
+            center = fcst_high - phase2_bias
+            return (center, p2_std)
+
+        phase2b_residual, p2b_std = p2b_result
+        center = fcst_high - (phase2_bias + phase2b_residual)
+        return (center, p2b_std)
+
+    def model_fn(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+        params = _raw(provider, ref_time)
+        if params is None:
+            return None
+        center, residual_std = params
+        return _compute_bracket_probs_from_dist(norm(0, 1), center, residual_std)
+
+    model_fn.__name__ = name
+    model_fn.__doc__ = "Phase 3.6 blended curve model ({}): {}".format(variant, name)
+    model_fn.raw = _raw
+    return model_fn
+
+
+# --- Phase 3.6 Blended Curve Models (HRRR) ---
+wf_phase2b_neighbor_a2 = _make_phase2b_blended_model("wf_phase2b_neighbor_a2", "A")
+wf_phase2b_neighbor_b2 = _make_phase2b_blended_model("wf_phase2b_neighbor_b2", "B")
+wf_phase2b_neighbor_c2 = _make_phase2b_blended_model("wf_phase2b_neighbor_c2", "C")
 
 
 # ---------------------------------------------------------------------------
