@@ -419,3 +419,167 @@ def test_brackets_unknown_city(client):
     assert resp.status_code == 200
     data = resp.json()
     assert "error" in data
+
+
+# --- Positions endpoint ---
+
+
+def test_positions_endpoint(client):
+    """GET /api/positions/NYC should return positions data with expected fields."""
+    resp = client.get("/api/positions/NYC")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "active" in data
+    assert "near_misses" in data
+    assert "daily_pnl" in data
+    assert "total_pnl" in data
+    assert data["city"] == "NYC"
+
+
+def test_positions_empty_table(client):
+    """With no paper_positions rows, should return empty lists and zero P&L."""
+    resp = client.get("/api/positions/NYC")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["active"] == []
+    assert isinstance(data["near_misses"], list)
+    assert data["daily_pnl"] == 0.0
+    assert data["total_pnl"] == 0.0
+
+
+def test_positions_unknown_city(client):
+    """Unknown city should return error for positions endpoint."""
+    resp = client.get("/api/positions/ZZZZ")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "error" in data
+
+
+def test_positions_with_date_param(client):
+    """Positions endpoint should accept a date param without crashing."""
+    resp = client.get("/api/positions/NYC?date=2026-02-22")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["city"] == "NYC"
+    assert data["date"] == "2026-02-22"
+
+
+def _insert_paper_position(db_path, city, event_date, floor, cap, direction,
+                           status="open", net_pnl=None, entry_price=0.30,
+                           model_prob=0.42, market_price=0.29, edge=0.13):
+    """Helper to insert a paper position row."""
+    con = get_connection(db_path)
+    # Get next ID
+    max_id = con.execute("SELECT COALESCE(MAX(id), 0) FROM paper_positions").fetchone()[0]
+    con.execute(
+        """INSERT INTO paper_positions
+           (id, city, event_date, bracket_floor, bracket_cap, direction,
+            model_prob, market_price, edge, entry_price, entry_time, status, net_pnl)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)""",
+        [max_id + 1, city, event_date, floor, cap, direction,
+         model_prob, market_price, edge, entry_price, status, net_pnl],
+    )
+    con.close()
+
+
+def test_positions_active_positions(client):
+    """Active positions should be returned for the correct date."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    _insert_paper_position(TEST_DB, "NYC", today, 42, 44, "YES")
+    _insert_paper_position(TEST_DB, "NYC", today, 44, 46, "NO")
+
+    resp = client.get(f"/api/positions/NYC?date={today}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["active"]) == 2
+    assert data["active"][0]["direction"] == "YES"
+    assert data["active"][0]["bracket"] == "42-44°F"
+
+
+def test_positions_pnl(client):
+    """P&L should sum settled positions correctly."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    _insert_paper_position(TEST_DB, "NYC", today, 42, 44, "YES",
+                           status="settled", net_pnl=5.50)
+    _insert_paper_position(TEST_DB, "NYC", today, 44, 46, "NO",
+                           status="settled", net_pnl=-1.30)
+    # Different date — should only count in total, not daily
+    _insert_paper_position(TEST_DB, "NYC", "2026-01-01", 40, 42, "YES",
+                           status="settled", net_pnl=10.00)
+
+    resp = client.get(f"/api/positions/NYC?date={today}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["daily_pnl"] == 4.20
+    assert data["total_pnl"] == 14.20
+
+
+# --- Market swings endpoint ---
+
+
+def test_market_swings_endpoint(client):
+    """GET /api/market-swings/NYC should return swings data."""
+    resp = client.get("/api/market-swings/NYC")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "swings" in data
+    assert data["city"] == "NYC"
+
+
+def test_market_swings_empty(client):
+    """With no market_ticks, should return empty swings list."""
+    resp = client.get("/api/market-swings/NYC")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["swings"] == []
+
+
+def test_market_swings_unknown_city(client):
+    """Unknown city should return error for market-swings endpoint."""
+    resp = client.get("/api/market-swings/ZZZZ")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "error" in data
+
+
+def test_market_swings_with_date_param(client):
+    """Market swings endpoint should accept a date param without crashing."""
+    resp = client.get("/api/market-swings/NYC?date=2026-02-22")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["city"] == "NYC"
+    assert data["date"] == "2026-02-22"
+
+
+def _insert_market_tick(db_path, city, market_id, floor_strike, cap_strike,
+                        yes_bid, yes_ask, captured_at):
+    """Helper to insert a market tick row."""
+    con = get_connection(db_path)
+    con.execute(
+        """INSERT INTO market_ticks
+           (market_id, city, captured_at, yes_bid, yes_ask, floor_strike, cap_strike)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [market_id, city, _strip_tz(captured_at), yes_bid, yes_ask,
+         floor_strike, cap_strike],
+    )
+    con.close()
+
+
+def test_market_swings_detects_swing(client):
+    """Should detect a >10c swing within 2 hours."""
+    now = datetime.now(timezone.utc)
+    base = now.replace(hour=14, minute=0, second=0, microsecond=0)
+    today = base.strftime("%Y-%m-%d")
+
+    # Two ticks 30 min apart, mid changes from 0.20 to 0.35 (15c swing)
+    _insert_market_tick(TEST_DB, "NYC", "KXHIGHNY-26FEB27-T42-T44",
+                        42, 44, 0.18, 0.22, base)
+    _insert_market_tick(TEST_DB, "NYC", "KXHIGHNY-26FEB27-T42-T44",
+                        42, 44, 0.33, 0.37, base + timedelta(minutes=30))
+
+    resp = client.get(f"/api/market-swings/NYC?date={today}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["swings"]) == 1
+    assert data["swings"][0]["bracket"] == "42-44°F"
+    assert abs(data["swings"][0]["change"] - 0.15) < 0.01

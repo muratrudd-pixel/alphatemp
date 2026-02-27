@@ -513,9 +513,92 @@ function refreshBracketChart() {
 
 function refreshPositions() {
     var el = document.getElementById('positions-panel');
-    if (el) {
-        el.innerHTML = '<p class="text-xs text-slate-500 text-center py-8">Positions \u2014 wiring in progress</p>';
-    }
+    if (!el) return;
+
+    var dateParam = selectedDate ? '?date=' + selectedDate : '';
+    var posUrl = '/api/positions/' + selectedCity + dateParam;
+    var swingsUrl = '/api/market-swings/' + selectedCity + dateParam;
+
+    Promise.all([fetchAPI(posUrl), fetchAPI(swingsUrl)]).then(function(results) {
+        var posData = results[0];
+        var swingsData = results[1];
+        var html = '';
+
+        // --- Active Bets ---
+        html += '<div class="mb-4">';
+        html += '<h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">Active Bets</h3>';
+        if (posData && posData.active && posData.active.length > 0) {
+            posData.active.forEach(function(bet) {
+                var edgeFmt = formatEdge(bet.edge);
+                html += '<div class="bet-active bg-slate-700/50 rounded border border-slate-600 p-2 mb-1.5">';
+                html += '<div class="flex justify-between items-center text-xs">';
+                html += '<span class="text-slate-100 font-mono">' + bet.bracket + '</span>';
+                html += '<span class="text-blue-400 font-bold">' + (bet.direction || '--') + '</span>';
+                html += '</div>';
+                html += '<div class="flex justify-between items-center text-[10px] mt-1">';
+                html += '<span class="text-slate-400">Entry: ' + (bet.entry_price != null ? (bet.entry_price * 100).toFixed(0) + '\u00a2' : '--') + '</span>';
+                html += '<span class="' + edgeFmt.colorClass + '">Edge: ' + edgeFmt.text + '</span>';
+                html += '</div>';
+                html += '</div>';
+            });
+        } else {
+            html += '<p class="text-xs text-slate-500">No active positions</p>';
+        }
+        html += '</div>';
+
+        // --- Near Threshold ---
+        html += '<div class="mb-4">';
+        html += '<h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">Near Threshold</h3>';
+        if (posData && posData.near_misses && posData.near_misses.length > 0) {
+            posData.near_misses.forEach(function(nm) {
+                var edgePct = (nm.edge * 100).toFixed(1);
+                var threshPct = (nm.threshold * 100).toFixed(0);
+                html += '<div class="flex justify-between text-xs py-1 border-b border-slate-700/50">';
+                html += '<span class="text-amber-400 font-mono">' + nm.bracket + '</span>';
+                html += '<span class="text-amber-400">' + edgePct + '% / ' + threshPct + '%</span>';
+                html += '</div>';
+            });
+        } else {
+            html += '<p class="text-xs text-slate-500">No near-misses</p>';
+        }
+        html += '</div>';
+
+        // --- Market Swings ---
+        html += '<div class="mb-4">';
+        html += '<h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">Market Swings</h3>';
+        if (swingsData && swingsData.swings && swingsData.swings.length > 0) {
+            swingsData.swings.forEach(function(s) {
+                var arrow = s.change >= 0 ? '\u2191' : '\u2193';
+                var colorCls = s.change >= 0 ? 'text-emerald-400' : 'text-red-400';
+                var changeCents = Math.abs(Math.round(s.change * 100));
+                var fromCents = Math.round(s.from_price * 100);
+                var toCents = Math.round(s.to_price * 100);
+                html += '<div class="flex justify-between items-center text-xs py-1 border-b border-slate-700/50">';
+                html += '<span class="text-slate-300 font-mono">\u26a1 ' + s.bracket + '</span>';
+                html += '<span class="' + colorCls + '">' + arrow + ' ' + changeCents + '\u00a2 (' + fromCents + '\u2192' + toCents + ')</span>';
+                html += '</div>';
+            });
+        } else {
+            html += '<p class="text-xs text-slate-500">No significant swings</p>';
+        }
+        html += '</div>';
+
+        // --- P&L Footer ---
+        var dailyPnl = posData ? formatPnL(posData.daily_pnl) : formatPnL(null);
+        var totalPnl = posData ? formatPnL(posData.total_pnl) : formatPnL(null);
+        html += '<div class="flex justify-between items-center pt-2 border-t border-slate-600">';
+        html += '<div class="text-center">';
+        html += '<div class="text-[10px] text-slate-500 uppercase">Daily P&L</div>';
+        html += '<div class="text-sm font-bold ' + dailyPnl.colorClass + '">' + dailyPnl.text + '</div>';
+        html += '</div>';
+        html += '<div class="text-center">';
+        html += '<div class="text-[10px] text-slate-500 uppercase">Total P&L</div>';
+        html += '<div class="text-sm font-bold ' + totalPnl.colorClass + '">' + totalPnl.text + '</div>';
+        html += '</div>';
+        html += '</div>';
+
+        el.innerHTML = html;
+    });
 }
 
 // -----------------------------------------------------------------------

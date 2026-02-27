@@ -901,3 +901,203 @@ async def bracket_spread(city: str, date: str = None):
         "model_center": model_center,
         "model_std": model_std,
     }
+
+
+@app.get("/api/positions/{city}")
+async def get_positions(city: str, date: str = None):
+    """Return active paper positions, near-misses, and P&L for a city.
+
+    Queries paper_positions for open/settled trades on the target date,
+    and identifies near-miss brackets (edge 5-10%) from the brackets endpoint.
+    """
+    city = city.upper()
+    if city not in CITIES:
+        return {"error": f"Unknown city: {city}"}
+
+    from core.timezone import ET as _ET
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+            target_date = date
+        except ValueError:
+            target_date = datetime.now(_ET).strftime("%Y-%m-%d")
+    else:
+        target_date = datetime.now(_ET).strftime("%Y-%m-%d")
+
+    con = get_connection()
+    try:
+        # Active (open) positions for this city + date
+        active_rows = con.execute(
+            """SELECT id, bracket_floor, bracket_cap, direction, model_prob,
+                      market_price, edge, entry_price, entry_time
+               FROM paper_positions
+               WHERE city = ? AND event_date = ? AND status = 'open'
+               ORDER BY entry_time ASC""",
+            [city, target_date],
+        ).fetchall()
+
+        active = []
+        for row in active_rows:
+            pid, floor, cap, direction, model_prob, market_price, edge, entry_price, entry_time = row
+            active.append({
+                "id": pid,
+                "bracket": "{}-{}°F".format(int(floor), int(cap)) if floor is not None and cap is not None else "--",
+                "direction": direction,
+                "model_prob": round(model_prob, 4) if model_prob is not None else None,
+                "market_price": round(market_price, 4) if market_price is not None else None,
+                "edge": round(edge, 4) if edge is not None else None,
+                "entry_price": round(entry_price, 4) if entry_price is not None else None,
+                "entry_time": entry_time.isoformat() if entry_time else None,
+            })
+
+        # Daily settled P&L
+        daily_row = con.execute(
+            """SELECT COALESCE(SUM(net_pnl), 0)
+               FROM paper_positions
+               WHERE city = ? AND event_date = ? AND status = 'settled'""",
+            [city, target_date],
+        ).fetchone()
+        daily_pnl = round(daily_row[0], 2) if daily_row else 0.0
+
+        # Total settled P&L (all time)
+        total_row = con.execute(
+            """SELECT COALESCE(SUM(net_pnl), 0)
+               FROM paper_positions
+               WHERE city = ? AND status = 'settled'""",
+            [city],
+        ).fetchone()
+        total_pnl = round(total_row[0], 2) if total_row else 0.0
+    finally:
+        con.close()
+
+    # Near-misses: brackets with 5% <= edge < 10% from the brackets endpoint
+    near_misses = []
+    try:
+        brackets_data = await bracket_spread(city, date=target_date)
+        threshold = 0.10
+        for b in brackets_data.get("brackets", []):
+            if b.get("edge") is not None and 0.05 <= b["edge"] < 0.10:
+                label = "{}-{}°F".format(b["floor"], b["cap"])
+                near_misses.append({
+                    "bracket": label,
+                    "edge": round(b["edge"], 4),
+                    "threshold": threshold,
+                })
+    except Exception:
+        pass  # If brackets fail, just return empty near_misses
+
+    return {
+        "city": city,
+        "date": target_date,
+        "active": active,
+        "near_misses": near_misses,
+        "daily_pnl": daily_pnl,
+        "total_pnl": total_pnl,
+    }
+
+
+@app.get("/api/market-swings/{city}")
+async def market_swings(city: str, date: str = None):
+    """Detect material Kalshi price movements (>10c in <2 hours).
+
+    Scans market_ticks for the target date, groups by bracket, and finds
+    the largest mid-price swing per bracket within any 2-hour window.
+    """
+    from collections import defaultdict
+
+    city = city.upper()
+    if city not in CITIES:
+        return {"error": f"Unknown city: {city}"}
+
+    from core.timezone import ET as _ET
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+            target_date = date
+        except ValueError:
+            target_date = datetime.now(_ET).strftime("%Y-%m-%d")
+    else:
+        target_date = datetime.now(_ET).strftime("%Y-%m-%d")
+
+    day_start_utc, day_end_utc = et_day_bounds_utc(target_date)
+
+    con = get_connection()
+    try:
+        rows = con.execute(
+            """SELECT floor_strike, cap_strike, yes_bid, yes_ask, captured_at
+               FROM market_ticks
+               WHERE city = ?
+               AND captured_at >= ? AND captured_at < ?
+               AND floor_strike IS NOT NULL AND cap_strike IS NOT NULL
+               ORDER BY floor_strike, cap_strike, captured_at ASC""",
+            [city, day_start_utc, day_end_utc],
+        ).fetchall()
+    finally:
+        con.close()
+
+    # Group ticks by bracket
+    bracket_ticks = defaultdict(list)  # type: dict
+    for floor_strike, cap_strike, yes_bid, yes_ask, captured_at in rows:
+        # Compute mid-price, handling NULL bid/ask
+        if yes_bid is not None and yes_ask is not None:
+            mid = (yes_bid + yes_ask) / 2.0
+        elif yes_bid is not None:
+            mid = yes_bid
+        elif yes_ask is not None:
+            mid = yes_ask
+        else:
+            continue  # Skip ticks with no price data
+
+        key = (int(floor_strike), int(cap_strike))
+        bracket_ticks[key].append({"mid": mid, "time": captured_at})
+
+    # Find largest swing per bracket within 2-hour windows
+    swings = []
+    two_hours_secs = 2 * 3600
+
+    for (floor, cap), ticks in bracket_ticks.items():
+        if len(ticks) < 2:
+            continue
+
+        best_swing = None
+        best_abs_change = 0.0
+
+        for i in range(len(ticks)):
+            for j in range(i + 1, len(ticks)):
+                t_i = ticks[i]["time"]
+                t_j = ticks[j]["time"]
+                # Ensure both timestamps are comparable
+                if hasattr(t_i, 'timestamp') and hasattr(t_j, 'timestamp'):
+                    delta_secs = abs((t_j - t_i).total_seconds())
+                else:
+                    continue
+
+                if delta_secs > two_hours_secs:
+                    break  # Ticks are sorted by time, so no need to check further
+
+                change = ticks[j]["mid"] - ticks[i]["mid"]
+                abs_change = abs(change)
+
+                if abs_change > 0.10 and abs_change > best_abs_change:
+                    best_abs_change = abs_change
+                    best_swing = {
+                        "bracket": "{}-{}°F".format(floor, cap),
+                        "from_price": round(ticks[i]["mid"], 4),
+                        "to_price": round(ticks[j]["mid"], 4),
+                        "change": round(change, 4),
+                        "from_time": t_i.isoformat() if hasattr(t_i, 'isoformat') else str(t_i),
+                        "to_time": t_j.isoformat() if hasattr(t_j, 'isoformat') else str(t_j),
+                    }
+
+        if best_swing:
+            swings.append(best_swing)
+
+    # Sort by absolute change descending, top 10
+    swings.sort(key=lambda s: abs(s["change"]), reverse=True)
+    swings = swings[:10]
+
+    return {
+        "city": city,
+        "date": target_date,
+        "swings": swings,
+    }
