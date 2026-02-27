@@ -583,3 +583,117 @@ def test_market_swings_detects_swing(client):
     assert len(data["swings"]) == 1
     assert data["swings"][0]["bracket"] == "42-44°F"
     assert abs(data["swings"][0]["change"] - 0.15) < 0.01
+
+
+# --- Performance endpoint ---
+
+
+def test_performance_endpoint(client):
+    """GET /api/performance should return P&L data with expected fields."""
+    resp = client.get("/api/performance?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "cumulative_pnl" in data
+    assert "daily_bars" in data
+    assert "win_rate" in data
+    assert "total_trades" in data
+    assert "by_bracket" in data
+    assert "by_edge" in data
+    assert data["range"] == "30d"
+
+
+def test_performance_empty_table(client):
+    """With no settled paper_positions, should return zeros and empty arrays."""
+    resp = client.get("/api/performance?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["cumulative_pnl"] == []
+    assert data["daily_bars"] == []
+    assert data["win_rate"] == 0.0
+    assert data["total_trades"] == 0
+    assert data["total_gross"] == 0.0
+    assert data["total_fees"] == 0.0
+    assert data["total_net"] == 0.0
+    assert data["by_bracket"] == []
+    assert data["by_edge"] == []
+
+
+def test_performance_with_data(client):
+    """Performance endpoint should compute correct P&L from settled positions."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    _insert_paper_position(TEST_DB, "NYC", today, 42, 44, "YES",
+                           status="settled", net_pnl=5.50,
+                           model_prob=0.42, market_price=0.29, edge=0.13)
+    _insert_paper_position(TEST_DB, "NYC", today, 44, 46, "NO",
+                           status="settled", net_pnl=-1.30,
+                           model_prob=0.35, market_price=0.29, edge=0.06)
+
+    resp = client.get("/api/performance?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_trades"] == 2
+    assert data["win_rate"] == 0.5
+    assert len(data["daily_bars"]) == 1
+    assert len(data["cumulative_pnl"]) == 1
+    assert len(data["by_bracket"]) == 2
+
+
+def test_performance_range_all(client):
+    """Performance endpoint should accept range=all."""
+    resp = client.get("/api/performance?range=all")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["range"] == "all"
+
+
+# --- Brier comparison endpoint ---
+
+
+def test_brier_comparison_endpoint(client):
+    """GET /api/brier-comparison should return stub with expected fields."""
+    resp = client.get("/api/brier-comparison?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "by_hour" in data
+    assert "note" in data
+    assert data["range"] == "30d"
+    assert isinstance(data["by_hour"], list)
+
+
+# --- Edge heatmap endpoint ---
+
+
+def test_edge_heatmap_endpoint(client):
+    """GET /api/edge-heatmap should return cells data."""
+    resp = client.get("/api/edge-heatmap?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "cells" in data
+    assert data["range"] == "30d"
+
+
+def test_edge_heatmap_empty_table(client):
+    """With no settled positions, should return empty cells list."""
+    resp = client.get("/api/edge-heatmap?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["cells"] == []
+
+
+def test_edge_heatmap_with_data(client):
+    """Edge heatmap should return cell data for settled positions."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    _insert_paper_position(TEST_DB, "NYC", today, 42, 44, "YES",
+                           status="settled", net_pnl=5.50,
+                           model_prob=0.42, market_price=0.29, edge=0.13)
+
+    resp = client.get("/api/edge-heatmap?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["cells"]) >= 1
+    cell = data["cells"][0]
+    assert "bracket" in cell
+    assert "hour_et" in cell
+    assert "avg_edge" in cell
+    assert "trades" in cell
+    assert "win_rate" in cell

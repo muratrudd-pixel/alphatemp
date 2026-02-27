@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -993,6 +993,185 @@ async def get_positions(city: str, date: str = None):
         "near_misses": near_misses,
         "daily_pnl": daily_pnl,
         "total_pnl": total_pnl,
+    }
+
+
+@app.get("/api/performance")
+async def get_performance(time_range: str = Query("30d", alias="range")):
+    """Return P&L data from paper_positions for the Performance tab.
+
+    Query parameter 'range' (aliased to time_range) accepts "7d", "30d", or "all".
+    """
+    days_map = {"7d": 7, "30d": 30, "all": 9999}
+    days = days_map.get(time_range, 30)
+
+    con = get_connection()
+    try:
+        # Daily P&L, wins, losses, fees, gross for settled positions in range
+        # days comes from controlled map — safe to interpolate
+        daily_rows = con.execute(
+            """SELECT event_date,
+                      COALESCE(SUM(net_pnl), 0) AS pnl,
+                      COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins,
+                      COALESCE(SUM(CASE WHEN net_pnl <= 0 THEN 1 ELSE 0 END), 0) AS losses,
+                      COALESCE(SUM(fees), 0) AS fees,
+                      COALESCE(SUM(gross_pnl), 0) AS gross
+               FROM paper_positions
+               WHERE status = 'settled'
+               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
+               GROUP BY event_date
+               ORDER BY event_date ASC""".format(days),
+        ).fetchall()
+
+        # Build daily bars and cumulative P&L
+        daily_bars = []
+        cumulative_pnl = []
+        running = 0.0
+        total_wins = 0
+        total_losses = 0
+        total_gross = 0.0
+        total_fees = 0.0
+        total_net = 0.0
+
+        for event_date, pnl, wins, losses, fees_val, gross_val in daily_rows:
+            date_str = str(event_date)
+            daily_bars.append({
+                "date": date_str,
+                "pnl": round(pnl, 2),
+                "wins": int(wins),
+                "losses": int(losses),
+            })
+            running += pnl
+            cumulative_pnl.append({
+                "date": date_str,
+                "pnl": round(running, 2),
+            })
+            total_wins += int(wins)
+            total_losses += int(losses)
+            total_gross += gross_val
+            total_fees += fees_val
+            total_net += pnl
+
+        total_trades = total_wins + total_losses
+        win_rate = round(total_wins / total_trades, 4) if total_trades > 0 else 0.0
+
+        # Breakdown by bracket
+        bracket_rows = con.execute(
+            """SELECT bracket_floor, bracket_cap,
+                      COALESCE(SUM(net_pnl), 0) AS pnl,
+                      COUNT(*) AS trades,
+                      COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
+               FROM paper_positions
+               WHERE status = 'settled'
+               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
+               GROUP BY bracket_floor, bracket_cap
+               ORDER BY bracket_floor ASC""".format(days),
+        ).fetchall()
+
+        by_bracket = []
+        for floor, cap, pnl, trades, wins in bracket_rows:
+            bracket_label = "{}-{}".format(int(floor), int(cap)) if floor is not None and cap is not None else "--"
+            wr = round(wins / trades, 4) if trades > 0 else 0.0
+            by_bracket.append({
+                "bracket": bracket_label,
+                "pnl": round(pnl, 2),
+                "trades": int(trades),
+                "win_rate": wr,
+            })
+
+        # Breakdown by edge bucket
+        edge_rows = con.execute(
+            """SELECT
+                   CASE
+                       WHEN edge >= 0.15 THEN '>15%'
+                       WHEN edge >= 0.10 THEN '10-15%'
+                       WHEN edge >= 0.05 THEN '5-10%'
+                       ELSE '<5%'
+                   END AS bucket,
+                   COALESCE(SUM(net_pnl), 0) AS pnl,
+                   COUNT(*) AS trades,
+                   COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
+               FROM paper_positions
+               WHERE status = 'settled'
+               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
+               GROUP BY bucket
+               ORDER BY bucket DESC""".format(days),
+        ).fetchall()
+
+        by_edge = []
+        for bucket, pnl, trades, wins in edge_rows:
+            wr = round(wins / trades, 4) if trades > 0 else 0.0
+            by_edge.append({
+                "bucket": bucket,
+                "pnl": round(pnl, 2),
+                "trades": int(trades),
+                "win_rate": wr,
+            })
+    finally:
+        con.close()
+
+    return {
+        "range": time_range,
+        "cumulative_pnl": cumulative_pnl,
+        "daily_bars": daily_bars,
+        "win_rate": win_rate,
+        "total_trades": total_trades,
+        "total_gross": round(total_gross, 2),
+        "total_fees": round(total_fees, 2),
+        "total_net": round(total_net, 2),
+        "by_bracket": by_bracket,
+        "by_edge": by_edge,
+    }
+
+
+@app.get("/api/brier-comparison")
+async def get_brier_comparison(time_range: str = Query("30d", alias="range")):
+    """Brier score comparison — stub until backtester integration is ready."""
+    return {
+        "range": time_range,
+        "by_hour": [],
+        "note": "Brier comparison requires backtester integration (in progress on separate worktree)",
+    }
+
+
+@app.get("/api/edge-heatmap")
+async def get_edge_heatmap(time_range: str = Query("30d", alias="range")):
+    """Edge heatmap — settled positions grouped by bracket and hour (ET)."""
+    days_map = {"7d": 7, "30d": 30, "all": 9999}
+    days = days_map.get(time_range, 30)
+
+    con = get_connection()
+    try:
+        cells_rows = con.execute(
+            """SELECT bracket_floor, bracket_cap,
+                      EXTRACT(HOUR FROM timezone('America/New_York', entry_time)) AS hour_et,
+                      AVG(edge) AS avg_edge,
+                      COUNT(*) AS trades,
+                      COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
+               FROM paper_positions
+               WHERE status = 'settled'
+               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
+               GROUP BY bracket_floor, bracket_cap, hour_et
+               ORDER BY bracket_floor ASC, hour_et ASC""".format(days),
+        ).fetchall()
+
+        cells = []
+        for floor, cap, hour_et, avg_edge, trades, wins in cells_rows:
+            bracket_label = "{}-{}".format(int(floor), int(cap)) if floor is not None and cap is not None else "--"
+            wr = round(wins / trades, 4) if trades > 0 else 0.0
+            cells.append({
+                "bracket": bracket_label,
+                "hour_et": int(hour_et) if hour_et is not None else None,
+                "avg_edge": round(avg_edge, 4) if avg_edge is not None else None,
+                "trades": int(trades),
+                "win_rate": wr,
+            })
+    finally:
+        con.close()
+
+    return {
+        "range": time_range,
+        "cells": cells,
     }
 
 
