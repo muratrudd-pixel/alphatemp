@@ -640,8 +640,13 @@ class EdgeAnalyzer:
         model_probs and market_mids: {bracket: probability}
         settled_bracket: the bracket that actually settled YES.
         """
-        # Sort brackets for consistent ordering
-        brackets = sorted(set(model_probs.keys()) | set(market_mids.keys()))
+        # Sort brackets for consistent ordering (None in tail brackets → -inf/+inf)
+        def _bracket_sort_key(b):
+            floor_val = b[0] if b[0] is not None else float('-inf')
+            cap_val = b[1] if b[1] is not None else float('inf')
+            return (floor_val, cap_val)
+
+        brackets = sorted(set(model_probs.keys()) | set(market_mids.keys()), key=_bracket_sort_key)
 
         model_list = []  # type: List[float]
         market_list = []  # type: List[float]
@@ -934,7 +939,11 @@ class StrategyBacktester:
 
         for event_date, actual_high in settlement_dates:
             # Get bracket definitions and settlement outcome
-            brackets_info = self.market_loader.get_brackets(event_date)
+            # Filter out degenerate brackets where both floor and cap are None
+            brackets_info = [
+                bi for bi in self.market_loader.get_brackets(event_date)
+                if bi["bracket"][0] is not None or bi["bracket"][1] is not None
+            ]
             if not brackets_info:
                 continue
 
@@ -1013,9 +1022,11 @@ class StrategyBacktester:
                     )
                     if snaps:
                         snap = snaps[-1]
-                        market_mids[bi["bracket"]] = (snap.yes_bid + snap.yes_ask) / 2
-                        market_asks[bi["bracket"]] = snap.yes_ask
-                        market_bids[bi["bracket"]] = snap.yes_bid
+                        # DB stores prices in cents (0-100); convert to probabilities (0-1)
+                        # for comparison with model_probs. Keep _cents versions for P&L.
+                        market_mids[bi["bracket"]] = (snap.yes_bid + snap.yes_ask) / 200.0
+                        market_asks[bi["bracket"]] = snap.yes_ask / 100.0
+                        market_bids[bi["bracket"]] = snap.yes_bid / 100.0
 
                 if not market_mids:
                     continue
