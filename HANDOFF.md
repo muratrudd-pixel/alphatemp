@@ -1,11 +1,32 @@
 # Handoff - 2026-02-26
 
 ## Current State
-- **Phase 3 COMPLETE.** 12 commits on main. All gates passed.
-- **Best system: 3-model ensemble + Phase 2B at 18 ET → Brier 0.7808**
-- Equal weights, running_max dominant feature across all models
+- **Phase 3.5 COMPLETE.** Extended weather variables + adaptive weights.
+- **Best system: 3-model ensemble + Phase 2B + WF adaptive weights at 18 ET → Brier 0.7705**
+- Previous best: 0.7808 (equal weights). Improvement: +1.31%
 
-## Phase 3 Results Summary
+## Phase 3.5 Results
+
+### Extended Weather Variables — DEAD END
+Backfilled 10 variables (dewpoint, humidity, wind, pressure, cloud, radiation, CAPE) for GFS/ECMWF into `forecast_extended` table (123,456 rows). Strong correlations in signal exploration but NO variable beat the 2% Brier gate in ablation. Best: GFS dewpoint at +1.3%. Signal already captured by existing features.
+
+### Walk-Forward Adaptive Weights — PASS (+1.31%)
+Inverse-Brier weighting with 90-day expanding window. Evaluated across full 0-18 ET window:
+
+| Hour ET | Equal | WF Adaptive | Delta |
+|---------|-------|-------------|-------|
+| 0-5     | 0.868 | 0.866       | +0.2% |
+| 6-12    | 0.854 | 0.852       | +0.3% |
+| 13-14   | 0.845 | 0.842       | +0.4% |
+| 15-16   | 0.826 | 0.821       | +0.6% |
+| 17-18   | 0.789 | 0.780       | +1.2% |
+
+GFS gets highest weight (~35%), ECMWF middle (~34%), HRRR lowest (~32%).
+
+## Key Insight (Russell)
+Kalshi KXHIGHNY opens at 10 AM ET the prior day. Market Brier is probably worst overnight/early AM when the crowd is thin. Our model may have the most edge at hours far from settlement, not near it. Need to compare our Brier vs Kalshi Brier by hour to find optimal trading windows.
+
+## Phase 3 Results (prior, still valid)
 
 ### Individual Model Performance (Phase 2B at 18 ET)
 | Model | P1 Bias | P2 Regression | P2B at 18 ET |
@@ -17,57 +38,28 @@
 ### Error Correlation (all < 0.7)
 - HRRR-GFS: 0.5965, HRRR-ECMWF: 0.5684, GFS-ECMWF: 0.6421
 
-### Ensemble Results (1°F scoring, equal weights)
-| Configuration | Brier |
-|---------------|-------|
-| HRRR alone (P2) | 0.8779 |
-| Ensemble (P2, no obs) | 0.8606 (+2.0%) |
-| Ensemble + P2B at 18 ET | **0.7808** (+9.3% vs no-obs) |
-
-### Ensemble+P2B by Update Hour
-| Hour | Brier | vs No-Obs Ensemble |
-|------|-------|--------------------|
-| 14 ET | 0.8456 | +2.0% |
-| 15 ET | 0.8345 | +3.3% |
-| 16 ET | 0.8181 | +4.9% |
-| 17 ET | 0.7976 | +7.3% |
-| 18 ET | 0.7808 | +9.3% |
-
-### Learned Weights: No improvement — keep equal 1/3 each
-
-## Key Findings
-1. GFS is surprisingly strong — best single model at midnight and at 18 ET
-2. running_max_divergence dominates Phase 2B for all three models
-3. Equal weights optimal — inverse-Brier weighting adds ~0.0%
-4. Phase 2B crossover still at ~14 ET (same as HRRR-only finding)
+## Next Steps
+1. Russell has "a few more things to assess" before Kalshi comparison
+2. **TODO: Prior-day evaluation** — market opens 10 AM prior day, need model quality from evening before (requires code change for obs_date - 1)
+3. **TODO: Our Brier vs Kalshi Brier by hour** — the real edge calculation
+4. **TODO: Re-run Phase 3B GFS/ECMWF Phase 2B at [8..18]** — verify 14 ET crossover holds for global models (only validated for HRRR)
+5. **Wire ensemble + adaptive weights into live pipeline**
+6. **Edge detection / displacement P&L backtest**
 
 ## Architecture
-- `model_name` column on `forecasts` table (DEFAULT 'hrrr', UNIQUE includes model_name)
-- GFS/ECMWF model_run = midnight UTC (run_hour=0 in queries)
-- `.raw(provider, ref_time) -> Optional[(center, std)]` interface on all model functions
-- `Backtester.run()` accepts `model_name` param
-- Phase 1 factories: `wf_bias_{hrrr,gfs,ecmwf}`
-- Analysis scripts: `scripts/phase3_analysis.py` (Parts 1-4), `scripts/phase3b_analysis.py` (Parts 5-7)
+- `forecast_extended` table: 10 weather vars, keyed by (station_id, model_run, valid_at, model_name)
+- `services/backtester.py`: extended regression pipeline available but unused (no variable beat gate)
+- Walk-forward weights: not yet wired into production — only backtested in `scripts/phase35b_weights.py`
 
-## Completed Tasks
-1. Schema migration (model_name column)
-2-4. All forecast queries filtered by model_name (9 files, 19+ queries)
-5. Open-Meteo backfill script
-6. Model function parameterization (20 instances + 3 Phase 1 factories)
-7. Ensemble service (Gaussian mixture)
-8. Data backfill (GFS 43K rows, ECMWF 43K rows)
-9-11. Phase 3 analysis: correlation, regression ablation, ensemble eval
-12-13. Phase 3B: per-model Phase 2B, ensemble+P2B, learned weights
+## Kalshi Historical Data (READY)
+- `kalshi_settlements`, `kalshi_candlesticks`, `kalshi_trades`, `market_ticks`
+- Backfill script: `scripts/backfill_kalshi_history.py`
 
-## Next Steps (Phase 4)
-1. **Wire ensemble into live prediction pipeline** — currently only backtested
-2. **Market tick collection** — still a blocker (~2 days of history only)
-3. **Edge detection** — compare ensemble probabilities vs Kalshi market prices
-4. **Paper trading** — deploy and run against live markets
+## Strategy Notes
+- Fee hurdle: ~11% (1% trading + 10% settlement)
+- Key hypothesis: model edge largest at hours when Kalshi crowd is thin (overnight, early AM)
+- Potential edge vectors: large displacements, tail brackets, specific weather regimes, stale pricing windows
 
-## Blockers
-- Market tick collection still running (only ~2 days of history) — Phase 4 blocker
-- Open-Meteo Historical Forecast API assembles "most recent run" — mirrors live behavior
-
-## Design Doc
-`docs/plans/2026-02-26-phase3-ensemble-design.md`
+## Design Docs
+- `docs/plans/2026-02-26-phase3-ensemble-design.md`
+- Plan file: `~/.claude/plans/abstract-stirring-dijkstra.md` (Phase 3.5 plan)
