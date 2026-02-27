@@ -400,3 +400,77 @@ class TestMarketDataLoader:
         )
         assert 0 <= snaps[0].yes_bid <= 1.0
         assert 0 <= snaps[0].yes_ask <= 1.0
+
+
+class TestTriggerDetection:
+    def _seed_obs_data(self, db_path):
+        con = duckdb.connect(db_path)
+        for hour in range(12, 22):
+            con.execute("""
+                INSERT INTO observations (station_id, observed_at, temp_f,
+                    ingest_source, ingested_at)
+                VALUES ('KNYC', ?, ?, 'synoptic', CURRENT_TIMESTAMP)
+            """, [datetime(2025, 6, 15, hour, 53), 70.0 + hour - 12])
+        con.execute("""
+            INSERT INTO observations (station_id, observed_at, temp_f,
+                ingest_source, ingested_at)
+            VALUES ('KNYC', '2025-06-15 14:23:00', 76.5, 'awc', CURRENT_TIMESTAMP)
+        """)
+        con.close()
+
+    @pytest.fixture
+    def obs_db(self, test_db):
+        self._seed_obs_data(test_db)
+        return test_db
+
+    def test_get_obs_triggers(self, obs_db):
+        detector = TriggerDetector(obs_db, station_id='KNYC')
+        triggers = detector.get_triggers(
+            event_date=date(2025, 6, 15),
+            market_open_utc=datetime(2025, 6, 14, 14, 0, tzinfo=timezone.utc),
+            market_close_utc=datetime(2025, 6, 15, 23, 0, tzinfo=timezone.utc),
+        )
+        obs_triggers = [t for t in triggers if t[2] == 'observation']
+        assert len(obs_triggers) == 11
+
+    def test_triggers_are_sorted(self, obs_db):
+        detector = TriggerDetector(obs_db, station_id='KNYC')
+        triggers = detector.get_triggers(
+            event_date=date(2025, 6, 15),
+            market_open_utc=datetime(2025, 6, 14, 14, 0, tzinfo=timezone.utc),
+            market_close_utc=datetime(2025, 6, 15, 23, 0, tzinfo=timezone.utc),
+        )
+        model_times = [t[0] for t in triggers]
+        assert model_times == sorted(model_times)
+
+    def test_execution_time_offset(self, obs_db):
+        detector = TriggerDetector(obs_db, station_id='KNYC', execution_latency_seconds=60)
+        triggers = detector.get_triggers(
+            event_date=date(2025, 6, 15),
+            market_open_utc=datetime(2025, 6, 14, 14, 0, tzinfo=timezone.utc),
+            market_close_utc=datetime(2025, 6, 15, 23, 0, tzinfo=timezone.utc),
+        )
+        for model_time, exec_time, _ in triggers:
+            delta = (exec_time - model_time).total_seconds()
+            assert delta == 60
+
+    def test_speci_included_at_correct_time(self, obs_db):
+        detector = TriggerDetector(obs_db, station_id='KNYC')
+        triggers = detector.get_triggers(
+            event_date=date(2025, 6, 15),
+            market_open_utc=datetime(2025, 6, 14, 14, 0, tzinfo=timezone.utc),
+            market_close_utc=datetime(2025, 6, 15, 23, 0, tzinfo=timezone.utc),
+        )
+        speci_time = datetime(2025, 6, 15, 14, 23, tzinfo=timezone.utc)
+        model_times = [t[0] for t in triggers]
+        assert speci_time in model_times
+
+    def test_forecast_run_triggers_included(self, obs_db):
+        detector = TriggerDetector(obs_db, station_id='KNYC')
+        triggers = detector.get_triggers(
+            event_date=date(2025, 6, 15),
+            market_open_utc=datetime(2025, 6, 14, 14, 0, tzinfo=timezone.utc),
+            market_close_utc=datetime(2025, 6, 15, 23, 0, tzinfo=timezone.utc),
+        )
+        fcst_triggers = [t for t in triggers if t[2] == 'forecast_run']
+        assert len(fcst_triggers) >= 3
