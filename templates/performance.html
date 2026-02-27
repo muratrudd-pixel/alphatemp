@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Performance{% endblock %}
+{% block content %}
+
+<!-- Date Range Selector -->
+<div class="flex gap-2 mb-4">
+    <button id="range-7d" onclick="setRange('7d')"
+            class="px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600">
+        7d
+    </button>
+    <button id="range-30d" onclick="setRange('30d')"
+            class="px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-100">
+        30d
+    </button>
+    <button id="range-all" onclick="setRange('all')"
+            class="px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600">
+        All
+    </button>
+</div>
+
+<!-- Top Row: Cumulative P&L + Daily P&L -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+    <!-- Cumulative P&L -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+        <h2 class="text-sm font-bold text-slate-100 mb-2">Cumulative P&L</h2>
+        <div id="cumulative-pnl-chart" style="height: 250px;"></div>
+    </div>
+
+    <!-- Daily P&L -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+        <h2 class="text-sm font-bold text-slate-100 mb-2">Daily P&L</h2>
+        <div id="daily-pnl-chart" style="height: 250px;"></div>
+    </div>
+</div>
+
+<!-- Middle Row: Brier Score + Edge Heatmap -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+    <!-- Model vs Market Brier Score -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+        <h2 class="text-sm font-bold text-slate-100 mb-2">Model vs Market Brier Score</h2>
+        <div id="brier-chart" style="height: 250px;"></div>
+    </div>
+
+    <!-- Edge Heatmap -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+        <h2 class="text-sm font-bold text-slate-100 mb-2">Edge Heatmap</h2>
+        <div id="edge-heatmap" style="height: 250px;"></div>
+    </div>
+</div>
+
+<!-- Bottom: Breakdown Stats -->
+<div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <h2 class="text-sm font-bold text-slate-100 mb-2">Breakdown Stats</h2>
+    <div id="breakdown-stats" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <!-- Filled by JS: Summary, By Bracket, By Edge -->
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/performance.js"></script>
+{% endblock %}

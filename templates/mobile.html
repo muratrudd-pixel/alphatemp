@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Mobile{% endblock %}
+{% block content %}
+
+<!-- Mobile Tab Toggle -->
+<div class="flex gap-1 md:hidden mb-3">
+    <button id="mob-dashboard" onclick="setMobileTab('dashboard')"
+            class="flex-1 py-2 text-sm font-bold uppercase tracking-wider rounded bg-slate-700 text-slate-100">
+        Dashboard
+    </button>
+    <button id="mob-trade" onclick="setMobileTab('trade')"
+            class="flex-1 py-2 text-sm font-bold uppercase tracking-wider rounded text-slate-400">
+        Trade
+    </button>
+</div>
+
+<!-- Dashboard View -->
+<div id="mobile-dashboard">
+
+    <!-- Current State Card -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 mb-3">
+        <div class="grid grid-cols-2 gap-3 text-center">
+            <div>
+                <div class="text-xs text-slate-400">Latest Obs</div>
+                <div id="mob-latest-obs" class="text-xl font-bold text-slate-100">--</div>
+            </div>
+            <div>
+                <div class="text-xs text-slate-400">Model High</div>
+                <div id="mob-model-high" class="text-xl font-bold text-blue-400">--</div>
+            </div>
+            <div>
+                <div class="text-xs text-slate-400">Settlement</div>
+                <div id="mob-settlement" class="text-xl font-bold text-amber-400">--</div>
+            </div>
+            <div>
+                <div class="text-xs text-slate-400">Daily P&L</div>
+                <div id="mob-daily-pnl" class="text-xl font-bold text-slate-500">--</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alerts -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 mb-3">
+        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">Alerts</h3>
+        <div id="mob-alerts"></div>
+    </div>
+
+    <!-- Recent Observations -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 mb-3">
+        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">Recent Observations</h3>
+        <div id="mob-obs-feed"></div>
+    </div>
+
+</div>
+
+<!-- Trade View (hidden by default) -->
+<div id="mobile-trade" class="hidden">
+
+    <!-- Suggested Bets -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 mb-3">
+        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">Suggested Bets</h3>
+        <div id="mob-suggested-bets"></div>
+    </div>
+
+    <!-- Near Threshold -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 mb-3">
+        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">Near Threshold</h3>
+        <div id="mob-near-threshold"></div>
+    </div>
+
+    <!-- Active Positions -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 mb-3">
+        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">Active Positions</h3>
+        <div id="mob-active-positions"></div>
+    </div>
+
+    <!-- P&L Footer -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 mb-3">
+        <div class="flex justify-between">
+            <div class="text-center">
+                <div class="text-xs text-slate-400">Daily P&L</div>
+                <div id="mob-footer-daily-pnl" class="text-sm font-bold text-slate-500">--</div>
+            </div>
+            <div class="text-center">
+                <div class="text-xs text-slate-400">All-time P&L</div>
+                <div id="mob-footer-total-pnl" class="text-sm font-bold text-slate-500">--</div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/mobile.js"></script>
+{% endblock %}

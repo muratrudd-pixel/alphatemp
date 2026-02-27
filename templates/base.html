@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-slate-900">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}AlphaTemp{% endblock %} — AlphaTemp</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body class="min-h-screen bg-slate-900 text-slate-300" style="font-family: 'Space Mono', monospace;">
+
+    <!-- Header -->
+    <header class="px-4 lg:px-6 py-3 flex flex-col md:flex-row items-center justify-between gap-2 border-b border-slate-700/50">
+        <div class="flex items-center gap-3">
+            <div class="glow-dot"></div>
+            <h1 class="text-lg lg:text-xl font-semibold tracking-tight text-slate-100">
+                AlphaTemp
+            </h1>
+            <span class="text-sm text-slate-400 font-semibold">NYC</span>
+        </div>
+
+        <!-- Tab Navigation (hidden on mobile) -->
+        <nav class="hidden md:flex items-center gap-1">
+            <a href="/operations"
+               class="px-3 py-1.5 text-xs uppercase tracking-wider rounded
+                      {% if active_tab == 'operations' %}bg-blue-600 text-white{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-700{% endif %}">
+                Operations
+            </a>
+            <a href="/performance"
+               class="px-3 py-1.5 text-xs uppercase tracking-wider rounded
+                      {% if active_tab == 'performance' %}bg-blue-600 text-white{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-700{% endif %}">
+                Performance
+            </a>
+            <a href="/review"
+               class="px-3 py-1.5 text-xs uppercase tracking-wider rounded
+                      {% if active_tab == 'review' %}bg-blue-600 text-white{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-700{% endif %}">
+                Review
+            </a>
+        </nav>
+
+        <div class="flex items-center gap-4">
+            <div id="date-toggle" class="flex text-sm" style="font-family: 'Space Mono', monospace;">
+                <button id="btn-today" class="px-3 py-1 rounded-l border border-slate-600 bg-blue-600 text-white">Today</button>
+                <button id="btn-tomorrow" class="px-3 py-1 rounded-r border border-l-0 border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600">Tomorrow</button>
+            </div>
+            <div id="clock" class="text-sm text-slate-400" style="font-family: 'Space Mono', monospace;"></div>
+            <span id="refresh-countdown" class="text-xs text-slate-500" style="font-family: 'Space Mono', monospace;">60s</span>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="p-4 lg:p-6 max-w-[1600px] mx-auto">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Shared JS utilities -->
+    <script src="/static/js/shared.js"></script>
+
+    <!-- Base page JS: state, clock, date toggle, countdown -->
+    <script>
+    // -----------------------------------------------------------------------
+    // Global State
+    // -----------------------------------------------------------------------
+    let selectedCity = 'NYC';
+    let selectedDate = getTargetDate('today');
+    let countdown = 60;
+
+    // -----------------------------------------------------------------------
+    // Date Toggle
+    // -----------------------------------------------------------------------
+    const btnToday = document.getElementById('btn-today');
+    const btnTomorrow = document.getElementById('btn-tomorrow');
+
+    function setDateToggle(which) {
+        selectedDate = getTargetDate(which);
+        if (which === 'today') {
+            btnToday.className = 'px-3 py-1 rounded-l border border-slate-600 bg-blue-600 text-white';
+            btnTomorrow.className = 'px-3 py-1 rounded-r border border-l-0 border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600';
+        } else {
+            btnToday.className = 'px-3 py-1 rounded-l border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600';
+            btnTomorrow.className = 'px-3 py-1 rounded-r border border-l-0 border-slate-600 bg-blue-600 text-white';
+        }
+        if (typeof onDateChange === 'function') {
+            onDateChange();
+        }
+    }
+
+    btnToday.addEventListener('click', () => setDateToggle('today'));
+    btnTomorrow.addEventListener('click', () => setDateToggle('tomorrow'));
+
+    // -----------------------------------------------------------------------
+    // Clock (updates every second)
+    // -----------------------------------------------------------------------
+    function updateClock() {
+        const now = new Date();
+        const et = now.toLocaleString('en-US', {
+            timeZone: 'America/New_York',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+            hour12: false
+        });
+        document.getElementById('clock').textContent = et + ' ET';
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // -----------------------------------------------------------------------
+    // Refresh Countdown (ticks every second, resets to 60 on refresh)
+    // -----------------------------------------------------------------------
+    function updateCountdown() {
+        countdown = Math.max(0, countdown - 1);
+        document.getElementById('refresh-countdown').textContent = countdown + 's';
+    }
+    setInterval(updateCountdown, 1000);
+    </script>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

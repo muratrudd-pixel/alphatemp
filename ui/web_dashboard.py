@@ -1,10 +1,12 @@
 """AlphaTemp Web Dashboard — FastAPI backend serving Plotly + Tailwind frontend."""
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
@@ -14,6 +16,11 @@ from core.timezone import et_day_bounds_utc
 from services.probability import ProbabilityEngine
 
 app = FastAPI(title="AlphaTemp Command Center")
+
+# Static files — directory lives at project root alongside ui/
+_static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+if os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -37,10 +44,34 @@ async def startup():
 # ---------------------------------------------------------------------------
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    """Serve the main dashboard page."""
-    return templates.TemplateResponse("index.html", {"request": request})
+@app.get("/")
+async def root():
+    """Redirect root to Operations tab."""
+    return RedirectResponse(url="/operations")
+
+
+@app.get("/operations")
+async def operations_page(request: Request):
+    """Serve the Operations tab."""
+    return templates.TemplateResponse("operations.html", {"request": request, "active_tab": "operations"})
+
+
+@app.get("/performance")
+async def performance_page(request: Request):
+    """Serve the Performance tab."""
+    return templates.TemplateResponse("performance.html", {"request": request, "active_tab": "performance"})
+
+
+@app.get("/review")
+async def review_page(request: Request):
+    """Serve the Review tab."""
+    return templates.TemplateResponse("review.html", {"request": request, "active_tab": "review"})
+
+
+@app.get("/mobile")
+async def mobile_page(request: Request):
+    """Serve the Mobile tab."""
+    return templates.TemplateResponse("mobile.html", {"request": request, "active_tab": "mobile"})
 
 
 STALE_THRESHOLD_MINUTES = 30
@@ -751,3 +782,732 @@ async def market_comparison(city: str, date: str = None):
 
     con.close()
     return {"city": city, "available": True, "comparisons": comparisons}
+
+
+@app.get("/api/brackets/{city}")
+async def bracket_spread(city: str, date: str = None):
+    """Compare model bracket probabilities vs Kalshi market prices in 2°F buckets.
+
+    Maps 1°F model probs to 2°F Kalshi brackets, merges with latest market ticks,
+    and computes edge (model_prob - market_mid) for each bracket.
+    """
+    city = city.upper()
+    if city not in CITIES:
+        return {"error": f"Unknown city: {city}"}
+
+    # 1. Get model probabilities — handle engine failures gracefully
+    try:
+        forecast = engine.calculate_city(city)
+    except Exception:
+        forecast = None
+
+    model_center = forecast.center if forecast else None
+    model_std = forecast.std if forecast else None
+
+    # Map 1°F model probs to 2°F Kalshi brackets: floor = (temp_f // 2) * 2
+    model_2f = {}  # type: Dict[tuple, float]
+    if forecast and forecast.bracket_probs:
+        for temp_f, prob in forecast.bracket_probs.items():
+            floor = (temp_f // 2) * 2
+            cap = floor + 2
+            key = (floor, cap)
+            model_2f[key] = model_2f.get(key, 0.0) + prob
+
+    # 2. Get latest Kalshi market ticks for this city + date
+    from core.timezone import ET as _ET
+    if date:
+        try:
+            target = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            target = datetime.now(_ET)
+    else:
+        target = datetime.now(_ET)
+
+    kalshi_date = target.strftime("%y%b%d").upper()
+    target_date_str = target.strftime("%Y-%m-%d")
+
+    con = get_connection()
+    ticks = con.execute(
+        """SELECT market_id, yes_bid, yes_ask, last_trade, floor_strike,
+                  cap_strike, volume
+           FROM market_ticks
+           WHERE city = ?
+           AND market_id LIKE ?
+           AND captured_at = (
+               SELECT MAX(captured_at) FROM market_ticks
+               WHERE city = ? AND market_id LIKE ?
+           )
+           ORDER BY COALESCE(floor_strike, -999), COALESCE(cap_strike, 999)""",
+        [city, f"%{kalshi_date}%", city, f"%{kalshi_date}%"],
+    ).fetchall()
+
+    # Index market data by (floor, cap) for merging
+    market_by_bracket = {}  # type: Dict[tuple, dict]
+    for market_id, yes_bid, yes_ask, last_trade, floor_strike, cap_strike, volume in ticks:
+        if floor_strike is not None and cap_strike is not None:
+            key = (int(floor_strike), int(cap_strike))
+            market_by_bracket[key] = {
+                "yes_bid": yes_bid,
+                "yes_ask": yes_ask,
+                "volume": volume or 0,
+            }
+
+    con.close()
+
+    # 3. Merge model + market into bracket objects
+    all_keys = set(model_2f.keys()) | set(market_by_bracket.keys())
+    brackets = []
+    total_volume = 0
+    spread_sum = 0.0
+    spread_count = 0
+
+    for key in sorted(all_keys):
+        floor, cap = key
+        model_prob = round(model_2f.get(key, 0.0), 4)
+        mkt = market_by_bracket.get(key, {})
+        yes_bid = mkt.get("yes_bid")
+        yes_ask = mkt.get("yes_ask")
+        vol = mkt.get("volume", 0)
+
+        market_mid = None
+        if yes_bid is not None and yes_ask is not None:
+            market_mid = round((yes_bid + yes_ask) / 2.0, 4)
+
+        edge = round(model_prob - market_mid, 4) if market_mid is not None else None
+
+        brackets.append({
+            "floor": floor,
+            "cap": cap,
+            "model_prob": model_prob,
+            "market_mid": market_mid,
+            "edge": edge,
+            "yes_bid": yes_bid,
+            "yes_ask": yes_ask,
+            "volume": vol,
+        })
+
+        total_volume += vol
+        if yes_bid is not None and yes_ask is not None:
+            spread_sum += (yes_ask - yes_bid)
+            spread_count += 1
+
+    avg_spread = round(spread_sum / spread_count, 4) if spread_count > 0 else 0.0
+
+    return {
+        "city": city,
+        "date": target_date_str,
+        "brackets": brackets,
+        "liquidity": {"total_volume": total_volume, "avg_spread": avg_spread},
+        "model_center": model_center,
+        "model_std": model_std,
+    }
+
+
+@app.get("/api/positions/{city}")
+async def get_positions(city: str, date: str = None):
+    """Return active paper positions, near-misses, and P&L for a city.
+
+    Queries paper_positions for open/settled trades on the target date,
+    and identifies near-miss brackets (edge 5-10%) from the brackets endpoint.
+    """
+    city = city.upper()
+    if city not in CITIES:
+        return {"error": f"Unknown city: {city}"}
+
+    from core.timezone import ET as _ET
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+            target_date = date
+        except ValueError:
+            target_date = datetime.now(_ET).strftime("%Y-%m-%d")
+    else:
+        target_date = datetime.now(_ET).strftime("%Y-%m-%d")
+
+    con = get_connection()
+    try:
+        # Active (open) positions for this city + date
+        active_rows = con.execute(
+            """SELECT id, bracket_floor, bracket_cap, direction, model_prob,
+                      market_price, edge, entry_price, entry_time
+               FROM paper_positions
+               WHERE city = ? AND event_date = ? AND status = 'open'
+               ORDER BY entry_time ASC""",
+            [city, target_date],
+        ).fetchall()
+
+        active = []
+        for row in active_rows:
+            pid, floor, cap, direction, model_prob, market_price, edge, entry_price, entry_time = row
+            active.append({
+                "id": pid,
+                "bracket": "{}-{}°F".format(int(floor), int(cap)) if floor is not None and cap is not None else "--",
+                "direction": direction,
+                "model_prob": round(model_prob, 4) if model_prob is not None else None,
+                "market_price": round(market_price, 4) if market_price is not None else None,
+                "edge": round(edge, 4) if edge is not None else None,
+                "entry_price": round(entry_price, 4) if entry_price is not None else None,
+                "entry_time": entry_time.isoformat() if entry_time else None,
+            })
+
+        # Daily settled P&L
+        daily_row = con.execute(
+            """SELECT COALESCE(SUM(net_pnl), 0)
+               FROM paper_positions
+               WHERE city = ? AND event_date = ? AND status = 'settled'""",
+            [city, target_date],
+        ).fetchone()
+        daily_pnl = round(daily_row[0], 2) if daily_row else 0.0
+
+        # Total settled P&L (all time)
+        total_row = con.execute(
+            """SELECT COALESCE(SUM(net_pnl), 0)
+               FROM paper_positions
+               WHERE city = ? AND status = 'settled'""",
+            [city],
+        ).fetchone()
+        total_pnl = round(total_row[0], 2) if total_row else 0.0
+    finally:
+        con.close()
+
+    # Near-misses: brackets with 5% <= edge < 10% from the brackets endpoint
+    near_misses = []
+    try:
+        brackets_data = await bracket_spread(city, date=target_date)
+        threshold = 0.10
+        for b in brackets_data.get("brackets", []):
+            if b.get("edge") is not None and 0.05 <= b["edge"] < 0.10:
+                label = "{}-{}°F".format(b["floor"], b["cap"])
+                near_misses.append({
+                    "bracket": label,
+                    "edge": round(b["edge"], 4),
+                    "threshold": threshold,
+                })
+    except Exception:
+        pass  # If brackets fail, just return empty near_misses
+
+    return {
+        "city": city,
+        "date": target_date,
+        "active": active,
+        "near_misses": near_misses,
+        "daily_pnl": daily_pnl,
+        "total_pnl": total_pnl,
+    }
+
+
+@app.get("/api/performance")
+async def get_performance(time_range: str = Query("30d", alias="range")):
+    """Return P&L data from paper_positions for the Performance tab.
+
+    Query parameter 'range' (aliased to time_range) accepts "7d", "30d", or "all".
+    """
+    days_map = {"7d": 7, "30d": 30, "all": 9999}
+    days = days_map.get(time_range, 30)
+
+    con = get_connection()
+    try:
+        # Daily P&L, wins, losses, fees, gross for settled positions in range
+        # days comes from controlled map — safe to interpolate
+        daily_rows = con.execute(
+            """SELECT event_date,
+                      COALESCE(SUM(net_pnl), 0) AS pnl,
+                      COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins,
+                      COALESCE(SUM(CASE WHEN net_pnl <= 0 THEN 1 ELSE 0 END), 0) AS losses,
+                      COALESCE(SUM(fees), 0) AS fees,
+                      COALESCE(SUM(gross_pnl), 0) AS gross
+               FROM paper_positions
+               WHERE status = 'settled'
+               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
+               GROUP BY event_date
+               ORDER BY event_date ASC""".format(days),
+        ).fetchall()
+
+        # Build daily bars and cumulative P&L
+        daily_bars = []
+        cumulative_pnl = []
+        running = 0.0
+        total_wins = 0
+        total_losses = 0
+        total_gross = 0.0
+        total_fees = 0.0
+        total_net = 0.0
+
+        for event_date, pnl, wins, losses, fees_val, gross_val in daily_rows:
+            date_str = str(event_date)
+            daily_bars.append({
+                "date": date_str,
+                "pnl": round(pnl, 2),
+                "wins": int(wins),
+                "losses": int(losses),
+            })
+            running += pnl
+            cumulative_pnl.append({
+                "date": date_str,
+                "pnl": round(running, 2),
+            })
+            total_wins += int(wins)
+            total_losses += int(losses)
+            total_gross += gross_val
+            total_fees += fees_val
+            total_net += pnl
+
+        total_trades = total_wins + total_losses
+        win_rate = round(total_wins / total_trades, 4) if total_trades > 0 else 0.0
+
+        # Breakdown by bracket
+        bracket_rows = con.execute(
+            """SELECT bracket_floor, bracket_cap,
+                      COALESCE(SUM(net_pnl), 0) AS pnl,
+                      COUNT(*) AS trades,
+                      COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
+               FROM paper_positions
+               WHERE status = 'settled'
+               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
+               GROUP BY bracket_floor, bracket_cap
+               ORDER BY bracket_floor ASC""".format(days),
+        ).fetchall()
+
+        by_bracket = []
+        for floor, cap, pnl, trades, wins in bracket_rows:
+            bracket_label = "{}-{}".format(int(floor), int(cap)) if floor is not None and cap is not None else "--"
+            wr = round(wins / trades, 4) if trades > 0 else 0.0
+            by_bracket.append({
+                "bracket": bracket_label,
+                "pnl": round(pnl, 2),
+                "trades": int(trades),
+                "win_rate": wr,
+            })
+
+        # Breakdown by edge bucket
+        edge_rows = con.execute(
+            """SELECT
+                   CASE
+                       WHEN edge >= 0.15 THEN '>15%'
+                       WHEN edge >= 0.10 THEN '10-15%'
+                       WHEN edge >= 0.05 THEN '5-10%'
+                       ELSE '<5%'
+                   END AS bucket,
+                   COALESCE(SUM(net_pnl), 0) AS pnl,
+                   COUNT(*) AS trades,
+                   COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
+               FROM paper_positions
+               WHERE status = 'settled'
+               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
+               GROUP BY bucket
+               ORDER BY bucket DESC""".format(days),
+        ).fetchall()
+
+        by_edge = []
+        for bucket, pnl, trades, wins in edge_rows:
+            wr = round(wins / trades, 4) if trades > 0 else 0.0
+            by_edge.append({
+                "bucket": bucket,
+                "pnl": round(pnl, 2),
+                "trades": int(trades),
+                "win_rate": wr,
+            })
+    finally:
+        con.close()
+
+    return {
+        "range": time_range,
+        "cumulative_pnl": cumulative_pnl,
+        "daily_bars": daily_bars,
+        "win_rate": win_rate,
+        "total_trades": total_trades,
+        "total_gross": round(total_gross, 2),
+        "total_fees": round(total_fees, 2),
+        "total_net": round(total_net, 2),
+        "by_bracket": by_bracket,
+        "by_edge": by_edge,
+    }
+
+
+@app.get("/api/brier-comparison")
+async def get_brier_comparison(time_range: str = Query("30d", alias="range")):
+    """Brier score comparison — stub until backtester integration is ready."""
+    return {
+        "range": time_range,
+        "by_hour": [],
+        "note": "Brier comparison requires backtester integration (in progress on separate worktree)",
+    }
+
+
+@app.get("/api/edge-heatmap")
+async def get_edge_heatmap(time_range: str = Query("30d", alias="range")):
+    """Edge heatmap — settled positions grouped by bracket and hour (ET)."""
+    days_map = {"7d": 7, "30d": 30, "all": 9999}
+    days = days_map.get(time_range, 30)
+
+    con = get_connection()
+    try:
+        cells_rows = con.execute(
+            """SELECT bracket_floor, bracket_cap,
+                      EXTRACT(HOUR FROM timezone('America/New_York', entry_time)) AS hour_et,
+                      AVG(edge) AS avg_edge,
+                      COUNT(*) AS trades,
+                      COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
+               FROM paper_positions
+               WHERE status = 'settled'
+               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
+               GROUP BY bracket_floor, bracket_cap, hour_et
+               ORDER BY bracket_floor ASC, hour_et ASC""".format(days),
+        ).fetchall()
+
+        cells = []
+        for floor, cap, hour_et, avg_edge, trades, wins in cells_rows:
+            bracket_label = "{}-{}".format(int(floor), int(cap)) if floor is not None and cap is not None else "--"
+            wr = round(wins / trades, 4) if trades > 0 else 0.0
+            cells.append({
+                "bracket": bracket_label,
+                "hour_et": int(hour_et) if hour_et is not None else None,
+                "avg_edge": round(avg_edge, 4) if avg_edge is not None else None,
+                "trades": int(trades),
+                "win_rate": wr,
+            })
+    finally:
+        con.close()
+
+    return {
+        "range": time_range,
+        "cells": cells,
+    }
+
+
+@app.get("/api/market-swings/{city}")
+async def market_swings(city: str, date: str = None):
+    """Detect material Kalshi price movements (>10c in <2 hours).
+
+    Scans market_ticks for the target date, groups by bracket, and finds
+    the largest mid-price swing per bracket within any 2-hour window.
+    """
+    from collections import defaultdict
+
+    city = city.upper()
+    if city not in CITIES:
+        return {"error": f"Unknown city: {city}"}
+
+    from core.timezone import ET as _ET
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+            target_date = date
+        except ValueError:
+            target_date = datetime.now(_ET).strftime("%Y-%m-%d")
+    else:
+        target_date = datetime.now(_ET).strftime("%Y-%m-%d")
+
+    day_start_utc, day_end_utc = et_day_bounds_utc(target_date)
+
+    con = get_connection()
+    try:
+        rows = con.execute(
+            """SELECT floor_strike, cap_strike, yes_bid, yes_ask, captured_at
+               FROM market_ticks
+               WHERE city = ?
+               AND captured_at >= ? AND captured_at < ?
+               AND floor_strike IS NOT NULL AND cap_strike IS NOT NULL
+               ORDER BY floor_strike, cap_strike, captured_at ASC""",
+            [city, day_start_utc, day_end_utc],
+        ).fetchall()
+    finally:
+        con.close()
+
+    # Group ticks by bracket
+    bracket_ticks = defaultdict(list)  # type: dict
+    for floor_strike, cap_strike, yes_bid, yes_ask, captured_at in rows:
+        # Compute mid-price, handling NULL bid/ask
+        if yes_bid is not None and yes_ask is not None:
+            mid = (yes_bid + yes_ask) / 2.0
+        elif yes_bid is not None:
+            mid = yes_bid
+        elif yes_ask is not None:
+            mid = yes_ask
+        else:
+            continue  # Skip ticks with no price data
+
+        key = (int(floor_strike), int(cap_strike))
+        bracket_ticks[key].append({"mid": mid, "time": captured_at})
+
+    # Find largest swing per bracket within 2-hour windows
+    swings = []
+    two_hours_secs = 2 * 3600
+
+    for (floor, cap), ticks in bracket_ticks.items():
+        if len(ticks) < 2:
+            continue
+
+        best_swing = None
+        best_abs_change = 0.0
+
+        for i in range(len(ticks)):
+            for j in range(i + 1, len(ticks)):
+                t_i = ticks[i]["time"]
+                t_j = ticks[j]["time"]
+                # Ensure both timestamps are comparable
+                if hasattr(t_i, 'timestamp') and hasattr(t_j, 'timestamp'):
+                    delta_secs = abs((t_j - t_i).total_seconds())
+                else:
+                    continue
+
+                if delta_secs > two_hours_secs:
+                    break  # Ticks are sorted by time, so no need to check further
+
+                change = ticks[j]["mid"] - ticks[i]["mid"]
+                abs_change = abs(change)
+
+                if abs_change > 0.10 and abs_change > best_abs_change:
+                    best_abs_change = abs_change
+                    best_swing = {
+                        "bracket": "{}-{}°F".format(floor, cap),
+                        "from_price": round(ticks[i]["mid"], 4),
+                        "to_price": round(ticks[j]["mid"], 4),
+                        "change": round(change, 4),
+                        "from_time": t_i.isoformat() if hasattr(t_i, 'isoformat') else str(t_i),
+                        "to_time": t_j.isoformat() if hasattr(t_j, 'isoformat') else str(t_j),
+                    }
+
+        if best_swing:
+            swings.append(best_swing)
+
+    # Sort by absolute change descending, top 10
+    swings.sort(key=lambda s: abs(s["change"]), reverse=True)
+    swings = swings[:10]
+
+    return {
+        "city": city,
+        "date": target_date,
+        "swings": swings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Review (Model Autopsy) helpers
+# ---------------------------------------------------------------------------
+
+
+def _categorize_incident(pos_row, settlement_temp):
+    # type: (dict, float) -> str
+    """Classify why a position lost based on settlement temp vs bracket.
+
+    Categories:
+    - tail_bracket_underweight: settlement >4F away from bracket range
+    - threshold_too_conservative: model and market were close (edge < 5%)
+    - model_miss: generic model error (default)
+    - unknown: no settlement data available
+    """
+    if settlement_temp is None:
+        return "unknown"
+
+    bracket_floor = pos_row.get("bracket_floor")
+    bracket_cap = pos_row.get("bracket_cap")
+
+    if bracket_floor is not None and bracket_cap is not None:
+        # Distance from settlement to nearest bracket edge
+        if settlement_temp > bracket_cap:
+            distance = settlement_temp - bracket_cap
+        elif settlement_temp < bracket_floor:
+            distance = bracket_floor - settlement_temp
+        else:
+            distance = 0
+        if distance > 4:
+            return "tail_bracket_underweight"
+
+    model_prob = pos_row.get("model_prob") or 0
+    market_price = pos_row.get("market_price") or 0
+    if abs(model_prob - market_price) < 0.05:
+        return "threshold_too_conservative"
+
+    return "model_miss"
+
+
+def _narrate_incident(incident_type, pos_row, settlement_temp):
+    # type: (str, dict, float) -> str
+    """Generate a short human-readable narrative for an incident."""
+    direction = pos_row.get("direction", "?")
+    bracket_floor = pos_row.get("bracket_floor")
+    bracket_cap = pos_row.get("bracket_cap")
+    entry_price = pos_row.get("entry_price")
+
+    bracket_label = "{}-{}°F".format(
+        int(bracket_floor), int(bracket_cap)
+    ) if bracket_floor is not None and bracket_cap is not None else "?"
+
+    entry_cents = "{}¢".format(int(round(entry_price * 100))) if entry_price is not None else "?¢"
+
+    if incident_type == "lost_bet":
+        # Determine if bracket settled YES or NO
+        settled = "NO"
+        if settlement_temp is not None and bracket_floor is not None and bracket_cap is not None:
+            if bracket_floor <= settlement_temp <= bracket_cap:
+                settled = "YES"
+        temp_str = "{}°F".format(int(round(settlement_temp))) if settlement_temp is not None else "unknown"
+        return "Bet {} on {} at {}. Bracket settled {}. Settlement temp: {}.".format(
+            direction, bracket_label, entry_cents, settled, temp_str
+        )
+
+    return "Lost position on {}.".format(bracket_label)
+
+
+# ---------------------------------------------------------------------------
+# Review (Model Autopsy) endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/review/incidents")
+async def get_review_incidents(time_range: str = Query("30d", alias="range"),
+                                filter_type: str = Query("all", alias="filter")):
+    """Return incident cards for the Review (Model Autopsy) tab.
+
+    Compares model predictions vs settlements to identify lost bets
+    and categorize what went wrong.
+    """
+    days_map = {"7d": 7, "30d": 30, "all": 9999}
+    days = days_map.get(time_range, 30)
+
+    con = get_connection()
+    try:
+        # Settled positions with net_pnl < 0 in date range (lost bets)
+        pos_rows = con.execute(
+            """SELECT event_date, bracket_floor, bracket_cap, direction,
+                      model_prob, market_price, edge, entry_price, net_pnl
+               FROM paper_positions
+               WHERE status = 'settled'
+               AND net_pnl < 0
+               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
+               ORDER BY event_date DESC""".format(days),
+        ).fetchall()
+
+        # Get settlement temps from nws_daily for KNYC
+        # Collect unique dates from positions
+        dates = list(set(str(row[0]) for row in pos_rows))
+        settlement_temps = {}  # type: dict
+        if dates:
+            nws_rows = con.execute(
+                """SELECT obs_date, max_temp_f FROM nws_daily
+                   WHERE station_id = 'KNYC'
+                   AND obs_date IN ({})""".format(
+                    ", ".join("'{}'".format(d) for d in dates)
+                ),
+            ).fetchall()
+            for obs_date, max_temp_f in nws_rows:
+                settlement_temps[str(obs_date)] = max_temp_f
+    finally:
+        con.close()
+
+    # Build incident cards
+    incidents = []
+    # Track max abs pnl for severity normalization
+    max_abs_pnl = max((abs(row[8]) for row in pos_rows), default=1.0)
+    if max_abs_pnl == 0:
+        max_abs_pnl = 1.0
+
+    for row in pos_rows:
+        event_date, bracket_floor, bracket_cap, direction, model_prob, \
+            market_price, edge, entry_price, net_pnl = row
+
+        date_str = str(event_date)
+        settlement_temp = settlement_temps.get(date_str)
+
+        pos_dict = {
+            "bracket_floor": bracket_floor,
+            "bracket_cap": bracket_cap,
+            "direction": direction,
+            "model_prob": model_prob,
+            "market_price": market_price,
+            "edge": edge,
+            "entry_price": entry_price,
+        }
+
+        category = _categorize_incident(pos_dict, settlement_temp)
+        # Severity: normalized abs(pnl) clamped to [0, 1]
+        severity = round(min(1.0, abs(net_pnl) / max_abs_pnl), 2)
+
+        incident_type = "lost_bet"
+        narrative = _narrate_incident(incident_type, pos_dict, settlement_temp)
+
+        bracket_label = "{}-{}°F".format(
+            int(bracket_floor), int(bracket_cap)
+        ) if bracket_floor is not None and bracket_cap is not None else "--"
+
+        incidents.append({
+            "date": date_str,
+            "type": incident_type,
+            "severity": severity,
+            "bracket": bracket_label,
+            "direction": direction,
+            "model_prob": round(model_prob, 4) if model_prob is not None else None,
+            "market_price": round(market_price, 4) if market_price is not None else None,
+            "edge": round(edge, 4) if edge is not None else None,
+            "net_pnl": round(net_pnl, 2),
+            "settlement_temp": settlement_temp,
+            "category": category,
+            "narrative": narrative,
+        })
+
+    # Apply filter
+    if filter_type == "worst":
+        incidents = [i for i in incidents if i["severity"] >= 0.5]
+    elif filter_type == "lost":
+        incidents = [i for i in incidents if i["type"] == "lost_bet"]
+    elif filter_type == "missed":
+        incidents = [i for i in incidents if i["type"] == "missed_edge"]
+    # "all" — no filtering
+
+    # Sort by severity descending, limit to 50
+    incidents.sort(key=lambda i: i["severity"], reverse=True)
+    incidents = incidents[:50]
+
+    return {
+        "range": time_range,
+        "filter": filter_type,
+        "incidents": incidents,
+    }
+
+
+@app.get("/api/review/patterns")
+async def get_review_patterns(time_range: str = Query("30d", alias="range")):
+    """Aggregate failure patterns from review incidents.
+
+    Groups incidents by category, sums P&L, and maps each to a suggested action.
+    """
+    # Reuse the incidents endpoint internally
+    incidents_resp = await get_review_incidents(time_range=time_range, filter_type="all")
+    incidents = incidents_resp["incidents"]
+
+    # Known remedies per category
+    remedies = {
+        "slow_drift_response": "Consider dynamic std that widens when obs drift > 2°F",
+        "tail_bracket_underweight": "Review tail bracket calibration (model underweights >2\u03c3)",
+        "threshold_too_conservative": "Backtest threshold at lower values (e.g., 8% vs 10%)",
+        "stale_pricing": "Add stale-price detection to trigger model re-evaluation",
+        "model_miss": "Review model accuracy for these conditions in backtester",
+        "unknown": "Insufficient settlement data to categorize — check NWS ingestion",
+    }
+
+    # Group by category
+    grouped = {}  # type: dict
+    for inc in incidents:
+        cat = inc["category"]
+        if cat not in grouped:
+            grouped[cat] = {"count": 0, "total_pnl": 0.0}
+        grouped[cat]["count"] += 1
+        grouped[cat]["total_pnl"] += inc["net_pnl"]
+
+    patterns = []
+    for cat, agg in grouped.items():
+        patterns.append({
+            "category": cat,
+            "count": agg["count"],
+            "total_pnl": round(agg["total_pnl"], 2),
+            "suggested_action": remedies.get(cat, "Investigate manually"),
+        })
+
+    # Sort by total_pnl ascending (worst first)
+    patterns.sort(key=lambda p: p["total_pnl"])
+
+    return {
+        "range": time_range,
+        "patterns": patterns,
+    }

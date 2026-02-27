@@ -272,6 +272,17 @@ def test_forecast_extended_unique_constraint():
     con.close()
 
 
+def test_paper_positions_table_exists():
+    """paper_positions table should be created by init_db."""
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB)
+    tables = con.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_name = 'paper_positions'"
+    ).fetchall()
+    con.close()
+    assert len(tables) == 1
+
+
 def test_indexes_created():
     """All performance indexes should exist after init_db."""
     init_db(TEST_DB)
@@ -289,6 +300,9 @@ def test_indexes_created():
         "idx_market_city_time",
         "idx_bias_station_time",
         "idx_fext_model_run",
+        "idx_paper_positions_id",
+        "idx_paper_positions_city_date",
+        "idx_paper_positions_status",
     }
     assert expected.issubset(index_names), f"Missing indexes: {expected - index_names}"
 
