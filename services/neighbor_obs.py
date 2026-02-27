@@ -6,7 +6,9 @@ blended curve construction, and trend extraction from KLGA/KEWR data
 to enhance Phase 2B predictions.
 """
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+from services.divergence import interpolate_forecast, compute_divergence_features
 
 # Type alias: list of (timestamp, temp_f) tuples
 ObsSeries = List[Tuple[datetime, float]]
@@ -48,3 +50,51 @@ def compute_walk_forward_offset(
         return None
 
     return sum(diffs) / len(diffs)
+
+
+def compute_neighbor_divergence(
+    obs_temps: List[float],
+    obs_timestamps: List[float],
+    fcst_timestamps: List[float],
+    fcst_temps: List[float],
+    offset: float = 0.0,
+) -> Optional[dict]:
+    """Compute divergence features from neighbor obs vs forecast.
+
+    Args:
+        obs_temps: Neighbor observed temperatures (F).
+        obs_timestamps: Epoch seconds for each obs.
+        fcst_timestamps: Forecast curve timestamps (epoch seconds).
+        fcst_temps: Forecast curve temperatures (F).
+        offset: Station offset to subtract from neighbor temps (neighbor - KNYC).
+
+    Returns:
+        Dict with neighbor_ prefixed divergence features, or None if < 2 obs.
+    """
+    if len(obs_temps) < 2:
+        return None
+
+    corrected_temps = [t - offset for t in obs_temps]
+    fcst_interp = interpolate_forecast(fcst_timestamps, fcst_temps, obs_timestamps)
+    t0 = obs_timestamps[0]
+    obs_hours = [(t - t0) / 3600.0 for t in obs_timestamps]
+    last_obs_ts = obs_timestamps[-1]
+    fcst_up_to_t = [
+        fcst_temps[i]
+        for i in range(len(fcst_timestamps))
+        if fcst_timestamps[i] <= last_obs_ts
+    ]
+    if not fcst_up_to_t:
+        fcst_up_to_t = fcst_temps[:1]
+
+    raw = compute_divergence_features(corrected_temps, fcst_interp, obs_hours, fcst_up_to_t)
+    if raw is None:
+        return None
+
+    return {
+        "neighbor_running_max": raw["running_max_divergence"],
+        "neighbor_instant": raw["temp_divergence"],
+        "neighbor_cumul": raw["cumulative_divergence"],
+        "neighbor_slope": raw["slope_divergence"],
+        "n_neighbor_obs": raw["n_obs"],
+    }
