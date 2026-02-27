@@ -803,6 +803,29 @@ def _ensure_level1(con, run_hour, station_id, model_name='hrrr'):
             obs_by_date[et_date] = []
         obs_by_date[et_date].append((ts, temp_f))
 
+    # --- Neighbor observations (Phase 3.6) ---
+    neighbor_stations = CITIES.get("NYC", {}).get("neighbors", [])
+    neighbor_obs = {}  # type: Dict[str, Dict[date, List[Tuple[float, float]]]]
+    for nbr_station in neighbor_stations:
+        nbr_rows = con.execute("""
+            SELECT observed_at, temp_f
+            FROM observations
+            WHERE station_id = ?
+              AND temp_f IS NOT NULL
+            ORDER BY observed_at
+        """, [nbr_station]).fetchall()
+
+        nbr_by_date = {}  # type: Dict[date, List[Tuple[float, float]]]
+        for observed_at, temp_f in nbr_rows:
+            obs_utc = observed_at.replace(tzinfo=timezone.utc) if hasattr(observed_at, 'replace') \
+                else datetime.fromtimestamp(float(observed_at), tz=timezone.utc)
+            et_date = obs_utc.astimezone(_ET).date()
+            ts = observed_at.timestamp() if hasattr(observed_at, 'timestamp') else float(observed_at)
+            if et_date not in nbr_by_date:
+                nbr_by_date[et_date] = []
+            nbr_by_date[et_date].append((ts, temp_f))
+        neighbor_obs[nbr_station] = nbr_by_date
+
     # --- Errors + Phase 2 features ---
     error_rows = con.execute("""
         WITH daily_errors AS (
@@ -852,11 +875,14 @@ def _ensure_level1(con, run_hour, station_id, model_name='hrrr'):
         "obs_by_date": obs_by_date,
         "errors_list": errors_list,
         "p2_preds": p2_preds,
+        "neighbor_obs": neighbor_obs,
     }
     _p2b_level1[key] = result
+    nbr_count = sum(len(dates) for dates in neighbor_obs.values())
     logger.info(
         f"Phase 2B: {len(curves)} curves, {len(obs_by_date)} obs-dates, "
-        f"{len(p2_preds)} Phase 2 predictions cached for {run_hour:02d}z"
+        f"{len(p2_preds)} Phase 2 predictions, {nbr_count} neighbor-obs-dates "
+        f"cached for {run_hour:02d}z"
     )
     return result
 

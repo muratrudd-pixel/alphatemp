@@ -127,6 +127,30 @@ def _seed_phase2b_data(db_path, n_days=200, run_hour=12):
     con.close()
 
 
+def _seed_neighbor_obs(db_path, n_days=200, run_hour=12):
+    """Seed KLGA and KEWR observations mirroring KNYC but at higher frequency."""
+    import math
+    con = duckdb.connect(db_path)
+    base_date = datetime(2023, 1, 1)
+    rows = []
+    for station, temp_offset in [("KLGA", 1.5), ("KEWR", 2.0)]:
+        for d in range(n_days):
+            obs_date = base_date + timedelta(days=d)
+            day_of_year = obs_date.timetuple().tm_yday
+            actual = 55 + 25 * math.sin(2 * math.pi * (day_of_year - 80) / 365)
+            for hour in range(5, 24):
+                for minute in [0, 10, 20, 30, 40, 50]:
+                    obs_time = obs_date.replace(hour=hour, minute=minute)
+                    hour_frac = hour + minute / 60.0
+                    diurnal = -3.0 * abs(hour_frac - 19.0) + actual + temp_offset
+                    rows.append((station, obs_time, diurnal, obs_time, "test"))
+    con.executemany(
+        "INSERT OR IGNORE INTO observations (station_id, observed_at, temp_f, ingested_at, ingest_source) VALUES (?, ?, ?, ?, ?)",
+        rows,
+    )
+    con.close()
+
+
 @pytest.fixture
 def seeded_db(test_db):
     _seed_phase2b_data(test_db, n_days=200, run_hour=12)
@@ -404,3 +428,30 @@ class TestBackwardCompat:
         )
         # Should see at least one of our requested hours
         assert len(update_hours_seen) > 0
+
+
+# ---------------------------------------------------------------------------
+# Test: neighbor observations in level-1 cache
+# ---------------------------------------------------------------------------
+
+class TestNeighborObsCache:
+    def test_level1_includes_neighbor_obs(self, test_db):
+        _seed_phase2b_data(TEST_DB, n_days=100, run_hour=12)
+        _seed_neighbor_obs(TEST_DB, n_days=100)
+
+        con = duckdb.connect(TEST_DB, read_only=True)
+        try:
+            data = _ensure_level1(con, 12, "KNYC")
+            assert "neighbor_obs" in data
+            assert "KLGA" in data["neighbor_obs"]
+            assert "KEWR" in data["neighbor_obs"]
+            klga_dates = list(data["neighbor_obs"]["KLGA"].keys())
+            assert len(klga_dates) > 0
+            some_date = klga_dates[0]
+            assert len(data["neighbor_obs"]["KLGA"][some_date]) > 0
+            first_obs = data["neighbor_obs"]["KLGA"][some_date][0]
+            assert len(first_obs) == 2
+            assert isinstance(first_obs[0], float)
+            assert isinstance(first_obs[1], float)
+        finally:
+            con.close()
