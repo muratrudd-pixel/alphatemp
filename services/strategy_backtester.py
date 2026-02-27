@@ -841,3 +841,303 @@ class PnLSimulator:
                 "win_rate": len(wins) / len(group_trades) if group_trades else 0.0,
             }
         return result
+
+
+# ── Strategy Backtester (Main Orchestrator) ──────────────────────────────
+
+class StrategyBacktester:
+    """Main orchestrator — three-layer unified pipeline.
+
+    Iterates settlement dates, evaluates model at each trigger,
+    computes edge, applies strategy filters, manages positions,
+    settles at end of day, and produces the final report.
+    """
+
+    def __init__(self, db_path, config):
+        # type: (str, BacktestConfig) -> None
+        self.db_path = db_path
+        self.config = config
+        self.market_loader = MarketDataLoader(db_path)
+        self.trigger_detector = TriggerDetector(
+            db_path, config.station_id, config.execution_latency_seconds,
+        )
+        self.edge_analyzer = EdgeAnalyzer()
+        self.sanity_filter = SanityFilter(config)
+        self.pnl_simulator = PnLSimulator()
+
+    def _get_settlement_dates(self):
+        # type: () -> List[Tuple[date, float]]
+        """Get (event_date, actual_high) from nws_daily in the configured window."""
+        con = duckdb.connect(self.db_path, read_only=True)
+        query = """
+            SELECT obs_date, max_temp_f FROM nws_daily
+            WHERE station_id = ? AND max_temp_f IS NOT NULL
+        """
+        params = [self.config.station_id]  # type: list
+
+        if self.config.start_date:
+            query += " AND obs_date >= ?"
+            params.append(self.config.start_date)
+        if self.config.end_date:
+            query += " AND obs_date <= ?"
+            params.append(self.config.end_date)
+
+        query += " ORDER BY obs_date"
+        rows = con.execute(query, params).fetchall()
+        con.close()
+        return [(r[0], r[1]) for r in rows]
+
+    def _get_model_run_for_trigger(self, trigger_time, trigger_type, event_date):
+        # type: (datetime, str, date) -> datetime
+        """Determine which forecast model_run to use at this trigger time."""
+        from services.data_provider import HRRR_AVAILABILITY_LAG_HOURS
+
+        best_run = None  # type: Optional[datetime]
+        for day_offset in [-1, 0]:
+            run_date = event_date + timedelta(days=day_offset)
+            for rh in RUN_HOURS:
+                run_time = datetime(
+                    run_date.year, run_date.month, run_date.day,
+                    rh, 0, tzinfo=timezone.utc,
+                )
+                avail_time = run_time + timedelta(hours=HRRR_AVAILABILITY_LAG_HOURS)
+                if avail_time <= trigger_time:
+                    if best_run is None or run_time > best_run:
+                        best_run = run_time
+
+        if best_run is None:
+            best_run = datetime(
+                event_date.year, event_date.month, event_date.day,
+                0, 0, tzinfo=timezone.utc,
+            )
+        return best_run
+
+    def _get_et_hour(self, utc_time):
+        # type: (datetime) -> int
+        """Convert UTC time to ET hour."""
+        et_time = utc_time.astimezone(_ET) if utc_time.tzinfo else utc_time.replace(tzinfo=timezone.utc).astimezone(_ET)
+        return et_time.hour
+
+    def run(self, model_fn):
+        # type: (ModelFn) -> Dict
+        """Execute the full backtest pipeline."""
+        config = self.config
+        position_mgr = PositionManager(bankroll=config.starting_capital)
+        all_trades = []  # type: List[TradeRecord]
+        missed_capital = 0
+        anomalies = []  # type: List[Dict]
+
+        settlement_dates = self._get_settlement_dates()
+        burn_in_end = config.start_date + timedelta(days=config.burn_in_days)
+
+        con = duckdb.connect(self.db_path, read_only=True)
+
+        for event_date, actual_high in settlement_dates:
+            # Get bracket definitions and settlement outcome
+            brackets_info = self.market_loader.get_brackets(event_date)
+            if not brackets_info:
+                continue
+
+            settled_bracket = None  # type: Optional[Tuple]
+            for bi in brackets_info:
+                if bi["settled_yes"] == 1:
+                    settled_bracket = bi["bracket"]
+                    break
+
+            if settled_bracket is None:
+                continue
+
+            # Market window: prior day 10 AM ET -> settlement day 11 PM ET
+            market_open = datetime(
+                event_date.year, event_date.month, event_date.day,
+                15, 0, tzinfo=timezone.utc,  # 10 AM ET = 15 UTC
+            ) - timedelta(days=1)
+            market_close = datetime(
+                event_date.year, event_date.month, event_date.day,
+                23, 0, tzinfo=timezone.utc,
+            )
+
+            # Get triggers for this event
+            triggers = self.trigger_detector.get_triggers(
+                event_date, market_open, market_close,
+            )
+
+            # Track obs for post-peak detection
+            day_obs = []  # type: List[Tuple[datetime, float]]
+
+            for model_time, execution_time, trigger_type in triggers:
+                et_hour = self._get_et_hour(model_time)
+
+                # Determine model_run to use
+                model_run = self._get_model_run_for_trigger(
+                    model_time, trigger_type, event_date,
+                )
+
+                # Create data provider (walk-forward fence at model_time)
+                provider = BacktestDataProvider(
+                    db_path=self.db_path,
+                    station_id=config.station_id,
+                    model_run=model_run,
+                    ref_time=model_time,  # model sees data up to model_time
+                    connection=con,
+                    model_name=config.model_name if config.model_name != 'ensemble' else 'hrrr',
+                )
+
+                # Call model (evaluates at model_time)
+                bracket_probs_1f = model_fn(provider, model_time)
+                if bracket_probs_1f is None:
+                    continue
+
+                # Map to Kalshi brackets
+                kalshi_brackets = [
+                    KalshiBracket(bi["bracket"][0], bi["bracket"][1], bi["settled_yes"])
+                    for bi in brackets_info
+                ]
+                mapped_probs = map_probs_to_kalshi_brackets(bracket_probs_1f, kalshi_brackets)
+
+                # Build model_probs dict
+                model_probs = {}  # type: Dict[Tuple, float]
+                for i, bi in enumerate(brackets_info):
+                    model_probs[bi["bracket"]] = mapped_probs[i]
+
+                # Get market prices at execution_time (model_time + latency)
+                market_mids = {}  # type: Dict[Tuple, float]
+                market_asks = {}  # type: Dict[Tuple, float]
+                market_bids = {}  # type: Dict[Tuple, float]
+                for bi in brackets_info:
+                    snaps = self.market_loader.get_snapshots(
+                        market_ticker=bi["market_ticker"],
+                        bracket=bi["bracket"],
+                        start_ts=execution_time - timedelta(minutes=1),
+                        end_ts=execution_time + timedelta(minutes=1),
+                    )
+                    if snaps:
+                        snap = snaps[-1]
+                        market_mids[bi["bracket"]] = (snap.yes_bid + snap.yes_ask) / 2
+                        market_asks[bi["bracket"]] = snap.yes_ask
+                        market_bids[bi["bracket"]] = snap.yes_bid
+
+                if not market_mids:
+                    continue
+
+                # -- Layer 1: Edge Analysis (always record, even during burn-in)
+                self.edge_analyzer.record(
+                    event_date=event_date,
+                    trigger_time=model_time,
+                    model_probs=model_probs,
+                    market_mids=market_mids,
+                    settled_bracket=settled_bracket,
+                    et_hour=et_hour,
+                )
+
+                # Skip trading during burn-in
+                if event_date < burn_in_end:
+                    continue
+
+                # -- Layer 2: Strategy Engine --
+
+                # Update obs for post-peak detection
+                if trigger_type == 'observation':
+                    obs = provider.get_observations_in_range(
+                        config.station_id,
+                        model_time - timedelta(minutes=5),
+                        model_time + timedelta(minutes=5),
+                    )
+                    for obs_row in obs:
+                        day_obs.append((model_time, obs_row[1]))
+
+                is_post_peak = SanityFilter.is_post_peak_check(day_obs, model_time)
+                recently_exited = position_mgr.recently_exited_brackets(
+                    model_time, config.min_reentry_minutes,
+                )
+
+                # Compute model std (approximate from bracket probs)
+                temps = list(bracket_probs_1f.keys())
+                probs_list = list(bracket_probs_1f.values())
+                if temps and probs_list:
+                    mean_t = sum(t * p for t, p in zip(temps, probs_list))
+                    var_t = sum(p * (t - mean_t) ** 2 for t, p in zip(temps, probs_list))
+                    model_std = var_t ** 0.5
+                else:
+                    model_std = 99.0
+
+                # Evaluate each bracket for trade signals
+                candidates = []  # type: List[Tuple[Tuple, float, float]]
+                for bi in brackets_info:
+                    bracket = bi["bracket"]
+                    mp = model_probs.get(bracket, 0.0)
+                    ask = market_asks.get(bracket)
+                    if ask is None:
+                        continue
+
+                    ask_cents = ask * 100
+                    spread_cents = (ask - market_bids.get(bracket, ask)) * 100
+
+                    ok, reason = self.sanity_filter.check(
+                        model_prob=mp,
+                        market_ask_cents=ask_cents,
+                        spread_cents=spread_cents,
+                        model_std=model_std,
+                        bracket=bracket,
+                        is_post_peak=is_post_peak,
+                        recently_exited=recently_exited,
+                    )
+                    if not ok:
+                        continue
+
+                    displacement = mp - ask
+                    if displacement < config.min_displacement:
+                        continue
+
+                    candidates.append((bracket, ask_cents, mp))
+
+                # Portfolio-level EV optimization
+                if candidates:
+                    portfolio = EventPortfolio(event_date)
+                    existing = position_mgr.positions_for(event_date)
+                    existing_brackets = {p.bracket for p in existing}
+
+                    # Filter out brackets we already hold
+                    new_candidates = [
+                        c for c in candidates if c[0] not in existing_brackets
+                    ]
+
+                    optimal = portfolio.optimal_subset(new_candidates)
+                    for bracket, ask_cents, mp in optimal:
+                        pos = position_mgr.open_position(
+                            event_date=event_date,
+                            bracket=bracket,
+                            entry_price_cents=ask_cents,
+                            entry_time=execution_time,
+                            quantity=config.fixed_bet_size,
+                        )
+                        if pos is None:
+                            missed_capital += 1
+
+            # -- Layer 3: Settlement --
+            day_trades = position_mgr.settle_day(event_date, settled_bracket)
+            all_trades.extend(day_trades)
+
+        con.close()
+
+        # Build report
+        metrics = self.pnl_simulator.aggregate(all_trades, config.starting_capital)
+        daily_pnls = []  # type: List[Tuple[date, float]]
+        daily_map = defaultdict(float)  # type: Dict[date, float]
+        for t in all_trades:
+            daily_map[t.event_date] += t.pnl
+        daily_pnls = sorted(daily_map.items())
+
+        bootstrap = self.pnl_simulator.bootstrap(
+            daily_pnls, config.bootstrap_iterations,
+        )
+
+        report = dict(metrics)
+        report["edge_by_hour"] = self.edge_analyzer.summary_by_hour()
+        report["bootstrap"] = bootstrap
+        report["missed_due_to_capital"] = missed_capital
+        report["anomalies"] = anomalies
+        report["trades"] = all_trades
+        report["final_bankroll"] = position_mgr.bankroll
+
+        return report

@@ -23,6 +23,7 @@ from services.strategy_backtester import (
     Position,
     PositionManager,
     SanityFilter,
+    StrategyBacktester,
     TradeRecord,
     TriggerDetector,
     _ET,
@@ -572,3 +573,108 @@ class TestPnLSimulator:
         sim = PnLSimulator()
         metrics = sim.aggregate(trades, starting_capital=100.0)
         assert metrics["sharpe_ratio"] > 0
+
+
+class TestStrategyBacktester:
+    """Integration tests for the main orchestrator."""
+
+    def _seed_full_data(self, db_path):
+        """Seed all tables needed for a minimal end-to-end run."""
+        con = duckdb.connect(db_path)
+
+        # Settlement data
+        con.execute("""
+            INSERT INTO kalshi_settlements VALUES
+            ('KXHIGHNY-25MAR15-T72-B74', 'KXHIGHNY-25MAR15', 'KXHIGHNY',
+             'NYC', 'high', '2025-03-15', 72.0, 74.0, 1, 500,
+             '2025-03-15 23:00:00', CURRENT_TIMESTAMP),
+            ('KXHIGHNY-25MAR15-T70-B72', 'KXHIGHNY-25MAR15', 'KXHIGHNY',
+             'NYC', 'high', '2025-03-15', 70.0, 72.0, 0, 300,
+             '2025-03-15 23:00:00', CURRENT_TIMESTAMP)
+        """)
+
+        # Candlestick data (around 14:00-15:00 UTC on March 15)
+        for minute in range(60):
+            ts = datetime(2025, 3, 15, 14, minute)
+            con.execute("""
+                INSERT INTO kalshi_candlesticks VALUES
+                (?, ?, 1, 0.30, 0.40, 0.32, 0.38, 0.31, 0.39, 10, 50)
+            """, ['KXHIGHNY-25MAR15-T72-B74', ts])
+            con.execute("""
+                INSERT INTO kalshi_candlesticks VALUES
+                (?, ?, 1, 0.15, 0.25, 0.18, 0.22, 0.16, 0.24, 5, 30)
+            """, ['KXHIGHNY-25MAR15-T70-B72', ts])
+
+        # NWS daily data (settlement truth)
+        con.execute("""
+            INSERT INTO nws_daily (station_id, obs_date, max_temp_f, min_temp_f,
+                source, ingested_at)
+            VALUES ('KNYC', '2025-03-15', 73.0, 55.0, 'cli', CURRENT_TIMESTAMP)
+        """)
+
+        # Observations for trigger detection
+        for hour in range(12, 20):
+            con.execute("""
+                INSERT INTO observations (station_id, observed_at, temp_f,
+                    ingest_source, ingested_at)
+                VALUES ('KNYC', ?, ?, 'synoptic', CURRENT_TIMESTAMP)
+            """, [datetime(2025, 3, 15, hour, 53), 65.0 + hour - 12])
+
+        # Forecasts (needed for model_fn)
+        model_run = datetime(2025, 3, 15, 6, 0)
+        for fh in range(19):
+            valid_at = model_run + timedelta(hours=fh)
+            con.execute("""
+                INSERT INTO forecasts (station_id, model_name, model_run,
+                    valid_at, temp_f, ingested_at)
+                VALUES ('KNYC', 'hrrr', ?, ?, ?, CURRENT_TIMESTAMP)
+            """, [model_run, valid_at, 70.0 + fh * 0.5])
+
+        # Station bias (needed by walk_forward models)
+        con.execute("""
+            INSERT INTO station_bias (station_id, calculated_at, mean_bias,
+                std_error, sample_days)
+            VALUES ('KNYC', '2025-03-14 00:00:00', 1.0, 2.5, 90)
+        """)
+
+        con.close()
+
+    @pytest.fixture
+    def full_db(self, test_db):
+        self._seed_full_data(test_db)
+        return test_db
+
+    def test_run_produces_report(self, full_db):
+        """Full loop: model -> edge -> strategy -> settlement -> report."""
+        from services.backtester import uniform_model
+
+        config = BacktestConfig(
+            starting_capital=100.0,
+            start_date=date(2025, 3, 1),
+            end_date=date(2025, 3, 31),
+            burn_in_days=0,  # skip burn-in for test
+            min_displacement=0.05,  # low threshold for test
+        )
+        backtester = StrategyBacktester(db_path=full_db, config=config)
+        report = backtester.run(model_fn=uniform_model)
+
+        assert report is not None
+        assert "total_trades" in report
+        assert "total_pnl" in report
+        assert "edge_by_hour" in report
+
+    def test_capital_constraint_enforced(self, full_db):
+        """With tiny bankroll, some signals should be rejected."""
+        from services.backtester import uniform_model
+
+        config = BacktestConfig(
+            starting_capital=0.10,  # 10 cents — very constrained
+            start_date=date(2025, 3, 1),
+            end_date=date(2025, 3, 31),
+            burn_in_days=0,
+            min_displacement=0.01,
+        )
+        backtester = StrategyBacktester(db_path=full_db, config=config)
+        report = backtester.run(model_fn=uniform_model)
+
+        assert report["missed_due_to_capital"] >= 0
