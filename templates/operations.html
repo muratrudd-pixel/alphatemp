@@ -1,5 +1,71 @@
 {% extends "base.html" %}
 {% block title %}Operations{% endblock %}
 {% block content %}
-<div class="text-center text-slate-500 py-20">Operations tab — coming soon</div>
+<div class="space-y-4">
+
+    <!-- Top Row: Temperature Curve + Feeds -->
+    <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+
+        <!-- Temperature Curve (col-span-3) -->
+        <div class="lg:col-span-3 bg-slate-800 rounded-lg p-4 border border-slate-700">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest">Temperature Curve</h2>
+                <div class="flex items-center gap-2">
+                    <button id="btn-klga" onclick="toggleNeighbor('KLGA')"
+                            class="px-2 py-0.5 text-[10px] rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600 uppercase tracking-wider"
+                            style="font-family: 'Space Mono', monospace;">KLGA</button>
+                    <button id="btn-kewr" onclick="toggleNeighbor('KEWR')"
+                            class="px-2 py-0.5 text-[10px] rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600 uppercase tracking-wider"
+                            style="font-family: 'Space Mono', monospace;">KEWR</button>
+                </div>
+            </div>
+            <div id="temp-curve-chart" style="width:100%; min-height:420px;"></div>
+        </div>
+
+        <!-- Right Column: Obs Feed + Forecast Runs (col-span-2) -->
+        <div class="lg:col-span-2 flex flex-col gap-4">
+
+            <!-- Observation Feed -->
+            <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Observation Feed</h2>
+                <div id="obs-feed" class="feed-scroll" style="max-height:200px;">
+                    <p class="text-xs text-slate-500">No observations</p>
+                </div>
+            </div>
+
+            <!-- Forecast Runs -->
+            <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Forecast Runs</h2>
+                <div id="fcst-feed" class="feed-scroll" style="max-height:200px;">
+                    <p class="text-xs text-slate-500">No forecast runs</p>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Bottom Row: Bracket Spread + Positions -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+        <!-- Bracket Spread -->
+        <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+            <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Bracket Spread</h2>
+            <div id="bracket-chart" style="width:100%; min-height:250px;"></div>
+            <div id="liquidity-bar" class="mt-2"></div>
+        </div>
+
+        <!-- Positions & Alerts -->
+        <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+            <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Positions &amp; Alerts</h2>
+            <div id="positions-panel">
+                <p class="text-xs text-slate-500">No active positions</p>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/operations.js"></script>
 {% endblock %}
