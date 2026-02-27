@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from services.neighbor_obs import compute_walk_forward_offset
 from services.neighbor_obs import compute_neighbor_divergence
 from services.neighbor_obs import compute_peak_signal
+from services.neighbor_obs import build_blended_curve
 
 
 class TestStationOffset:
@@ -109,3 +110,34 @@ class TestPeakSignal:
     def test_insufficient_data(self):
         result = compute_peak_signal([70.0, 71.0], [1000000.0, 1000300.0])
         assert result is None
+
+
+class TestBlendedCurve:
+    """Build blended temperature curve anchored on KNYC."""
+
+    def test_fills_gaps_between_knyc(self):
+        base = 1000000.0
+        knyc = [(base, 70.0), (base + 3600, 71.0)]
+        klga = [(base + i * 60, 72.0 + i * (1.0 / 60)) for i in range(1, 60)]
+        result = build_blended_curve(knyc, klga, offset=2.0)
+        assert len(result) > 2
+        assert result[0] == (base, 70.0)
+        assert result[-1] == (base + 3600, 71.0)
+        mid = result[len(result) // 2]
+        assert mid[0] > base
+        assert mid[0] < base + 3600
+
+    def test_knyc_only_when_no_neighbor(self):
+        knyc = [(1000000.0, 70.0), (1003600.0, 71.0)]
+        result = build_blended_curve(knyc, [], offset=0.0)
+        assert len(result) == 2
+        assert result[0] == knyc[0]
+        assert result[1] == knyc[1]
+
+    def test_anchors_on_knyc_reports(self):
+        base = 1000000.0
+        knyc = [(base, 70.0), (base + 3600, 71.0)]
+        klga = [(base, 75.0), (base + 1800, 76.0), (base + 3600, 76.0)]
+        result = build_blended_curve(knyc, klga, offset=0.0)
+        assert result[0] == (base, 70.0)
+        assert result[-1] == (base + 3600, 71.0)

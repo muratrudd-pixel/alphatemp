@@ -140,3 +140,46 @@ def compute_peak_signal(
         "minutes_since_peak_update": minutes_since,
         "decline_rate": decline_rate,
     }
+
+
+def build_blended_curve(
+    knyc_obs: List[Tuple[float, float]],
+    neighbor_obs: List[Tuple[float, float]],
+    offset: float = 0.0,
+) -> List[Tuple[float, float]]:
+    """Build blended temperature curve anchored on KNYC.
+
+    At KNYC report times, uses KNYC temperature exactly.
+    Between KNYC reports, fills with offset-corrected neighbor data.
+
+    Args:
+        knyc_obs: [(epoch_seconds, temp_f), ...] sorted by time.
+        neighbor_obs: [(epoch_seconds, temp_f), ...] sorted by time.
+        offset: Neighbor-KNYC offset to subtract from neighbor temps.
+
+    Returns:
+        [(epoch_seconds, temp_f), ...] sorted by time.
+    """
+    if not knyc_obs:
+        return []
+    if not neighbor_obs:
+        return list(knyc_obs)
+
+    knyc_times = set(ts for ts, _ in knyc_obs)
+    combined = []
+
+    for ts, temp in knyc_obs:
+        combined.append((ts, temp))
+
+    first_knyc = knyc_obs[0][0]
+    last_knyc = knyc_obs[-1][0]
+    for ts, temp in neighbor_obs:
+        if ts < first_knyc or ts > last_knyc:
+            continue
+        is_knyc_time = any(abs(ts - kt) < _MATCH_TOLERANCE_S for kt in knyc_times)
+        if is_knyc_time:
+            continue
+        combined.append((ts, temp - offset))
+
+    combined.sort(key=lambda x: x[0])
+    return combined
