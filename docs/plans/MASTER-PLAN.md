@@ -241,12 +241,15 @@ Secondary metrics tracked: log-loss (catches overconfidence), Brier decompositio
 ### Future: Quantile Regression (Escape Hatch)
 If OLS variance regression passes but Gaussian tails assign probability to physically impossible temperatures (e.g., high < current obs late in the day), quantile regression is the documented next step. Predicts error percentiles directly, handles asymmetric risk without Gaussian assumption.
 
-### Investigation Required: Concept Drift from NWP Model Upgrades
-Our expanding-window walk-forward approach assumes stationarity of forecast error distributions. However, major NWP model version upgrades during the backtest window could invalidate older training data:
-- HRRR v3 → v4 (Dec 2020), GFS v15.2 → v16 (Mar 2021), multiple ECMWF IFS cycles
-- **Key question:** Does Open-Meteo serve actual historical operational forecasts or reforecasts from the current model version? If reforecasts, this concern is moot.
-- **Diagnostic:** Plot bias estimates over time. Discontinuity at known upgrade dates = real operational forecasts with concept drift.
-- **If confirmed:** Consider rolling window (trailing 365-730 days) instead of expanding window to drop obsolete pre-upgrade data.
+### Investigation Complete: Concept Drift from NWP Model Upgrades (2026-02-27)
+Open-Meteo serves **actual historical operational forecasts**, not reforecasts. Model version transitions exist in our data:
+- HRRR v4 operational Dec 2020 — our data starts Jun 2021, so **all v4, no transition**
+- GFS v16 operational Mar 2021, Open-Meteo archive starts Mar 2021 — **all v16, no transition**
+- ECMWF IFS: 5 transitions in window (47r2 May '21, 47r3 Oct '21, Atos Oct '22, 48r1 Jun '23, 49r1 Nov '24)
+
+**Diagnostic results:** Plotted 6-month bias windows for all 3 models. All show strong seasonal oscillation (H1 winter/spring positive bias, H2 summer/fall negative) but **no discontinuities at version transition dates**. ECMWF bias swings (+2.5 to -0.2) align with seasonal pattern, not IFS cycle changes.
+
+**Conclusion:** Expanding window is appropriate. Seasonal bias is already captured by Phase 2's sin/cos month features. No need to switch to rolling window.
 
 ---
 
