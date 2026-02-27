@@ -25,8 +25,12 @@ from services.backtester import (
     _PHASE2B_FEATURE_KEYS,
     _p2b_level1,
     _p2b_level2,
+    _p2b_level2_nbr,
     wf_phase2b_full,
     wf_phase2b_runmax,
+    wf_phase2b_neighbor_a1,
+    wf_phase2b_neighbor_b1,
+    wf_phase2b_neighbor_c1,
     wf_regression_full,
     Backtester,
     WALK_FORWARD_MIN_DAYS,
@@ -48,6 +52,7 @@ def test_db():
     # Clear module-level Phase 2B caches from previous tests
     _p2b_level1.clear()
     _p2b_level2.clear()
+    _p2b_level2_nbr.clear()
     init_db(TEST_DB)
     yield TEST_DB
     _cleanup_db()
@@ -453,5 +458,82 @@ class TestNeighborObsCache:
             assert len(first_obs) == 2
             assert isinstance(first_obs[0], float)
             assert isinstance(first_obs[1], float)
+        finally:
+            con.close()
+
+
+# ---------------------------------------------------------------------------
+# Test: Phase 3.6 neighbor model factories (A1/B1/C1)
+# ---------------------------------------------------------------------------
+
+class TestNeighborModelsNewFeatures:
+    def test_a1_returns_valid_probs(self, test_db):
+        """A1 model (raw neighbor divergence + peak signal) produces valid Brier scores."""
+        _seed_phase2b_data(TEST_DB, n_days=200, run_hour=12)
+        _seed_neighbor_obs(TEST_DB, n_days=200)
+        bt = Backtester(TEST_DB, "NYC")
+        result = bt.run(
+            wf_phase2b_neighbor_a1,
+            start_date=date(2023, 6, 1),
+            end_date=date(2023, 6, 10),
+            run_hours=[12],
+            update_hours_et=[14, 16, 18],
+        )
+        assert result.mean_brier > 0
+        assert result.mean_brier < 2.0
+
+    def test_b1_returns_valid_probs(self, test_db):
+        """B1 model (learned offset + neighbor divergence) produces valid Brier scores."""
+        _seed_phase2b_data(TEST_DB, n_days=200, run_hour=12)
+        _seed_neighbor_obs(TEST_DB, n_days=200)
+        bt = Backtester(TEST_DB, "NYC")
+        result = bt.run(
+            wf_phase2b_neighbor_b1,
+            start_date=date(2023, 6, 1),
+            end_date=date(2023, 6, 10),
+            run_hours=[12],
+            update_hours_et=[14, 16, 18],
+        )
+        assert result.mean_brier > 0
+        assert result.mean_brier < 2.0
+
+    def test_c1_returns_valid_probs(self, test_db):
+        """C1 model (trend only + peak signal) produces valid Brier scores."""
+        _seed_phase2b_data(TEST_DB, n_days=200, run_hour=12)
+        _seed_neighbor_obs(TEST_DB, n_days=200)
+        bt = Backtester(TEST_DB, "NYC")
+        result = bt.run(
+            wf_phase2b_neighbor_c1,
+            start_date=date(2023, 6, 1),
+            end_date=date(2023, 6, 10),
+            run_hours=[12],
+            update_hours_et=[14, 16, 18],
+        )
+        assert result.mean_brier > 0
+        assert result.mean_brier < 2.0
+
+    def test_a1_probs_sum_to_one(self, test_db):
+        """A1 model bracket probabilities sum to ~1.0."""
+        _seed_phase2b_data(TEST_DB, n_days=200, run_hour=12)
+        _seed_neighbor_obs(TEST_DB, n_days=200)
+        con = duckdb.connect(TEST_DB, read_only=True)
+        try:
+            model_run = datetime(2023, 7, 1, 12, 0, tzinfo=timezone.utc)
+            from zoneinfo import ZoneInfo
+            ref_time = datetime(2023, 7, 1, 14, 0,
+                                tzinfo=ZoneInfo("America/New_York")).astimezone(timezone.utc)
+
+            provider = BacktestDataProvider(
+                db_path=TEST_DB,
+                station_id="KNYC",
+                model_run=model_run,
+                ref_time=ref_time,
+                connection=con,
+            )
+
+            probs = wf_phase2b_neighbor_a1(provider, ref_time)
+            assert probs is not None, "A1 model returned None"
+            total = sum(probs.values())
+            assert abs(total - 1.0) < 0.01, "Probs sum to {}".format(total)
         finally:
             con.close()

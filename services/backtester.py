@@ -690,6 +690,11 @@ from services.divergence import (
     interpolate_forecast,
     compute_divergence_features,
 )
+from services.neighbor_obs import (
+    compute_neighbor_divergence,
+    compute_peak_signal,
+    compute_neighbor_trend,
+)
 
 _ET = ZoneInfo("America/New_York")
 
@@ -726,6 +731,7 @@ _P2_FEATURES_FOR_P2B = [0, 1, 2]
 # ---------------------------------------------------------------------------
 _p2b_level1 = {}  # type: Dict  # level 1 cache
 _p2b_level2 = {}  # type: Dict  # level 2 cache
+_p2b_level2_nbr = {}  # type: Dict  # level 2 cache for neighbor-extended training
 
 
 def _compute_features_for_date(curve, day_obs, cutoff_ts):
@@ -766,6 +772,9 @@ def _ensure_level1(con, run_hour, station_id, model_name='hrrr'):
     stale2 = [k for k in _p2b_level2 if k[0] != id(con)]
     for k in stale2:
         del _p2b_level2[k]
+    stale3 = [k for k in _p2b_level2_nbr if k[0] != id(con)]
+    for k in stale3:
+        del _p2b_level2_nbr[k]
 
     logger.info(f"Phase 2B: bulk-fetching data for run_hour={run_hour:02d}z...")
 
@@ -930,6 +939,131 @@ def _ensure_level2(con, run_hour, station_id, update_hour_et, model_name='hrrr')
     return training
 
 
+def _ensure_level2_neighbor(con, run_hour, station_id, update_hour_et, variant, model_name='hrrr'):
+    # type: (duckdb.DuckDBPyConnection, int, str, int, str, str) -> List[Tuple[date, float, List[float]]]
+    """Populate level-2 cache with neighbor-extended feature vectors.
+
+    variant: "A" (raw offset=0), "B" (learned offset), "C" (trend only)
+    Returns list of (date, residual, extended_feat_vector) sorted by date.
+    """
+    key = (id(con), run_hour, station_id, update_hour_et, variant, model_name)
+    if key in _p2b_level2_nbr:
+        return _p2b_level2_nbr[key]
+
+    l1 = _ensure_level1(con, run_hour, station_id, model_name=model_name)
+    curves = l1["curves"]
+    obs_by_date = l1["obs_by_date"]
+    errors_list = l1["errors_list"]
+    p2_preds = l1["p2_preds"]
+    neighbor_obs = l1.get("neighbor_obs", {})
+
+    training = []  # type: List[Tuple[date, float, List[float]]]
+
+    # For B variant: expanding-window offset tracking
+    klga_diffs = []  # type: List[float]
+    kewr_diffs = []  # type: List[float]
+    offset_klga = 0.0
+    offset_kewr = 0.0
+
+    for obs_date, actual_error, fcst_high, month, delta_temp in errors_list:
+        if obs_date not in p2_preds:
+            continue
+        predicted_bias, _ = p2_preds[obs_date]
+        residual = actual_error - predicted_bias
+
+        if obs_date not in curves or obs_date not in obs_by_date:
+            continue
+
+        cutoff_ts = datetime(
+            obs_date.year, obs_date.month, obs_date.day,
+            update_hour_et, 0, tzinfo=_ET,
+        ).astimezone(timezone.utc).timestamp()
+
+        # KNYC features (standard 4-feature vector)
+        knyc_feats = _compute_features_for_date(
+            curves[obs_date], obs_by_date[obs_date], cutoff_ts,
+        )
+        if knyc_feats is None:
+            continue
+        knyc_vec = [knyc_feats[k] for k in _PHASE2B_FEATURE_KEYS]
+
+        # Collect neighbor obs for this date, truncated to cutoff
+        all_nbr_temps = []  # type: List[float]
+        all_nbr_ts = []  # type: List[float]
+        for nbr_station in ["KLGA", "KEWR"]:
+            day_obs = neighbor_obs.get(nbr_station, {}).get(obs_date, [])
+            for ts, temp in day_obs:
+                if ts <= cutoff_ts:
+                    all_nbr_temps.append(temp)
+                    all_nbr_ts.append(ts)
+
+        if len(all_nbr_temps) < 3:
+            continue
+
+        # Sort by timestamp and deduplicate
+        paired = sorted(zip(all_nbr_ts, all_nbr_temps))
+        nbr_ts_sorted = [p[0] for p in paired]
+        nbr_temps_sorted = [p[1] for p in paired]
+
+        # For B variant: update expanding-window offset from this date's data
+        if variant == "B":
+            knyc_day = obs_by_date.get(obs_date, [])
+            for nbr_station, diffs_list in [("KLGA", klga_diffs), ("KEWR", kewr_diffs)]:
+                nbr_day = neighbor_obs.get(nbr_station, {}).get(obs_date, [])
+                for k_ts, k_temp in knyc_day:
+                    if k_ts > cutoff_ts:
+                        continue
+                    for n_ts, n_temp in nbr_day:
+                        if n_ts > cutoff_ts:
+                            continue
+                        if abs(k_ts - n_ts) < 300:
+                            diffs_list.append(n_temp - k_temp)
+                            break
+
+            offset_klga = sum(klga_diffs) / len(klga_diffs) if len(klga_diffs) >= 30 else 0.0
+            offset_kewr = sum(kewr_diffs) / len(kewr_diffs) if len(kewr_diffs) >= 30 else 0.0
+
+        avg_offset = (offset_klga + offset_kewr) / 2.0 if variant == "B" else 0.0
+
+        # Build neighbor features based on variant
+        curve = curves[obs_date]
+        fc_ts = [c[0] for c in curve]
+        fc_temps = [c[1] for c in curve]
+
+        nbr_feats = []  # type: List[float]
+
+        if variant in ("A", "B"):
+            div = compute_neighbor_divergence(
+                nbr_temps_sorted, nbr_ts_sorted, fc_ts, fc_temps, offset=avg_offset,
+            )
+            if div is None:
+                continue
+            nbr_feats.extend([
+                div["neighbor_running_max"], div["neighbor_instant"],
+                div["neighbor_cumul"], div["neighbor_slope"],
+            ])
+
+        peak = compute_peak_signal(nbr_temps_sorted, nbr_ts_sorted)
+        nbr_feats.extend([
+            1.0 if (peak and peak["peak_passed"]) else 0.0,
+            peak["minutes_since_peak_update"] if peak else 0.0,
+            peak["decline_rate"] if peak else 0.0,
+        ])
+
+        if variant == "C":
+            trend = compute_neighbor_trend(nbr_temps_sorted, nbr_ts_sorted)
+            nbr_feats.extend([
+                trend["trend_slope_f_per_hr"] if trend else 0.0,
+                trend["trend_accel_f_per_hr2"] if trend else 0.0,
+            ])
+
+        extended_vec = knyc_vec + nbr_feats
+        training.append((obs_date, residual, extended_vec))
+
+    _p2b_level2_nbr[key] = training
+    return training
+
+
 def _fit_and_predict_phase2b(training_rows, features_today, feature_indices):
     # type: (list, List[float], List[int]) -> Optional[Tuple[float, float]]
     """OLS regression on Phase 2B training data.
@@ -1089,6 +1223,186 @@ wf_phase2b_instant_ecmwf = _make_phase2b_model("wf_phase2b_instant_ecmwf", _PHAS
 wf_phase2b_cumul_ecmwf = _make_phase2b_model("wf_phase2b_cumul_ecmwf", _PHASE2B_FEATURE_SETS["wf_phase2b_cumul"], model_name="ecmwf")
 wf_phase2b_runmax_ecmwf = _make_phase2b_model("wf_phase2b_runmax_ecmwf", _PHASE2B_FEATURE_SETS["wf_phase2b_runmax"], model_name="ecmwf")
 wf_phase2b_slope_ecmwf = _make_phase2b_model("wf_phase2b_slope_ecmwf", _PHASE2B_FEATURE_SETS["wf_phase2b_slope"], model_name="ecmwf")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.6 Neighbor Model Factory (x1 integration: new features)
+# ---------------------------------------------------------------------------
+
+def _make_phase2b_neighbor_model(name, variant, model_name='hrrr'):
+    # type: (str, str, str) -> ModelFn
+    """Factory: Phase 3.6 neighbor models (x1 integration: new features).
+
+    Extends Phase 2B with neighbor-derived features from KLGA/KEWR obs.
+    variant: "A" (raw offset=0), "B" (learned offset), "C" (trend only)
+
+    A1: 4 KNYC + 4 neighbor divergence + 3 peak signal = 11 features
+    B1: 4 KNYC + 4 neighbor divergence (w/ offset) + 3 peak signal = 11 features
+    C1: 4 KNYC + 3 peak signal + 2 trend = 9 features
+    """
+    def _raw(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Tuple[float, float]]
+        """Return (center, residual_std) or None."""
+        con = provider._shared_con
+        station_id = provider.station_id
+        run_hour = provider.model_run.hour
+        current_date = provider.model_run.date()
+
+        fcst_high = provider.get_forecast_high(station_id)
+        if fcst_high is None:
+            return None
+
+        # --- Phase 2 prediction (from cache) ---
+        l1 = _ensure_level1(con, run_hour, station_id, model_name=model_name)
+        p2_pred = l1["p2_preds"].get(current_date)
+        if p2_pred is None:
+            return None
+        phase2_bias, p2_std = p2_pred
+
+        # --- Determine update hour from ref_time ---
+        ref_utc = ref_time if ref_time.tzinfo else ref_time.replace(tzinfo=timezone.utc)
+        update_hour_et = ref_utc.astimezone(_ET).hour
+        cutoff_ts = ref_utc.timestamp()
+
+        # --- Today's KNYC divergence features ---
+        curves = l1["curves"]
+        if current_date not in curves or len(curves[current_date]) < 2:
+            center = fcst_high - phase2_bias
+            return (center, p2_std)
+
+        curve = curves[current_date]
+        obs_by_date = l1["obs_by_date"]
+        day_obs = obs_by_date.get(current_date, [])
+        truncated = [(ts, temp) for ts, temp in day_obs if ts <= cutoff_ts]
+        if len(truncated) < 2:
+            center = fcst_high - phase2_bias
+            return (center, p2_std)
+
+        obs_ts = [o[0] for o in truncated]
+        obs_temps = [o[1] for o in truncated]
+        fc_ts = [c[0] for c in curve]
+        fc_temps = [c[1] for c in curve]
+
+        fcst_interp = interpolate_forecast(fc_ts, fc_temps, obs_ts)
+        t0 = obs_ts[0]
+        obs_hours = [(t - t0) / 3600.0 for t in obs_ts]
+        fcst_up_to_t = [temp for ts, temp in curve if ts <= cutoff_ts]
+
+        today_knyc = compute_divergence_features(
+            obs_temps, fcst_interp, obs_hours, fcst_up_to_t,
+        )
+        if today_knyc is None:
+            center = fcst_high - phase2_bias
+            return (center, p2_std)
+        knyc_vec = [today_knyc[k] for k in _PHASE2B_FEATURE_KEYS]
+
+        # --- Today's neighbor features ---
+        neighbor_obs = l1.get("neighbor_obs", {})
+        all_nbr_temps = []  # type: List[float]
+        all_nbr_ts = []  # type: List[float]
+        for nbr_station in ["KLGA", "KEWR"]:
+            nbr_day = neighbor_obs.get(nbr_station, {}).get(current_date, [])
+            for ts, temp in nbr_day:
+                if ts <= cutoff_ts:
+                    all_nbr_temps.append(temp)
+                    all_nbr_ts.append(ts)
+
+        if len(all_nbr_temps) < 3:
+            center = fcst_high - phase2_bias
+            return (center, p2_std)
+
+        paired = sorted(zip(all_nbr_ts, all_nbr_temps))
+        nbr_ts_sorted = [p[0] for p in paired]
+        nbr_temps_sorted = [p[1] for p in paired]
+
+        # B variant: compute walk-forward offset from all prior dates
+        avg_offset = 0.0
+        if variant == "B":
+            klga_diffs = []  # type: List[float]
+            kewr_diffs = []  # type: List[float]
+            for d in sorted(obs_by_date.keys()):
+                if d >= current_date:
+                    break
+                knyc_day = obs_by_date.get(d, [])
+                for nbr_station, diffs_list in [("KLGA", klga_diffs), ("KEWR", kewr_diffs)]:
+                    nbr_day = neighbor_obs.get(nbr_station, {}).get(d, [])
+                    for k_ts, k_temp in knyc_day:
+                        for n_ts, n_temp in nbr_day:
+                            if abs(k_ts - n_ts) < 300:
+                                diffs_list.append(n_temp - k_temp)
+                                break
+            offset_klga = sum(klga_diffs) / len(klga_diffs) if len(klga_diffs) >= 30 else 0.0
+            offset_kewr = sum(kewr_diffs) / len(kewr_diffs) if len(kewr_diffs) >= 30 else 0.0
+            avg_offset = (offset_klga + offset_kewr) / 2.0
+
+        nbr_feats = []  # type: List[float]
+        if variant in ("A", "B"):
+            div = compute_neighbor_divergence(
+                nbr_temps_sorted, nbr_ts_sorted, fc_ts, fc_temps, offset=avg_offset,
+            )
+            if div is None:
+                center = fcst_high - phase2_bias
+                return (center, p2_std)
+            nbr_feats.extend([
+                div["neighbor_running_max"], div["neighbor_instant"],
+                div["neighbor_cumul"], div["neighbor_slope"],
+            ])
+
+        peak = compute_peak_signal(nbr_temps_sorted, nbr_ts_sorted)
+        nbr_feats.extend([
+            1.0 if (peak and peak["peak_passed"]) else 0.0,
+            peak["minutes_since_peak_update"] if peak else 0.0,
+            peak["decline_rate"] if peak else 0.0,
+        ])
+
+        if variant == "C":
+            trend = compute_neighbor_trend(nbr_temps_sorted, nbr_ts_sorted)
+            nbr_feats.extend([
+                trend["trend_slope_f_per_hr"] if trend else 0.0,
+                trend["trend_accel_f_per_hr2"] if trend else 0.0,
+            ])
+
+        today_feat_vec = knyc_vec + nbr_feats
+        n_features = len(today_feat_vec)
+        feature_indices = list(range(n_features))
+
+        # --- Phase 2B training (from neighbor-extended cache) ---
+        all_training = _ensure_level2_neighbor(
+            con, run_hour, station_id, update_hour_et, variant, model_name=model_name,
+        )
+        filtered = [
+            (residual, feat_vec)
+            for d, residual, feat_vec in all_training
+            if d < current_date
+        ]
+
+        p2b_result = _fit_and_predict_phase2b(filtered, today_feat_vec, feature_indices)
+        if p2b_result is None:
+            center = fcst_high - phase2_bias
+            return (center, p2_std)
+
+        phase2b_residual, p2b_std = p2b_result
+        center = fcst_high - (phase2_bias + phase2b_residual)
+        return (center, p2b_std)
+
+    def model_fn(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+        params = _raw(provider, ref_time)
+        if params is None:
+            return None
+        center, residual_std = params
+        return _compute_bracket_probs_from_dist(norm(0, 1), center, residual_std)
+
+    model_fn.__name__ = name
+    model_fn.__doc__ = "Phase 3.6 neighbor model ({}): {}".format(variant, name)
+    model_fn.raw = _raw
+    return model_fn
+
+
+# --- Phase 3.6 Neighbor Models (HRRR) ---
+wf_phase2b_neighbor_a1 = _make_phase2b_neighbor_model("wf_phase2b_neighbor_a1", "A")
+wf_phase2b_neighbor_b1 = _make_phase2b_neighbor_model("wf_phase2b_neighbor_b1", "B")
+wf_phase2b_neighbor_c1 = _make_phase2b_neighbor_model("wf_phase2b_neighbor_c1", "C")
 
 
 # ---------------------------------------------------------------------------
