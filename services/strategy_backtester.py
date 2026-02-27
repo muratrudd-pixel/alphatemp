@@ -216,3 +216,86 @@ class SanityFilter:
             return False
 
         return True
+
+
+# ── Event Portfolio ────────────────────────────────────────────────────────
+
+class EventPortfolio:
+    """Mutually exclusive bracket portfolio — EV and optimal subset selection."""
+
+    def __init__(self, event_date):
+        # type: (date) -> None
+        self.event_date = event_date
+
+    def combined_ev(self, entry_prices, model_probs):
+        # type: (List[float], List[float]) -> float
+        """Mutually exclusive EV calculation.
+
+        For N brackets held simultaneously:
+        - If bracket j wins (prob q_j): gain on j, lose on all others.
+        - If none win (prob 1 - sum(q)): lose all entries.
+
+        Loss per bracket = price + price * TRADING_FEE_RATE
+        Gain per bracket = (100-price) * (1-SETTLEMENT_FEE_RATE) - price * TRADING_FEE_RATE
+        """
+        n = len(entry_prices)
+        if n == 0:
+            return 0.0
+
+        # Pre-compute per-bracket loss and gain
+        losses = []  # type: List[float]
+        gains = []   # type: List[float]
+        for p in entry_prices:
+            losses.append(p + p * TRADING_FEE_RATE)
+            gains.append((100 - p) * (1 - SETTLEMENT_FEE_RATE) - p * TRADING_FEE_RATE)
+
+        total_loss = sum(losses)
+        total_prob = sum(model_probs)
+
+        ev = 0.0
+        for j in range(n):
+            # If bracket j wins: gain on j, lose on all others
+            net_if_j_wins = gains[j] - (total_loss - losses[j])
+            ev += model_probs[j] * net_if_j_wins
+
+        # If none wins
+        ev += (1.0 - total_prob) * (-total_loss)
+
+        return ev
+
+    def optimal_subset(self, candidates):
+        # type: (List[Tuple[Tuple, float, float]]) -> List[Tuple[Tuple, float, float]]
+        """Greedy selection of brackets maximizing portfolio EV.
+
+        candidates = [(bracket, entry_price_cents, model_prob), ...]
+
+        Algorithm:
+        1. Filter to positive individual EV
+        2. Sort by individual EV descending
+        3. Greedily add if portfolio EV increases
+        """
+        if not candidates:
+            return []
+
+        # Step 1: filter to positive individual EV
+        positive = []  # type: List[Tuple[Tuple, float, float]]
+        for bracket, price, prob in candidates:
+            single_ev = self.combined_ev([price], [prob])
+            if single_ev > 0:
+                positive.append((bracket, price, prob))
+
+        # Step 2: sort by individual EV descending
+        positive.sort(key=lambda c: self.combined_ev([c[1]], [c[2]]), reverse=True)
+
+        # Step 3: greedy addition
+        selected = []  # type: List[Tuple[Tuple, float, float]]
+        current_ev = 0.0
+        for candidate in positive:
+            trial_prices = [c[1] for c in selected] + [candidate[1]]
+            trial_probs = [c[2] for c in selected] + [candidate[2]]
+            trial_ev = self.combined_ev(trial_prices, trial_probs)
+            if trial_ev > current_ev:
+                selected.append(candidate)
+                current_ev = trial_ev
+
+        return selected

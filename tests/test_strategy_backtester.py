@@ -11,6 +11,7 @@ import pytest
 
 from services.strategy_backtester import (
     BacktestConfig,
+    EventPortfolio,
     MarketSnapshot,
     ModelUpdate,
     Position,
@@ -177,3 +178,57 @@ class TestSanityFilter:
         ]
         current = base + timedelta(hours=3)  # 1 PM ET = 18:00 UTC
         assert SanityFilter.is_post_peak_check(obs, current) is False
+
+
+class TestEventPortfolio:
+    """Tests for EventPortfolio.combined_ev() and optimal_subset()."""
+
+    def setup_method(self):
+        self.portfolio = EventPortfolio(event_date=date(2025, 7, 15))
+
+    def test_single_bracket_ev(self):
+        ev = self.portfolio.combined_ev(entry_prices=[40], model_probs=[0.50])
+        assert ev == pytest.approx(6.6, abs=0.1)
+
+    def test_single_bracket_negative_ev(self):
+        ev = self.portfolio.combined_ev(entry_prices=[45], model_probs=[0.48])
+        assert ev < 0
+
+    def test_two_bracket_portfolio_ev(self):
+        ev = self.portfolio.combined_ev(
+            entry_prices=[22, 17], model_probs=[0.35, 0.30]
+        )
+        assert ev == pytest.approx(20.39, abs=0.1)
+
+    def test_adding_bracket_can_decrease_ev(self):
+        """Adding an expensive, low-prob bracket hurts the portfolio."""
+        ev_one = self.portfolio.combined_ev(
+            entry_prices=[25], model_probs=[0.40]
+        )
+        ev_two = self.portfolio.combined_ev(
+            entry_prices=[25, 60], model_probs=[0.40, 0.10]
+        )
+        assert ev_two < ev_one
+
+    def test_optimal_subset_picks_best_single(self):
+        """One good bracket, one bad -> picks only the good one."""
+        candidates = [
+            ((72.0, 74.0), 30, 0.45),  # good
+            ((80.0, 82.0), 55, 0.10),  # bad (negative EV)
+        ]
+        selected = self.portfolio.optimal_subset(candidates)
+        assert len(selected) == 1
+        assert selected[0][0] == (72.0, 74.0)
+
+    def test_optimal_subset_picks_both_when_beneficial(self):
+        """Two cheap adjacent brackets -> picks both."""
+        candidates = [
+            ((72.0, 74.0), 20, 0.35),
+            ((74.0, 76.0), 18, 0.30),
+        ]
+        selected = self.portfolio.optimal_subset(candidates)
+        assert len(selected) == 2
+
+    def test_empty_candidates_returns_empty(self):
+        selected = self.portfolio.optimal_subset([])
+        assert selected == []
