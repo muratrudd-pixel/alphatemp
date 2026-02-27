@@ -15,6 +15,7 @@ from services.strategy_backtester import (
     MarketSnapshot,
     ModelUpdate,
     Position,
+    PositionManager,
     SanityFilter,
     TradeRecord,
     _ET,
@@ -232,3 +233,90 @@ class TestEventPortfolio:
     def test_empty_candidates_returns_empty(self):
         selected = self.portfolio.optimal_subset([])
         assert selected == []
+
+
+class TestPositionManager:
+    """Tests for PositionManager capital tracking and settlement."""
+
+    def setup_method(self):
+        self.t0 = datetime(2025, 7, 15, 14, 0, tzinfo=timezone.utc)
+        self.event_date = date(2025, 7, 15)
+
+    def test_initial_state(self):
+        pm = PositionManager(bankroll=100.0)
+        assert pm.capital_available == pytest.approx(100.0)
+        assert pm.capital_locked == pytest.approx(0.0)
+
+    def test_open_position_locks_capital(self):
+        pm = PositionManager(bankroll=100.0)
+        pos = pm.open_position(
+            self.event_date, (72.0, 74.0), 30, self.t0, 1
+        )
+        assert pos is not None
+        # 30 + 30*0.01 = 30.3 cents = $0.303
+        assert pm.capital_locked == pytest.approx(0.303)
+
+    def test_reject_when_insufficient_capital(self):
+        pm = PositionManager(bankroll=0.20)  # only $0.20
+        pos = pm.open_position(
+            self.event_date, (72.0, 74.0), 30, self.t0, 1
+        )
+        # 30.3 cents = $0.303 > $0.20
+        assert pos is None
+
+    def test_close_position_frees_capital(self):
+        pm = PositionManager(bankroll=100.0)
+        pm.open_position(self.event_date, (72.0, 74.0), 30, self.t0, 1)
+        pnl = pm.close_position(
+            self.event_date, (72.0, 74.0), 45, self.t0 + timedelta(hours=1)
+        )
+        # exit_pnl(30, 45, 1) = 45 - 0.45 - 30 - 0.3 = 14.25
+        assert pnl == pytest.approx(14.25)
+        assert len(pm.positions) == 0
+
+    def test_settle_day_winner(self):
+        pm = PositionManager(bankroll=100.0)
+        pm.open_position(self.event_date, (72.0, 74.0), 30, self.t0, 1)
+        records = pm.settle_day(self.event_date, (72.0, 74.0))
+        assert len(records) == 1
+        # settlement_pnl(30, 1, True) = 70*0.9 - 30*0.01 = 63 - 0.3 = 62.7
+        assert records[0].pnl == pytest.approx(62.7)
+        assert records[0].settlement_result == 1
+
+    def test_settle_day_loser(self):
+        pm = PositionManager(bankroll=100.0)
+        pm.open_position(self.event_date, (72.0, 74.0), 25, self.t0, 1)
+        records = pm.settle_day(self.event_date, (76.0, 78.0))  # different bracket wins
+        assert len(records) == 1
+        # settlement_pnl(25, 1, False) = -(25 + 0.25) = -25.25
+        assert records[0].pnl == pytest.approx(-25.25)
+        assert records[0].settlement_result == 0
+
+    def test_settle_day_mixed(self):
+        pm = PositionManager(bankroll=100.0)
+        pm.open_position(self.event_date, (72.0, 74.0), 30, self.t0, 1)
+        pm.open_position(self.event_date, (74.0, 76.0), 25, self.t0, 1)
+        records = pm.settle_day(self.event_date, (72.0, 74.0))
+        assert len(records) == 2
+        # One winner, one loser
+        results = {r.bracket: r for r in records}
+        assert results[(72.0, 74.0)].settlement_result == 1
+        assert results[(74.0, 76.0)].settlement_result == 0
+
+    def test_positions_for_date(self):
+        pm = PositionManager(bankroll=100.0)
+        d1 = date(2025, 7, 15)
+        d2 = date(2025, 7, 16)
+        pm.open_position(d1, (72.0, 74.0), 30, self.t0, 1)
+        pm.open_position(d2, (74.0, 76.0), 25, self.t0, 1)
+        assert len(pm.positions_for(d1)) == 1
+        assert len(pm.positions_for(d2)) == 1
+        assert pm.positions_for(d1)[0].bracket == (72.0, 74.0)
+
+    def test_bankroll_updates_after_settlement(self):
+        pm = PositionManager(bankroll=100.0)
+        pm.open_position(self.event_date, (72.0, 74.0), 30, self.t0, 1)
+        initial_bankroll = pm.bankroll
+        records = pm.settle_day(self.event_date, (72.0, 74.0))
+        pnl_dollars = records[0].pnl / 100.0
+        assert pm.bankroll == pytest.approx(initial_bankroll + pnl_dollars)

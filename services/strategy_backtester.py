@@ -299,3 +299,138 @@ class EventPortfolio:
                 current_ev = trial_ev
 
         return selected
+
+
+# ── Position Manager ──────────────────────────────────────────────────────
+
+class PositionManager:
+    """Tracks open positions, capital lockup, and early exits.
+
+    Capital (bankroll) is tracked in DOLLARS.
+    Positions and P&L use CENTS. Conversion: cents / 100.
+    """
+
+    def __init__(self, bankroll):
+        # type: (float) -> None
+        self.bankroll = bankroll  # dollars
+        self.positions = []  # type: List[Position]
+        self._recently_exited = {}  # type: Dict[Tuple, datetime]
+
+    @property
+    def capital_locked(self):
+        # type: () -> float
+        """Total capital locked across all open positions, in dollars."""
+        return sum(p.capital_locked for p in self.positions) / 100.0
+
+    @property
+    def capital_available(self):
+        # type: () -> float
+        """Bankroll minus locked capital, in dollars."""
+        return self.bankroll - self.capital_locked
+
+    def positions_for(self, event_date):
+        # type: (date) -> List[Position]
+        """Return all open positions for a given event date."""
+        return [p for p in self.positions if p.event_date == event_date]
+
+    def open_position(self, event_date, bracket, entry_price_cents, entry_time, quantity):
+        # type: (date, Tuple, float, datetime, int) -> Optional[Position]
+        """Open a new position if sufficient capital is available.
+
+        Returns the Position or None if insufficient capital.
+        """
+        cost_cents = compute_entry_cost(entry_price_cents, quantity)
+        cost_dollars = cost_cents / 100.0
+
+        if cost_dollars > self.capital_available:
+            return None
+
+        pos = Position(
+            event_date=event_date,
+            bracket=bracket,
+            entry_price=entry_price_cents,
+            entry_time=entry_time,
+            quantity=quantity,
+            capital_locked=cost_cents,
+        )
+        self.positions.append(pos)
+        return pos
+
+    def close_position(self, event_date, bracket, exit_price_cents, exit_time):
+        # type: (date, Tuple, float, datetime) -> float
+        """Close a position early (sell back to market).
+
+        Returns P&L in cents. Updates bankroll. Tracks bracket in recently_exited.
+        """
+        pos = None  # type: Optional[Position]
+        for p in self.positions:
+            if p.event_date == event_date and p.bracket == bracket:
+                pos = p
+                break
+
+        if pos is None:
+            return 0.0
+
+        pnl = compute_exit_pnl(pos.entry_price, exit_price_cents, pos.quantity)
+        self.bankroll += pnl / 100.0
+        self.positions.remove(pos)
+        self._recently_exited[bracket] = exit_time
+        return pnl
+
+    def settle_day(self, event_date, settled_bracket):
+        # type: (date, Tuple) -> List[TradeRecord]
+        """Settle all positions for a given event date.
+
+        Returns a list of TradeRecords. Updates bankroll for each settlement.
+        """
+        day_positions = self.positions_for(event_date)
+        records = []  # type: List[TradeRecord]
+
+        for pos in day_positions:
+            won = pos.bracket == settled_bracket
+            pnl = compute_settlement_pnl(pos.entry_price, pos.quantity, won)
+            self.bankroll += pnl / 100.0
+
+            # Compute fees for the record
+            entry_trading_fee = pos.entry_price * pos.quantity * TRADING_FEE_RATE
+            if won:
+                gross_profit = (100 - pos.entry_price) * pos.quantity
+                settlement_fee = gross_profit * SETTLEMENT_FEE_RATE
+                fees = entry_trading_fee + settlement_fee
+            else:
+                fees = entry_trading_fee
+
+            # Capital locked hours
+            hours_locked = 0.0  # will be filled by caller if needed
+
+            record = TradeRecord(
+                event_date=pos.event_date,
+                bracket=pos.bracket,
+                direction="buy_yes",
+                entry_price=pos.entry_price,
+                entry_time=pos.entry_time,
+                exit_price=100.0 if won else 0.0,
+                exit_time=None,
+                exit_type="settlement",
+                settlement_result=1 if won else 0,
+                pnl=pnl,
+                fees_paid=fees,
+                displacement_at_entry=0.0,
+                model_prob_at_entry=0.0,
+                capital_locked_hours=hours_locked,
+            )
+            records.append(record)
+
+        # Remove settled positions
+        self.positions = [p for p in self.positions if p.event_date != event_date]
+
+        return records
+
+    def recently_exited_brackets(self, current_time, min_minutes):
+        # type: (datetime, int) -> Set[Tuple]
+        """Return brackets exited within the last min_minutes."""
+        cutoff = current_time - timedelta(minutes=min_minutes)
+        return {
+            bracket for bracket, exit_time in self._recently_exited.items()
+            if exit_time >= cutoff
+        }
