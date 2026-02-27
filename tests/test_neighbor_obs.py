@@ -6,6 +6,7 @@ from services.neighbor_obs import compute_walk_forward_offset
 from services.neighbor_obs import compute_neighbor_divergence
 from services.neighbor_obs import compute_peak_signal
 from services.neighbor_obs import build_blended_curve
+from services.neighbor_obs import compute_neighbor_trend
 
 
 class TestStationOffset:
@@ -141,3 +142,25 @@ class TestBlendedCurve:
         result = build_blended_curve(knyc, klga, offset=0.0)
         assert result[0] == (base, 70.0)
         assert result[-1] == (base + 3600, 71.0)
+
+
+class TestNeighborTrend:
+    """Rate-of-change features from neighbor observations (C variants)."""
+
+    def test_rising_trend(self):
+        timestamps = [1000000.0 + i * 60 for i in range(30)]
+        temps = [70.0 + i * 0.1 for i in range(30)]
+        result = compute_neighbor_trend(temps, timestamps)
+        assert result is not None
+        assert abs(result["trend_slope_f_per_hr"] - 6.0) < 0.5
+
+    def test_accelerating(self):
+        timestamps = [1000000.0 + i * 60 for i in range(30)]
+        temps = [70.0 + 0.01 * i * i for i in range(30)]
+        result = compute_neighbor_trend(temps, timestamps)
+        assert result is not None
+        assert result["trend_accel_f_per_hr2"] > 0
+
+    def test_insufficient_data(self):
+        result = compute_neighbor_trend([70.0, 71.0], [1000000.0, 1000060.0])
+        assert result is None

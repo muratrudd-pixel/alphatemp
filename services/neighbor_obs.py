@@ -8,6 +8,8 @@ to enhance Phase 2B predictions.
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+
 from services.divergence import interpolate_forecast, compute_divergence_features
 
 # Type alias: list of (timestamp, temp_f) tuples
@@ -183,3 +185,39 @@ def build_blended_curve(
 
     combined.sort(key=lambda x: x[0])
     return combined
+
+
+def compute_neighbor_trend(
+    temps: List[float],
+    timestamps: List[float],
+) -> Optional[dict]:
+    """Compute rate-of-change features from neighbor observations.
+
+    For C variants: uses only trajectory, not absolute values.
+
+    Returns dict with trend_slope_f_per_hr and trend_accel_f_per_hr2.
+    Returns None if < 3 observations.
+    """
+    if len(temps) < 3:
+        return None
+
+    t0 = timestamps[0]
+    hours = np.array([(t - t0) / 3600.0 for t in timestamps])
+    y = np.array(temps)
+
+    # Linear fit for slope
+    A_lin = np.column_stack([np.ones(len(hours)), hours])
+    result_lin, _, _, _ = np.linalg.lstsq(A_lin, y, rcond=None)
+    slope = result_lin[1]
+
+    # Quadratic fit for acceleration (need >= 5 obs for meaningful curvature)
+    accel = 0.0
+    if len(temps) >= 5:
+        A_quad = np.column_stack([np.ones(len(hours)), hours, hours ** 2])
+        result_quad, _, _, _ = np.linalg.lstsq(A_quad, y, rcond=None)
+        accel = 2.0 * result_quad[2]
+
+    return {
+        "trend_slope_f_per_hr": float(slope),
+        "trend_accel_f_per_hr2": float(accel),
+    }
