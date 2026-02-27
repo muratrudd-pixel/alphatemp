@@ -35,7 +35,7 @@ from services.ensemble import combine_mixture_brackets
 
 DB_PATH = "data/alphatemp.duckdb"
 STATION_ID = "KNYC"
-UPDATE_HOURS_ET = [14, 15, 16, 17, 18]
+UPDATE_HOURS_ET = list(range(0, 19))  # midnight through 6 PM ET
 RUN_HOURS = [0, 6, 12, 18]
 _ET = ZoneInfo("America/New_York")
 
