@@ -474,3 +474,36 @@ class TestTriggerDetection:
         )
         fcst_triggers = [t for t in triggers if t[2] == 'forecast_run']
         assert len(fcst_triggers) >= 3
+
+
+class TestEdgeAnalyzer:
+    def test_market_brier_from_midpoints(self):
+        analyzer = EdgeAnalyzer()
+        market_probs = [0.05, 0.20, 0.40, 0.25, 0.10]
+        settled = [0, 0, 1, 0, 0]
+        brier = analyzer.compute_brier(market_probs, settled)
+        assert brier == pytest.approx(0.475)
+
+    def test_perfect_brier_is_zero(self):
+        analyzer = EdgeAnalyzer()
+        assert analyzer.compute_brier([0, 0, 1, 0, 0], [0, 0, 1, 0, 0]) == pytest.approx(0.0)
+
+    def test_displacement_positive_means_model_higher(self):
+        analyzer = EdgeAnalyzer()
+        assert analyzer.compute_displacement(0.35, 0.22) == pytest.approx(0.13)
+
+    def test_record_and_summarize(self):
+        analyzer = EdgeAnalyzer()
+        analyzer.record(
+            event_date=date(2025, 6, 15),
+            trigger_time=datetime(2025, 6, 15, 18, 0, tzinfo=timezone.utc),
+            model_probs={(72.0, 74.0): 0.40, (70.0, 72.0): 0.25, (74.0, 76.0): 0.20},
+            market_mids={(72.0, 74.0): 0.35, (70.0, 72.0): 0.20, (74.0, 76.0): 0.15},
+            settled_bracket=(72.0, 74.0),
+            et_hour=13,
+        )
+        summary = analyzer.summary_by_hour()
+        assert 13 in summary
+        assert "model_brier" in summary[13]
+        assert "market_brier" in summary[13]
+        assert summary[13]["edge"] > 0
