@@ -697,3 +697,152 @@ def test_edge_heatmap_with_data(client):
     assert "avg_edge" in cell
     assert "trades" in cell
     assert "win_rate" in cell
+
+
+# --- Review incidents endpoint ---
+
+
+def test_review_incidents_endpoint(client):
+    """GET /api/review/incidents should return incidents data with expected fields."""
+    resp = client.get("/api/review/incidents?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "incidents" in data
+    assert data["range"] == "30d"
+    assert data["filter"] == "all"
+
+
+def test_review_incidents_empty_table(client):
+    """With no settled paper_positions, should return empty incidents list."""
+    resp = client.get("/api/review/incidents?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["incidents"] == []
+
+
+def test_review_incidents_with_lost_bet(client):
+    """Should generate an incident card for a lost bet (net_pnl < 0)."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    _insert_paper_position(TEST_DB, "NYC", today, 42, 44, "YES",
+                           status="settled", net_pnl=-3.20,
+                           model_prob=0.42, market_price=0.29, edge=0.13)
+    # Insert NWS settlement temp so categorization works
+    _insert_nws_daily(TEST_DB, "KNYC", today, 47.0, 28.0)
+
+    resp = client.get("/api/review/incidents?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["incidents"]) == 1
+    inc = data["incidents"][0]
+    assert inc["type"] == "lost_bet"
+    assert inc["net_pnl"] == -3.20
+    assert inc["settlement_temp"] == 47.0
+    assert inc["category"] == "model_miss"
+    assert "narrative" in inc
+    assert inc["bracket"] == "42-44°F"
+
+
+def test_review_incidents_filter_worst(client):
+    """Filter 'worst' should only return incidents with severity >= 0.5."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # High severity (large loss)
+    _insert_paper_position(TEST_DB, "NYC", today, 42, 44, "YES",
+                           status="settled", net_pnl=-8.00,
+                           model_prob=0.42, market_price=0.29, edge=0.13)
+    # Low severity (small loss)
+    _insert_paper_position(TEST_DB, "NYC", today, 44, 46, "NO",
+                           status="settled", net_pnl=-0.10,
+                           model_prob=0.35, market_price=0.29, edge=0.06)
+
+    resp = client.get("/api/review/incidents?range=30d&filter=worst")
+    assert resp.status_code == 200
+    data = resp.json()
+    # Only the high-severity incident should pass
+    for inc in data["incidents"]:
+        assert inc["severity"] >= 0.5
+
+
+def test_review_incidents_winning_bets_excluded(client):
+    """Winning bets (net_pnl >= 0) should not appear as incidents."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    _insert_paper_position(TEST_DB, "NYC", today, 42, 44, "YES",
+                           status="settled", net_pnl=5.50,
+                           model_prob=0.42, market_price=0.29, edge=0.13)
+
+    resp = client.get("/api/review/incidents?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["incidents"] == []
+
+
+def test_review_incidents_range_all(client):
+    """Range 'all' should accept and return correctly."""
+    resp = client.get("/api/review/incidents?range=all")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["range"] == "all"
+
+
+# --- Review patterns endpoint ---
+
+
+def test_review_patterns_endpoint(client):
+    """GET /api/review/patterns should return patterns data with expected fields."""
+    resp = client.get("/api/review/patterns?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "patterns" in data
+    assert data["range"] == "30d"
+
+
+def test_review_patterns_empty_table(client):
+    """With no incidents, should return empty patterns list."""
+    resp = client.get("/api/review/patterns?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["patterns"] == []
+
+
+def test_review_patterns_groups_by_category(client):
+    """Should aggregate incidents by category with correct counts and P&L."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    # Two model_miss incidents
+    _insert_paper_position(TEST_DB, "NYC", today, 42, 44, "YES",
+                           status="settled", net_pnl=-3.20,
+                           model_prob=0.42, market_price=0.29, edge=0.13)
+    _insert_paper_position(TEST_DB, "NYC", yesterday, 44, 46, "NO",
+                           status="settled", net_pnl=-2.10,
+                           model_prob=0.38, market_price=0.29, edge=0.09)
+    # NWS data for categorization
+    _insert_nws_daily(TEST_DB, "KNYC", today, 47.0, 28.0)
+    _insert_nws_daily(TEST_DB, "KNYC", yesterday, 45.0, 27.0)
+
+    resp = client.get("/api/review/patterns?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["patterns"]) >= 1
+    # Each pattern should have required fields
+    for p in data["patterns"]:
+        assert "category" in p
+        assert "count" in p
+        assert "total_pnl" in p
+        assert "suggested_action" in p
+
+
+def test_review_patterns_includes_suggested_action(client):
+    """Each pattern should map to a known suggested action."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    _insert_paper_position(TEST_DB, "NYC", today, 42, 44, "YES",
+                           status="settled", net_pnl=-3.20,
+                           model_prob=0.42, market_price=0.29, edge=0.13)
+    _insert_nws_daily(TEST_DB, "KNYC", today, 47.0, 28.0)
+
+    resp = client.get("/api/review/patterns?range=30d")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["patterns"]) >= 1
+    # model_miss should map to its known action
+    model_miss_patterns = [p for p in data["patterns"] if p["category"] == "model_miss"]
+    if model_miss_patterns:
+        assert "backtester" in model_miss_patterns[0]["suggested_action"].lower()

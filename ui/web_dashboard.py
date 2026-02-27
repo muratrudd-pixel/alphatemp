@@ -1280,3 +1280,234 @@ async def market_swings(city: str, date: str = None):
         "date": target_date,
         "swings": swings,
     }
+
+
+# ---------------------------------------------------------------------------
+# Review (Model Autopsy) helpers
+# ---------------------------------------------------------------------------
+
+
+def _categorize_incident(pos_row, settlement_temp):
+    # type: (dict, float) -> str
+    """Classify why a position lost based on settlement temp vs bracket.
+
+    Categories:
+    - tail_bracket_underweight: settlement >4F away from bracket range
+    - threshold_too_conservative: model and market were close (edge < 5%)
+    - model_miss: generic model error (default)
+    - unknown: no settlement data available
+    """
+    if settlement_temp is None:
+        return "unknown"
+
+    bracket_floor = pos_row.get("bracket_floor")
+    bracket_cap = pos_row.get("bracket_cap")
+
+    if bracket_floor is not None and bracket_cap is not None:
+        # Distance from settlement to nearest bracket edge
+        if settlement_temp > bracket_cap:
+            distance = settlement_temp - bracket_cap
+        elif settlement_temp < bracket_floor:
+            distance = bracket_floor - settlement_temp
+        else:
+            distance = 0
+        if distance > 4:
+            return "tail_bracket_underweight"
+
+    model_prob = pos_row.get("model_prob") or 0
+    market_price = pos_row.get("market_price") or 0
+    if abs(model_prob - market_price) < 0.05:
+        return "threshold_too_conservative"
+
+    return "model_miss"
+
+
+def _narrate_incident(incident_type, pos_row, settlement_temp):
+    # type: (str, dict, float) -> str
+    """Generate a short human-readable narrative for an incident."""
+    direction = pos_row.get("direction", "?")
+    bracket_floor = pos_row.get("bracket_floor")
+    bracket_cap = pos_row.get("bracket_cap")
+    entry_price = pos_row.get("entry_price")
+
+    bracket_label = "{}-{}°F".format(
+        int(bracket_floor), int(bracket_cap)
+    ) if bracket_floor is not None and bracket_cap is not None else "?"
+
+    entry_cents = "{}¢".format(int(round(entry_price * 100))) if entry_price is not None else "?¢"
+
+    if incident_type == "lost_bet":
+        # Determine if bracket settled YES or NO
+        settled = "NO"
+        if settlement_temp is not None and bracket_floor is not None and bracket_cap is not None:
+            if bracket_floor <= settlement_temp <= bracket_cap:
+                settled = "YES"
+        temp_str = "{}°F".format(int(round(settlement_temp))) if settlement_temp is not None else "unknown"
+        return "Bet {} on {} at {}. Bracket settled {}. Settlement temp: {}.".format(
+            direction, bracket_label, entry_cents, settled, temp_str
+        )
+
+    return "Lost position on {}.".format(bracket_label)
+
+
+# ---------------------------------------------------------------------------
+# Review (Model Autopsy) endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/review/incidents")
+async def get_review_incidents(time_range: str = Query("30d", alias="range"),
+                                filter_type: str = Query("all", alias="filter")):
+    """Return incident cards for the Review (Model Autopsy) tab.
+
+    Compares model predictions vs settlements to identify lost bets
+    and categorize what went wrong.
+    """
+    days_map = {"7d": 7, "30d": 30, "all": 9999}
+    days = days_map.get(time_range, 30)
+
+    con = get_connection()
+    try:
+        # Settled positions with net_pnl < 0 in date range (lost bets)
+        pos_rows = con.execute(
+            """SELECT event_date, bracket_floor, bracket_cap, direction,
+                      model_prob, market_price, edge, entry_price, net_pnl
+               FROM paper_positions
+               WHERE status = 'settled'
+               AND net_pnl < 0
+               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
+               ORDER BY event_date DESC""".format(days),
+        ).fetchall()
+
+        # Get settlement temps from nws_daily for KNYC
+        # Collect unique dates from positions
+        dates = list(set(str(row[0]) for row in pos_rows))
+        settlement_temps = {}  # type: dict
+        if dates:
+            nws_rows = con.execute(
+                """SELECT obs_date, max_temp_f FROM nws_daily
+                   WHERE station_id = 'KNYC'
+                   AND obs_date IN ({})""".format(
+                    ", ".join("'{}'".format(d) for d in dates)
+                ),
+            ).fetchall()
+            for obs_date, max_temp_f in nws_rows:
+                settlement_temps[str(obs_date)] = max_temp_f
+    finally:
+        con.close()
+
+    # Build incident cards
+    incidents = []
+    # Track max abs pnl for severity normalization
+    max_abs_pnl = max((abs(row[8]) for row in pos_rows), default=1.0)
+    if max_abs_pnl == 0:
+        max_abs_pnl = 1.0
+
+    for row in pos_rows:
+        event_date, bracket_floor, bracket_cap, direction, model_prob, \
+            market_price, edge, entry_price, net_pnl = row
+
+        date_str = str(event_date)
+        settlement_temp = settlement_temps.get(date_str)
+
+        pos_dict = {
+            "bracket_floor": bracket_floor,
+            "bracket_cap": bracket_cap,
+            "direction": direction,
+            "model_prob": model_prob,
+            "market_price": market_price,
+            "edge": edge,
+            "entry_price": entry_price,
+        }
+
+        category = _categorize_incident(pos_dict, settlement_temp)
+        # Severity: normalized abs(pnl) clamped to [0, 1]
+        severity = round(min(1.0, abs(net_pnl) / max_abs_pnl), 2)
+
+        incident_type = "lost_bet"
+        narrative = _narrate_incident(incident_type, pos_dict, settlement_temp)
+
+        bracket_label = "{}-{}°F".format(
+            int(bracket_floor), int(bracket_cap)
+        ) if bracket_floor is not None and bracket_cap is not None else "--"
+
+        incidents.append({
+            "date": date_str,
+            "type": incident_type,
+            "severity": severity,
+            "bracket": bracket_label,
+            "direction": direction,
+            "model_prob": round(model_prob, 4) if model_prob is not None else None,
+            "market_price": round(market_price, 4) if market_price is not None else None,
+            "edge": round(edge, 4) if edge is not None else None,
+            "net_pnl": round(net_pnl, 2),
+            "settlement_temp": settlement_temp,
+            "category": category,
+            "narrative": narrative,
+        })
+
+    # Apply filter
+    if filter_type == "worst":
+        incidents = [i for i in incidents if i["severity"] >= 0.5]
+    elif filter_type == "lost":
+        incidents = [i for i in incidents if i["type"] == "lost_bet"]
+    elif filter_type == "missed":
+        incidents = [i for i in incidents if i["type"] == "missed_edge"]
+    # "all" — no filtering
+
+    # Sort by severity descending, limit to 50
+    incidents.sort(key=lambda i: i["severity"], reverse=True)
+    incidents = incidents[:50]
+
+    return {
+        "range": time_range,
+        "filter": filter_type,
+        "incidents": incidents,
+    }
+
+
+@app.get("/api/review/patterns")
+async def get_review_patterns(time_range: str = Query("30d", alias="range")):
+    """Aggregate failure patterns from review incidents.
+
+    Groups incidents by category, sums P&L, and maps each to a suggested action.
+    """
+    # Reuse the incidents endpoint internally
+    incidents_resp = await get_review_incidents(time_range=time_range, filter_type="all")
+    incidents = incidents_resp["incidents"]
+
+    # Known remedies per category
+    remedies = {
+        "slow_drift_response": "Consider dynamic std that widens when obs drift > 2°F",
+        "tail_bracket_underweight": "Review tail bracket calibration (model underweights >2\u03c3)",
+        "threshold_too_conservative": "Backtest threshold at lower values (e.g., 8% vs 10%)",
+        "stale_pricing": "Add stale-price detection to trigger model re-evaluation",
+        "model_miss": "Review model accuracy for these conditions in backtester",
+        "unknown": "Insufficient settlement data to categorize — check NWS ingestion",
+    }
+
+    # Group by category
+    grouped = {}  # type: dict
+    for inc in incidents:
+        cat = inc["category"]
+        if cat not in grouped:
+            grouped[cat] = {"count": 0, "total_pnl": 0.0}
+        grouped[cat]["count"] += 1
+        grouped[cat]["total_pnl"] += inc["net_pnl"]
+
+    patterns = []
+    for cat, agg in grouped.items():
+        patterns.append({
+            "category": cat,
+            "count": agg["count"],
+            "total_pnl": round(agg["total_pnl"], 2),
+            "suggested_action": remedies.get(cat, "Investigate manually"),
+        })
+
+    # Sort by total_pnl ascending (worst first)
+    patterns.sort(key=lambda p: p["total_pnl"])
+
+    return {
+        "range": time_range,
+        "patterns": patterns,
+    }
