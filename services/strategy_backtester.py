@@ -11,9 +11,13 @@ Execution modeled at yes_ask (crossing the spread).
 Design doc: docs/plans/2026-02-27-backtest-framework-design.md
 """
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set, Tuple
+
+import duckdb
+import numpy as np
 
 from services.backtester import (
     KalshiBracket,
@@ -434,3 +438,406 @@ class PositionManager:
             bracket for bracket, exit_time in self._recently_exited.items()
             if exit_time >= cutoff
         }
+
+
+# ── Market Data Loader ────────────────────────────────────────────────────
+
+class MarketDataLoader:
+    """Load Kalshi candlestick data and convert to MarketSnapshot objects."""
+
+    def __init__(self, db_path):
+        # type: (str) -> None
+        self.db_path = db_path
+
+    def get_brackets(self, event_date):
+        # type: (date) -> List[Dict]
+        """Get bracket definitions from kalshi_settlements for KXHIGHNY."""
+        con = duckdb.connect(self.db_path, read_only=True)
+        try:
+            rows = con.execute("""
+                SELECT market_ticker, floor_strike, cap_strike, settled_yes, volume
+                FROM kalshi_settlements
+                WHERE event_date = ? AND series_ticker = 'KXHIGHNY'
+            """, [event_date]).fetchall()
+        finally:
+            con.close()
+
+        return [
+            {
+                "market_ticker": r[0],
+                "bracket": (r[1], r[2]),
+                "settled_yes": r[3],
+                "volume": r[4],
+            }
+            for r in rows
+        ]
+
+    def get_snapshots(self, market_ticker, bracket, start_ts, end_ts):
+        # type: (str, Tuple, datetime, datetime) -> List[MarketSnapshot]
+        """Load candlestick data and forward-fill gaps.
+
+        One MarketSnapshot per minute in [start_ts, end_ts).
+        Minutes without candles forward-fill with is_stale=True.
+        """
+        # Strip tz for DuckDB TIMESTAMP columns (stored as naive UTC)
+        start_naive = start_ts.replace(tzinfo=None) if start_ts.tzinfo else start_ts
+        end_naive = end_ts.replace(tzinfo=None) if end_ts.tzinfo else end_ts
+
+        con = duckdb.connect(self.db_path, read_only=True)
+        try:
+            rows = con.execute("""
+                SELECT end_period_ts, yes_bid_close, yes_ask_close, volume
+                FROM kalshi_candlesticks
+                WHERE market_ticker = ?
+                  AND end_period_ts >= ?
+                  AND end_period_ts < ?
+                ORDER BY end_period_ts
+            """, [market_ticker, start_naive, end_naive]).fetchall()
+        finally:
+            con.close()
+
+        # Index candle data by minute
+        candle_map = {}  # type: Dict[datetime, tuple]
+        for row in rows:
+            ts = row[0]
+            if isinstance(ts, datetime) and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            candle_map[ts] = (row[1], row[2], row[3])
+
+        # Generate one snapshot per minute in [start_ts, end_ts)
+        snapshots = []  # type: List[MarketSnapshot]
+        current = start_ts
+        last_bid = 0.0
+        last_ask = 0.0
+        last_vol = 0
+
+        while current < end_ts:
+            if current in candle_map:
+                bid, ask, vol = candle_map[current]
+                last_bid = bid
+                last_ask = ask
+                last_vol = vol
+                snapshots.append(MarketSnapshot(
+                    bracket=bracket,
+                    timestamp=current,
+                    yes_bid=bid,
+                    yes_ask=ask,
+                    volume=vol,
+                    is_stale=False,
+                ))
+            else:
+                snapshots.append(MarketSnapshot(
+                    bracket=bracket,
+                    timestamp=current,
+                    yes_bid=last_bid,
+                    yes_ask=last_ask,
+                    volume=last_vol,
+                    is_stale=True,
+                ))
+            current += timedelta(minutes=1)
+
+        return snapshots
+
+
+# ── Trigger Detector ──────────────────────────────────────────────────────
+
+RUN_HOURS = [0, 6, 12, 18]
+
+
+class TriggerDetector:
+    """Returns (model_time, execution_time, trigger_type) tuples.
+
+    execution_time = model_time + latency (simulates real execution delay).
+    """
+
+    def __init__(self, db_path, station_id='KNYC', execution_latency_seconds=60):
+        # type: (str, str, int) -> None
+        self.db_path = db_path
+        self.station_id = station_id
+        self.latency = timedelta(seconds=execution_latency_seconds)
+
+    def get_triggers(self, event_date, market_open_utc, market_close_utc):
+        # type: (date, datetime, datetime) -> List[Tuple[datetime, datetime, str]]
+        """Return sorted (model_time, execution_time, trigger_type).
+
+        1. Query distinct observed_at from observations table in [open, close]
+        2. Add forecast run availability times (run_hour + HRRR_AVAILABILITY_LAG_HOURS)
+        3. Each gets execution_time = model_time + self.latency
+        4. Sort by model_time
+        """
+        from services.data_provider import HRRR_AVAILABILITY_LAG_HOURS
+
+        # Strip tz for DuckDB queries
+        open_naive = market_open_utc.replace(tzinfo=None) if market_open_utc.tzinfo else market_open_utc
+        close_naive = market_close_utc.replace(tzinfo=None) if market_close_utc.tzinfo else market_close_utc
+
+        triggers = []  # type: List[Tuple[datetime, datetime, str]]
+
+        # 1. Observation triggers
+        con = duckdb.connect(self.db_path, read_only=True)
+        try:
+            rows = con.execute("""
+                SELECT DISTINCT observed_at
+                FROM observations
+                WHERE station_id = ?
+                  AND observed_at >= ?
+                  AND observed_at <= ?
+                ORDER BY observed_at
+            """, [self.station_id, open_naive, close_naive]).fetchall()
+        finally:
+            con.close()
+
+        for (obs_at,) in rows:
+            if isinstance(obs_at, datetime) and obs_at.tzinfo is None:
+                obs_at = obs_at.replace(tzinfo=timezone.utc)
+            triggers.append((obs_at, obs_at + self.latency, 'observation'))
+
+        # 2. Forecast run triggers
+        # Generate run times that fall within [open, close] after adding lag
+        # Check the day of event_date and the day before
+        for day_offset in range(-1, 2):
+            check_date = event_date + timedelta(days=day_offset)
+            for run_hour in RUN_HOURS:
+                run_time = datetime(
+                    check_date.year, check_date.month, check_date.day,
+                    run_hour, 0, 0, tzinfo=timezone.utc,
+                )
+                avail_time = run_time + timedelta(hours=HRRR_AVAILABILITY_LAG_HOURS)
+                if market_open_utc <= avail_time <= market_close_utc:
+                    triggers.append((avail_time, avail_time + self.latency, 'forecast_run'))
+
+        # Sort by model_time
+        triggers.sort(key=lambda t: t[0])
+        return triggers
+
+
+# ── Edge Analyzer ─────────────────────────────────────────────────────────
+
+class EdgeAnalyzer:
+    """Layer 1: Brier comparison + displacement tracking."""
+
+    def __init__(self):
+        # type: () -> None
+        self._records = []  # type: List[Dict]
+        self._by_hour = defaultdict(
+            lambda: {"model_briers": [], "market_briers": [], "displacements": [], "count": 0}
+        )
+
+    def compute_brier(self, probs, settled):
+        # type: (List[float], List[int]) -> float
+        """Brier score: sum of (predicted - actual)^2."""
+        return sum((p - o) ** 2 for p, o in zip(probs, settled))
+
+    def compute_displacement(self, model_prob, market_ask):
+        # type: (float, float) -> float
+        """Displacement = model_prob - market_ask (positive = model higher)."""
+        return model_prob - market_ask
+
+    def record(self, event_date, trigger_time, model_probs, market_mids, settled_bracket, et_hour):
+        # type: (date, datetime, Dict[Tuple, float], Dict[Tuple, float], Tuple, int) -> None
+        """Record edge stats for one trigger point.
+
+        model_probs and market_mids: {bracket: probability}
+        settled_bracket: the bracket that actually settled YES.
+        """
+        # Sort brackets for consistent ordering
+        brackets = sorted(set(model_probs.keys()) | set(market_mids.keys()))
+
+        model_list = []  # type: List[float]
+        market_list = []  # type: List[float]
+        settled_list = []  # type: List[int]
+        displacements = []  # type: List[float]
+
+        for bracket in brackets:
+            mp = model_probs.get(bracket, 0.0)
+            mk = market_mids.get(bracket, 0.0)
+            s = 1 if bracket == settled_bracket else 0
+            model_list.append(mp)
+            market_list.append(mk)
+            settled_list.append(s)
+            displacements.append(self.compute_displacement(mp, mk))
+
+        model_brier = self.compute_brier(model_list, settled_list)
+        market_brier = self.compute_brier(market_list, settled_list)
+
+        record = {
+            "event_date": event_date,
+            "trigger_time": trigger_time,
+            "model_brier": model_brier,
+            "market_brier": market_brier,
+            "edge": market_brier - model_brier,
+            "et_hour": et_hour,
+            "avg_displacement": sum(displacements) / len(displacements) if displacements else 0.0,
+        }
+        self._records.append(record)
+
+        # Per-hour aggregation
+        hour_data = self._by_hour[et_hour]
+        hour_data["model_briers"].append(model_brier)
+        hour_data["market_briers"].append(market_brier)
+        hour_data["displacements"].extend(displacements)
+        hour_data["count"] += 1
+
+    def summary_by_hour(self):
+        # type: () -> Dict[int, Dict]
+        """Aggregate edge stats per ET hour."""
+        result = {}  # type: Dict[int, Dict]
+        for hour, data in self._by_hour.items():
+            n = data["count"]
+            model_brier = sum(data["model_briers"]) / n if n else 0.0
+            market_brier = sum(data["market_briers"]) / n if n else 0.0
+            avg_disp = sum(data["displacements"]) / len(data["displacements"]) if data["displacements"] else 0.0
+            result[hour] = {
+                "model_brier": model_brier,
+                "market_brier": market_brier,
+                "edge": market_brier - model_brier,
+                "count": n,
+                "avg_displacement": avg_disp,
+            }
+        return result
+
+    def results(self):
+        # type: () -> List[Dict]
+        return self._records
+
+
+# ── P&L Simulator ─────────────────────────────────────────────────────────
+
+class PnLSimulator:
+    """Layer 3: aggregate metrics, bootstrap CI, and regime splits."""
+
+    def aggregate(self, trades, starting_capital):
+        # type: (List[TradeRecord], float) -> Dict
+        """Compute aggregate P&L metrics from a list of TradeRecords.
+
+        All P&L values are in cents. Returns:
+        total_pnl, total_pnl_dollars, total_return_pct, sharpe_ratio,
+        max_drawdown, win_rate, avg_win, avg_loss, profit_factor,
+        total_trades, total_fees, avg_capital_locked_hours
+        """
+        if not trades:
+            return {
+                "total_pnl": 0.0, "total_pnl_dollars": 0.0, "total_return_pct": 0.0,
+                "sharpe_ratio": 0.0, "max_drawdown": 0.0, "win_rate": 0.0,
+                "avg_win": 0.0, "avg_loss": 0.0, "profit_factor": 0.0,
+                "total_trades": 0, "total_fees": 0.0, "avg_capital_locked_hours": 0.0,
+            }
+
+        total_pnl = sum(t.pnl for t in trades)
+        total_fees = sum(t.fees_paid for t in trades)
+        total_trades = len(trades)
+
+        wins = [t.pnl for t in trades if t.pnl > 0]
+        losses = [t.pnl for t in trades if t.pnl <= 0]
+
+        win_rate = len(wins) / total_trades if total_trades else 0.0
+        avg_win = sum(wins) / len(wins) if wins else 0.0
+        avg_loss = sum(losses) / len(losses) if losses else 0.0
+
+        gross_wins = sum(wins)
+        gross_losses = abs(sum(losses))
+        profit_factor = gross_wins / gross_losses if gross_losses > 0 else float('inf')
+
+        # Daily P&L for Sharpe ratio
+        daily_pnl = defaultdict(float)  # type: Dict
+        for t in trades:
+            daily_pnl[t.event_date] += t.pnl
+        daily_returns = list(daily_pnl.values())
+
+        mean_daily = np.mean(daily_returns) if daily_returns else 0.0
+        std_daily = np.std(daily_returns, ddof=1) if len(daily_returns) > 1 else 0.0
+        sharpe_ratio = float(mean_daily / std_daily) if std_daily > 0 else 0.0
+
+        # Max drawdown (cumulative P&L)
+        cumulative = 0.0
+        peak = 0.0
+        max_drawdown = 0.0
+        for pnl in sorted(daily_pnl.items()):
+            cumulative += pnl[1]
+            if cumulative > peak:
+                peak = cumulative
+            dd = peak - cumulative
+            if dd > max_drawdown:
+                max_drawdown = dd
+
+        avg_locked_hours = (
+            sum(t.capital_locked_hours for t in trades) / total_trades
+            if total_trades else 0.0
+        )
+
+        total_pnl_dollars = total_pnl / 100.0
+        total_return_pct = (total_pnl_dollars / starting_capital * 100.0) if starting_capital else 0.0
+
+        return {
+            "total_pnl": total_pnl,
+            "total_pnl_dollars": total_pnl_dollars,
+            "total_return_pct": total_return_pct,
+            "sharpe_ratio": sharpe_ratio,
+            "max_drawdown": max_drawdown,
+            "win_rate": win_rate,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "profit_factor": profit_factor,
+            "total_trades": total_trades,
+            "total_fees": total_fees,
+            "avg_capital_locked_hours": avg_locked_hours,
+        }
+
+    def bootstrap(self, daily_pnls, n_iterations=10000, seed=None):
+        # type: (List[Tuple[date, float]], int, Optional[int]) -> Dict
+        """Bootstrap confidence intervals via resampling.
+
+        Returns pnl_ci_95, sharpe_ci_95, prob_profitable.
+        """
+        if not daily_pnls:
+            return {"pnl_ci_95": (0.0, 0.0), "sharpe_ci_95": (0.0, 0.0), "prob_profitable": 0.0}
+
+        rng = np.random.RandomState(seed)
+        pnl_values = np.array([p[1] for p in daily_pnls])
+        n_days = len(pnl_values)
+
+        boot_pnls = []  # type: List[float]
+        boot_sharpes = []  # type: List[float]
+        profitable_count = 0
+
+        for _ in range(n_iterations):
+            sample = rng.choice(pnl_values, size=n_days, replace=True)
+            total = float(np.sum(sample))
+            boot_pnls.append(total)
+            if total > 0:
+                profitable_count += 1
+            mean_s = float(np.mean(sample))
+            std_s = float(np.std(sample, ddof=1)) if n_days > 1 else 0.0
+            sharpe = mean_s / std_s if std_s > 0 else 0.0
+            boot_sharpes.append(sharpe)
+
+        pnl_ci = (float(np.percentile(boot_pnls, 2.5)), float(np.percentile(boot_pnls, 97.5)))
+        sharpe_ci = (float(np.percentile(boot_sharpes, 2.5)), float(np.percentile(boot_sharpes, 97.5)))
+        prob_profitable = profitable_count / n_iterations
+
+        return {
+            "pnl_ci_95": pnl_ci,
+            "sharpe_ci_95": sharpe_ci,
+            "prob_profitable": prob_profitable,
+        }
+
+    def regime_split(self, trades, regime_fn):
+        # type: (List[TradeRecord], ...) -> Dict[str, Dict]
+        """Group trades by regime_fn(trade) -> label.
+
+        Returns {label: {total_trades, total_pnl, win_rate}}.
+        """
+        groups = defaultdict(list)  # type: Dict[str, List[TradeRecord]]
+        for t in trades:
+            label = regime_fn(t)
+            groups[label].append(t)
+
+        result = {}  # type: Dict[str, Dict]
+        for label, group_trades in groups.items():
+            wins = [t for t in group_trades if t.pnl > 0]
+            result[label] = {
+                "total_trades": len(group_trades),
+                "total_pnl": sum(t.pnl for t in group_trades),
+                "win_rate": len(wins) / len(group_trades) if group_trades else 0.0,
+            }
+        return result

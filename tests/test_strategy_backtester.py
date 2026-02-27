@@ -5,24 +5,44 @@ defined in services/strategy_backtester.py. Every downstream P&L
 calculation depends on these being correct.
 """
 
+import os
 from datetime import date, datetime, timedelta, timezone
 
+import duckdb
 import pytest
 
+from core.db import init_db
 from services.strategy_backtester import (
     BacktestConfig,
+    EdgeAnalyzer,
     EventPortfolio,
+    MarketDataLoader,
     MarketSnapshot,
     ModelUpdate,
+    PnLSimulator,
     Position,
     PositionManager,
     SanityFilter,
     TradeRecord,
+    TriggerDetector,
     _ET,
     compute_entry_cost,
     compute_exit_pnl,
     compute_settlement_pnl,
 )
+
+
+TEST_DB = "tests/test_strategy_backtest.duckdb"
+
+
+@pytest.fixture
+def test_db():
+    if os.path.exists(TEST_DB):
+        os.remove(TEST_DB)
+    init_db(TEST_DB)
+    yield TEST_DB
+    if os.path.exists(TEST_DB):
+        os.remove(TEST_DB)
 
 
 class TestFeeMath:
@@ -320,3 +340,63 @@ class TestPositionManager:
         records = pm.settle_day(self.event_date, (72.0, 74.0))
         pnl_dollars = records[0].pnl / 100.0
         assert pm.bankroll == pytest.approx(initial_bankroll + pnl_dollars)
+
+
+class TestMarketDataLoader:
+    def _seed_kalshi_data(self, db_path):
+        con = duckdb.connect(db_path)
+        con.execute("""
+            INSERT INTO kalshi_settlements VALUES
+            ('KXHIGHNY-25JUN15-T72-B74', 'KXHIGHNY-25JUN15', 'KXHIGHNY',
+             'NYC', 'high', '2025-06-15', 72.0, 74.0, 1, 500,
+             '2025-06-15 23:00:00', CURRENT_TIMESTAMP),
+            ('KXHIGHNY-25JUN15-T70-B72', 'KXHIGHNY-25JUN15', 'KXHIGHNY',
+             'NYC', 'high', '2025-06-15', 70.0, 72.0, 0, 300,
+             '2025-06-15 23:00:00', CURRENT_TIMESTAMP)
+        """)
+        con.execute("""
+            INSERT INTO kalshi_candlesticks VALUES
+            ('KXHIGHNY-25JUN15-T72-B74', '2025-06-15 14:00:00', 1,
+             0.30, 0.35, 0.32, 0.34, 0.31, 0.33, 10, 50),
+            ('KXHIGHNY-25JUN15-T72-B74', '2025-06-15 14:01:00', 1,
+             0.31, 0.36, 0.33, 0.35, 0.32, 0.34, 5, 50),
+            ('KXHIGHNY-25JUN15-T72-B74', '2025-06-15 14:03:00', 1,
+             0.32, 0.37, 0.34, 0.36, 0.33, 0.35, 8, 55)
+        """)
+        con.close()
+
+    @pytest.fixture
+    def market_db(self, test_db):
+        self._seed_kalshi_data(test_db)
+        return test_db
+
+    def test_load_brackets_for_date(self, market_db):
+        loader = MarketDataLoader(market_db)
+        brackets = loader.get_brackets(date(2025, 6, 15))
+        assert len(brackets) == 2
+        settled = [b for b in brackets if b["settled_yes"] == 1]
+        assert len(settled) == 1
+        assert settled[0]["bracket"] == (72.0, 74.0)
+
+    def test_load_snapshots_for_bracket(self, market_db):
+        loader = MarketDataLoader(market_db)
+        snaps = loader.get_snapshots(
+            market_ticker='KXHIGHNY-25JUN15-T72-B74',
+            bracket=(72.0, 74.0),
+            start_ts=datetime(2025, 6, 15, 14, 0, tzinfo=timezone.utc),
+            end_ts=datetime(2025, 6, 15, 14, 4, tzinfo=timezone.utc),
+        )
+        assert len(snaps) == 4  # 3 real + 1 forward-filled at 14:02
+        stale = [s for s in snaps if s.is_stale]
+        assert len(stale) == 1
+
+    def test_snapshot_prices_are_probabilities(self, market_db):
+        loader = MarketDataLoader(market_db)
+        snaps = loader.get_snapshots(
+            market_ticker='KXHIGHNY-25JUN15-T72-B74',
+            bracket=(72.0, 74.0),
+            start_ts=datetime(2025, 6, 15, 14, 0, tzinfo=timezone.utc),
+            end_ts=datetime(2025, 6, 15, 14, 1, tzinfo=timezone.utc),
+        )
+        assert 0 <= snaps[0].yes_bid <= 1.0
+        assert 0 <= snaps[0].yes_ask <= 1.0
