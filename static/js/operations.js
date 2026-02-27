@@ -407,10 +407,104 @@ function refreshFcstFeed() {
 // -----------------------------------------------------------------------
 
 function refreshBracketChart() {
-    var el = document.getElementById('bracket-chart');
-    if (el) {
-        el.innerHTML = '<p class="text-xs text-slate-500 text-center py-8">Bracket spread \u2014 wiring in progress</p>';
-    }
+    var dateParam = selectedDate ? '?date=' + selectedDate : '';
+    fetchAPI('/api/brackets/' + selectedCity + dateParam).then(function(data) {
+        var chartEl = document.getElementById('bracket-chart');
+        if (!chartEl) return;
+
+        if (!data || !data.brackets || data.brackets.length === 0) {
+            Plotly.react('bracket-chart', [], Object.assign({}, PLOTLY_LAYOUT, {
+                annotations: [{
+                    text: 'No bracket data',
+                    showarrow: false,
+                    font: { size: 14, color: COLORS.slate400 },
+                    xref: 'paper', yref: 'paper', x: 0.5, y: 0.5
+                }]
+            }), PLOTLY_CONFIG);
+            // Clear liquidity info
+            var liqEl = document.getElementById('liquidity-bar');
+            if (liqEl) liqEl.innerHTML = '';
+            return;
+        }
+
+        // Filter brackets where model_prob > 0.01 or market_mid > 0.01
+        var filtered = data.brackets.filter(function(b) {
+            return b.model_prob > 0.01 || (b.market_mid != null && b.market_mid > 0.01);
+        });
+
+        if (filtered.length === 0) {
+            Plotly.react('bracket-chart', [], Object.assign({}, PLOTLY_LAYOUT, {
+                annotations: [{
+                    text: 'No significant brackets',
+                    showarrow: false,
+                    font: { size: 14, color: COLORS.slate400 },
+                    xref: 'paper', yref: 'paper', x: 0.5, y: 0.5
+                }]
+            }), PLOTLY_CONFIG);
+            return;
+        }
+
+        // Build labels: "40-42°F", "42-44°F", etc.
+        var labels = filtered.map(function(b) {
+            return b.floor + '-' + b.cap + '\u00b0F';
+        });
+
+        var modelProbs = filtered.map(function(b) {
+            return Math.round(b.model_prob * 10000) / 100;
+        });
+        var marketProbs = filtered.map(function(b) {
+            return b.market_mid != null ? Math.round(b.market_mid * 10000) / 100 : 0;
+        });
+
+        // Model trace (horizontal bar)
+        var traceModel = {
+            y: labels,
+            x: modelProbs,
+            type: 'bar',
+            orientation: 'h',
+            name: 'Model',
+            marker: { color: COLORS.blue, opacity: 0.8 },
+            hovertemplate: '%{x:.1f}%<extra>Model</extra>'
+        };
+
+        // Kalshi trace (horizontal bar)
+        var traceKalshi = {
+            y: labels,
+            x: marketProbs,
+            type: 'bar',
+            orientation: 'h',
+            name: 'Kalshi',
+            marker: { color: COLORS.amber, opacity: 0.6 },
+            hovertemplate: '%{x:.1f}%<extra>Kalshi</extra>'
+        };
+
+        var layout = Object.assign({}, PLOTLY_LAYOUT, {
+            barmode: 'group',
+            showlegend: true,
+            legend: { x: 1, y: 1, xanchor: 'right', font: { size: 10 } },
+            xaxis: Object.assign({}, PLOTLY_LAYOUT.xaxis, {
+                title: { text: 'Probability %', standoff: 8, font: { size: 10 } }
+            }),
+            yaxis: Object.assign({}, PLOTLY_LAYOUT.yaxis, {
+                autorange: 'reversed'
+            }),
+            margin: { t: 10, r: 20, b: 40, l: 70 }
+        });
+
+        Plotly.react('bracket-chart', [traceModel, traceKalshi], layout, PLOTLY_CONFIG);
+
+        // Render liquidity info below the chart
+        var liqEl = document.getElementById('liquidity-bar');
+        if (liqEl && data.liquidity) {
+            var spreadCents = Math.round(data.liquidity.avg_spread * 100);
+            liqEl.innerHTML =
+                '<span class="text-slate-400">Vol:</span> ' +
+                '<span class="text-slate-200">' + data.liquidity.total_volume.toLocaleString() + '</span>' +
+                '<span class="mx-2 text-slate-600">|</span>' +
+                '<span class="text-slate-400">Avg Spread:</span> ' +
+                '<span class="text-slate-200">' + spreadCents + '\u00a2</span>';
+        }
+    });
 }
 
 // -----------------------------------------------------------------------

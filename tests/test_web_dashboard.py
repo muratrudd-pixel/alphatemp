@@ -398,3 +398,24 @@ def test_forecast_curve_includes_settlement_source(client):
     data = resp.json()
 
     assert "settlement_source" in data
+
+
+# --- Brackets endpoint ---
+
+
+def test_brackets_endpoint(client):
+    """GET /api/brackets/NYC should return bracket comparison data."""
+    resp = client.get("/api/brackets/NYC")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "brackets" in data
+    assert "city" in data
+    assert "liquidity" in data
+
+
+def test_brackets_unknown_city(client):
+    """Unknown city should return error for brackets endpoint."""
+    resp = client.get("/api/brackets/ZZZZ")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "error" in data

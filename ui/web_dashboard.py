@@ -782,3 +782,122 @@ async def market_comparison(city: str, date: str = None):
 
     con.close()
     return {"city": city, "available": True, "comparisons": comparisons}
+
+
+@app.get("/api/brackets/{city}")
+async def bracket_spread(city: str, date: str = None):
+    """Compare model bracket probabilities vs Kalshi market prices in 2°F buckets.
+
+    Maps 1°F model probs to 2°F Kalshi brackets, merges with latest market ticks,
+    and computes edge (model_prob - market_mid) for each bracket.
+    """
+    city = city.upper()
+    if city not in CITIES:
+        return {"error": f"Unknown city: {city}"}
+
+    # 1. Get model probabilities — handle engine failures gracefully
+    try:
+        forecast = engine.calculate_city(city)
+    except Exception:
+        forecast = None
+
+    model_center = forecast.center if forecast else None
+    model_std = forecast.std if forecast else None
+
+    # Map 1°F model probs to 2°F Kalshi brackets: floor = (temp_f // 2) * 2
+    model_2f = {}  # type: Dict[tuple, float]
+    if forecast and forecast.bracket_probs:
+        for temp_f, prob in forecast.bracket_probs.items():
+            floor = (temp_f // 2) * 2
+            cap = floor + 2
+            key = (floor, cap)
+            model_2f[key] = model_2f.get(key, 0.0) + prob
+
+    # 2. Get latest Kalshi market ticks for this city + date
+    from core.timezone import ET as _ET
+    if date:
+        try:
+            target = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            target = datetime.now(_ET)
+    else:
+        target = datetime.now(_ET)
+
+    kalshi_date = target.strftime("%y%b%d").upper()
+    target_date_str = target.strftime("%Y-%m-%d")
+
+    con = get_connection()
+    ticks = con.execute(
+        """SELECT market_id, yes_bid, yes_ask, last_trade, floor_strike,
+                  cap_strike, volume
+           FROM market_ticks
+           WHERE city = ?
+           AND market_id LIKE ?
+           AND captured_at = (
+               SELECT MAX(captured_at) FROM market_ticks
+               WHERE city = ? AND market_id LIKE ?
+           )
+           ORDER BY COALESCE(floor_strike, -999), COALESCE(cap_strike, 999)""",
+        [city, f"%{kalshi_date}%", city, f"%{kalshi_date}%"],
+    ).fetchall()
+
+    # Index market data by (floor, cap) for merging
+    market_by_bracket = {}  # type: Dict[tuple, dict]
+    for market_id, yes_bid, yes_ask, last_trade, floor_strike, cap_strike, volume in ticks:
+        if floor_strike is not None and cap_strike is not None:
+            key = (int(floor_strike), int(cap_strike))
+            market_by_bracket[key] = {
+                "yes_bid": yes_bid,
+                "yes_ask": yes_ask,
+                "volume": volume or 0,
+            }
+
+    con.close()
+
+    # 3. Merge model + market into bracket objects
+    all_keys = set(model_2f.keys()) | set(market_by_bracket.keys())
+    brackets = []
+    total_volume = 0
+    spread_sum = 0.0
+    spread_count = 0
+
+    for key in sorted(all_keys):
+        floor, cap = key
+        model_prob = round(model_2f.get(key, 0.0), 4)
+        mkt = market_by_bracket.get(key, {})
+        yes_bid = mkt.get("yes_bid")
+        yes_ask = mkt.get("yes_ask")
+        vol = mkt.get("volume", 0)
+
+        market_mid = None
+        if yes_bid is not None and yes_ask is not None:
+            market_mid = round((yes_bid + yes_ask) / 2.0, 4)
+
+        edge = round(model_prob - market_mid, 4) if market_mid is not None else None
+
+        brackets.append({
+            "floor": floor,
+            "cap": cap,
+            "model_prob": model_prob,
+            "market_mid": market_mid,
+            "edge": edge,
+            "yes_bid": yes_bid,
+            "yes_ask": yes_ask,
+            "volume": vol,
+        })
+
+        total_volume += vol
+        if yes_bid is not None and yes_ask is not None:
+            spread_sum += (yes_ask - yes_bid)
+            spread_count += 1
+
+    avg_spread = round(spread_sum / spread_count, 4) if spread_count > 0 else 0.0
+
+    return {
+        "city": city,
+        "date": target_date_str,
+        "brackets": brackets,
+        "liquidity": {"total_volume": total_volume, "avg_spread": avg_spread},
+        "model_center": model_center,
+        "model_std": model_std,
+    }
