@@ -98,3 +98,45 @@ def compute_neighbor_divergence(
         "neighbor_slope": raw["slope_divergence"],
         "n_neighbor_obs": raw["n_obs"],
     }
+
+
+def compute_peak_signal(
+    temps: List[float],
+    timestamps: List[float],
+    decline_threshold: float = 0.0,
+) -> Optional[dict]:
+    """Detect whether neighbor station temps have started declining.
+
+    Returns dict with peak_passed (bool), minutes_since_peak_update (float),
+    decline_rate (float F/min). Returns None if < 3 observations.
+    """
+    if len(temps) < 3:
+        return None
+
+    running_max = temps[0]
+    last_peak_idx = 0
+    for i in range(1, len(temps)):
+        if temps[i] > running_max:
+            running_max = temps[i]
+            last_peak_idx = i
+
+    latest_idx = len(temps) - 1
+    latest_temp = temps[latest_idx]
+    is_declining = (
+        last_peak_idx < latest_idx
+        and (running_max - latest_temp) > decline_threshold
+    )
+
+    if is_declining:
+        elapsed_s = timestamps[latest_idx] - timestamps[last_peak_idx]
+        minutes_since = elapsed_s / 60.0
+        decline_rate = (latest_temp - running_max) / max(minutes_since, 0.01)
+    else:
+        minutes_since = 0.0
+        decline_rate = 0.0
+
+    return {
+        "peak_passed": is_declining,
+        "minutes_since_peak_update": minutes_since,
+        "decline_rate": decline_rate,
+    }

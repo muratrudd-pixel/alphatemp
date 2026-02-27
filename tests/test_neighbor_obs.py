@@ -4,6 +4,7 @@ import pytest
 from datetime import datetime, timedelta
 from services.neighbor_obs import compute_walk_forward_offset
 from services.neighbor_obs import compute_neighbor_divergence
+from services.neighbor_obs import compute_peak_signal
 
 
 class TestStationOffset:
@@ -77,4 +78,34 @@ class TestNeighborDivergence:
 
     def test_insufficient_obs_returns_none(self):
         result = compute_neighbor_divergence([72.0], [1000000.0], [1000000.0], [70.0], offset=0.0)
+        assert result is None
+
+
+class TestPeakSignal:
+    """Detect whether neighbor station temps have started declining."""
+
+    def test_still_rising(self):
+        temps = [70.0 + i for i in range(5)]
+        timestamps = [1000000.0 + i * 300 for i in range(5)]
+        result = compute_peak_signal(temps, timestamps)
+        assert result["peak_passed"] is False
+        assert result["minutes_since_peak_update"] == 0.0
+
+    def test_declining(self):
+        temps = [70.0, 72.0, 74.0, 73.0, 71.0]
+        timestamps = [1000000.0 + i * 300 for i in range(5)]
+        result = compute_peak_signal(temps, timestamps)
+        assert result["peak_passed"] is True
+        assert abs(result["minutes_since_peak_update"] - 10.0) < 0.1
+        assert result["decline_rate"] < 0
+
+    def test_plateau(self):
+        temps = [70.0, 72.0, 74.0, 74.0, 74.0]
+        timestamps = [1000000.0 + i * 300 for i in range(5)]
+        result = compute_peak_signal(temps, timestamps)
+        assert result["peak_passed"] is False
+        assert result["minutes_since_peak_update"] == 0.0
+
+    def test_insufficient_data(self):
+        result = compute_peak_signal([70.0, 71.0], [1000000.0, 1000300.0])
         assert result is None
