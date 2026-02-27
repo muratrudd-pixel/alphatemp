@@ -88,6 +88,12 @@ Squared residuals are extremely sensitive to outliers. A single freak 10°F miss
 | `max_wind` | Extended weather vars | High wind = well-mixed = more predictable |
 | `mean_pressure` | Extended weather vars | Synoptic pattern proxy |
 
+### Tier 4 — Urban micro-climate features
+| Feature | Source | Hypothesis |
+|---------|--------|-----------|
+| `wind_direction_categorical` | METAR obs / HRRR forecast | Onshore (S/SE) sea breeze caps diurnal heating in NYC; offshore (W/NW) allows continued warming. Direction predicts forecast certainty, not direction. |
+| `hours_until_precip` | HRRR forecast | Early rain arrival locks in daily high via evaporative cooling. Precip timing uncertainty = temperature uncertainty. |
+
 ### Dropped
 - `obs_count` — nearly perfectly collinear with `update_hour` (hourly KNYC reports). Would destabilize OLS coefficients.
 

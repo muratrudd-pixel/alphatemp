@@ -229,6 +229,7 @@ Key safeguards:
 **Tier 1:** update_hour, divergence_slope, neighbor_peak_signal, forecast_spread (model disagreement)
 **Tier 2:** run_to_run_convergence (spread of HRRR 00z/06z/12z/18z), hours_until_sunset (season×time interaction), cumulative_divergence, running_max_divergence
 **Tier 3 (re-evaluated killed features):** fcst_high, dewpoint_depression, cloud_cover, max_wind, mean_pressure
+**Tier 4 (urban micro-climate):** wind_direction_categorical (onshore vs offshore — sea breeze caps diurnal heating in NYC), hours_until_precip (early rain arrival locks in daily high)
 
 ### Gate (Dual)
 Must pass BOTH:
@@ -237,15 +238,43 @@ Must pass BOTH:
 
 Secondary metrics tracked: log-loss (catches overconfidence), Brier decomposition Reliability term, std trajectory by hour.
 
-### Future: Quantile Regression (Phase 3.8 Escape Hatch)
+### Future: Quantile Regression (Escape Hatch)
 If OLS variance regression passes but Gaussian tails assign probability to physically impossible temperatures (e.g., high < current obs late in the day), quantile regression is the documented next step. Predicts error percentiles directly, handles asymmetric risk without Gaussian assumption.
+
+### Investigation Required: Concept Drift from NWP Model Upgrades
+Our expanding-window walk-forward approach assumes stationarity of forecast error distributions. However, major NWP model version upgrades during the backtest window could invalidate older training data:
+- HRRR v3 → v4 (Dec 2020), GFS v15.2 → v16 (Mar 2021), multiple ECMWF IFS cycles
+- **Key question:** Does Open-Meteo serve actual historical operational forecasts or reforecasts from the current model version? If reforecasts, this concern is moot.
+- **Diagnostic:** Plot bias estimates over time. Discontinuity at known upgrade dates = real operational forecasts with concept drift.
+- **If confirmed:** Consider rolling window (trailing 365-730 days) instead of expanding window to drop obsolete pre-upgrade data.
+
+---
+
+## Phase 3.8: Probability Calibration Layer
+
+**Status:** NOT STARTED
+**Depends on:** Phase 3.7 (dynamic uncertainty must be in place first)
+
+### The Problem
+Even with perfectly calibrated individual models, a Gaussian mixture ensemble is not mathematically guaranteed to remain calibrated in the tails. Before feeding probabilities into Kelly criterion sizing, predictions must map to empirical hit rates.
+
+### Approach
+Apply Isotonic Regression (or Platt Scaling) to the ensemble's bracket probabilities:
+- Walk-forward: train on prior predictions vs outcomes, apply to today's predictions
+- Maps "when model says 85%, historically it hits X%" → adjusted probability = X%
+- Prevents Kelly from overbetting on miscalibrated confidence
+
+### Gate
+- Reliability term of Brier decomposition must decrease
+- ECE must decrease vs uncalibrated ensemble
+- No degradation of overall Brier score (calibration shouldn't hurt accuracy)
 
 ---
 
 ## Phase 4: Kalshi Strategy Layer
 
-**Status:** NOT STARTED
-**Depends on:** A calibrated model from Phases 1-3.7
+**Status:** IN PROGRESS (separate worktree)
+**Depends on:** A calibrated model from Phases 1-3.8
 
 ### What
 Map the model's bracket probabilities to actual Kalshi trading decisions.
@@ -255,8 +284,16 @@ Map the model's bracket probabilities to actual Kalshi trading decisions.
 2. Identify brackets where `model_prob - market_prob > fee_threshold`
 3. Fee structure: 1% trading fee, 10% settlement fee, 2% withdrawal fee
 4. Simulate historical P&L net of all fees (requires market tick history)
-5. Define position sizing rules (Kelly criterion or fixed-fraction)
+5. Define position sizing rules (Fractional Kelly — Kelly/4 with hard cap)
 6. Paper trade before going live
+
+### Edge Threshold
+With ~11% total fee drag, model's predicted probability must exceed market's implied probability by at least 11% to break even in EV. Any edge < 11% is noise.
+
+### Position Sizing
+- **Fractional Kelly (Kelly/4):** Full Kelly is optimal but assumes infinite divisibility and no model error. With $100, a single bad beat on full Kelly could wipe 40%+ of the account.
+- **Hard daily cap:** Never risk more than 10% of bankroll on a single day's event.
+- **Scale up gradually:** As bankroll grows and model track record lengthens, fractional Kelly divisor can decrease.
 
 ### Evaluation Metric
 Simulated P&L net of fees over historical period.
