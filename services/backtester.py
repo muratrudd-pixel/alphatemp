@@ -365,26 +365,56 @@ def walk_forward_t_model(provider, ref_time, model_name='hrrr'):
 # Walk-forward REGRESSION models (Phase 2)
 # ---------------------------------------------------------------------------
 
-def _walk_forward_regression_data(con, run_hour, station_id, current_date, model_name='hrrr'):
-    # type: (duckdb.DuckDBPyConnection, int, str, date, str) -> Optional[list]
-    """Expanding-window training data: (error, fcst_high, month, delta_temp) from prior dates.
+def _walk_forward_regression_data(con, run_hour, station_id, current_date, model_name='hrrr', extended=False):
+    # type: (duckdb.DuckDBPyConnection, int, str, date, str, bool) -> Optional[list]
+    """Expanding-window training data from prior dates.
+
+    Returns tuples of:
+      (error, fcst_high, month, delta_temp)  -- when extended=False
+      (error, fcst_high, month, delta_temp, mean_dewpoint, mean_humidity,
+       max_wind, mean_pressure, mean_cloud, total_precip, mean_radiation,
+       dewpoint_depression)  -- when extended=True
 
     delta_temp = actual(D-1) - actual(D-2) — only uses prior actuals.
     Returns None if fewer than WALK_FORWARD_MIN_DAYS complete rows.
     """
-    rows = con.execute("""
+    if extended:
+        ext_select = """,
+                AVG(fe.dewpoint_2m_f) AS mean_dewpoint,
+                AVG(fe.humidity_2m) AS mean_humidity,
+                MAX(fe.wind_speed_10m) AS max_wind,
+                AVG(fe.pressure_msl) AS mean_pressure,
+                AVG(fe.cloud_cover) AS mean_cloud,
+                COALESCE(SUM(fe.precipitation), 0) AS total_precip,
+                AVG(fe.shortwave_rad) AS mean_radiation,
+                AVG(f.temp_f) - AVG(fe.dewpoint_2m_f) AS dewpoint_depression"""
+        ext_join = """
+            LEFT JOIN forecast_extended fe
+                ON fe.station_id = f.station_id
+                AND fe.model_run = f.model_run
+                AND fe.valid_at = f.valid_at
+                AND fe.model_name = f.model_name"""
+        ext_outer = """,
+            mean_dewpoint, mean_humidity, max_wind, mean_pressure,
+            mean_cloud, total_precip, mean_radiation, dewpoint_depression"""
+    else:
+        ext_select = ""
+        ext_join = ""
+        ext_outer = ""
+
+    query = """
         WITH daily_errors AS (
             SELECT
                 n.obs_date,
                 MAX(f.temp_f) - n.max_temp_f AS error,
                 MAX(f.temp_f) AS fcst_high,
                 EXTRACT(MONTH FROM n.obs_date) AS month,
-                n.max_temp_f AS actual_high
+                n.max_temp_f AS actual_high{ext_select}
             FROM nws_daily n
             JOIN forecasts f ON f.station_id = n.station_id
                 AND f.model_run::DATE = n.obs_date
                 AND EXTRACT(HOUR FROM f.model_run) = ?
-                AND f.model_name = ?
+                AND f.model_name = ?{ext_join}
             WHERE n.station_id = ?
                 AND n.obs_date < ?
                 AND n.max_temp_f IS NOT NULL
@@ -396,12 +426,14 @@ def _walk_forward_regression_data(con, run_hour, station_id, current_date, model
             fcst_high,
             month,
             LAG(actual_high, 1) OVER (ORDER BY obs_date)
-                - LAG(actual_high, 2) OVER (ORDER BY obs_date) AS delta_temp
+                - LAG(actual_high, 2) OVER (ORDER BY obs_date) AS delta_temp{ext_outer}
         FROM daily_errors
-    """, [run_hour, model_name, station_id, current_date]).fetchall()
+    """.format(ext_select=ext_select, ext_join=ext_join, ext_outer=ext_outer)
+
+    rows = con.execute(query, [run_hour, model_name, station_id, current_date]).fetchall()
 
     # Filter out rows where delta_temp is NULL (first 2 dates in the window)
-    complete = [(e, fh, m, dt) for e, fh, m, dt in rows if dt is not None]
+    complete = [row for row in rows if row[3] is not None]
     if len(complete) < WALK_FORWARD_MIN_DAYS:
         return None
     return complete
@@ -418,10 +450,16 @@ def _fit_and_predict(rows, features_today, feature_indices):
     # type: (list, tuple, list) -> Optional[Tuple[float, float]]
     """Manual OLS via scipy.linalg.lstsq.
 
-    rows: list of (error, fcst_high, month, delta_temp)
-    features_today: (fcst_high, month, delta_temp) for the prediction date
-    feature_indices: which columns to use from the feature set:
-        0 = fcst_high, 1 = sin(month), 2 = cos(month), 3 = delta_temp
+    rows: list of tuples where:
+        [0] = error, [1] = fcst_high, [2] = month, [3] = delta_temp,
+        [4..] = optional extended features (mean_dewpoint, mean_humidity, ...)
+    features_today: tuple matching rows[1:] structure
+        (fcst_high, month, delta_temp, [ext1, ext2, ...])
+    feature_indices: which columns to use from the all_features vector:
+        0 = fcst_high, 1 = sin(month), 2 = cos(month), 3 = delta_temp,
+        4 = mean_dewpoint, 5 = mean_humidity, 6 = max_wind, 7 = mean_pressure,
+        8 = mean_cloud, 9 = total_precip, 10 = mean_radiation,
+        11 = dewpoint_depression
 
     Returns (predicted_bias, residual_std) or None on failure.
     """
@@ -434,9 +472,16 @@ def _fit_and_predict(rows, features_today, feature_indices):
     A = np.empty((n, 1 + n_features), dtype=np.float64)
     y = np.empty(n, dtype=np.float64)
 
-    for i, (error, fcst_high, month, delta_temp) in enumerate(rows):
+    for i, row in enumerate(rows):
+        error = row[0]
+        fcst_high = row[1]
+        month = row[2]
+        delta_temp = row[3]
         sin_m, cos_m = _encode_month(month)
-        all_features = [fcst_high, sin_m, cos_m, delta_temp]
+        # Base features + any extended features from row[4:]
+        all_features = [fcst_high, sin_m, cos_m, delta_temp] + [
+            v if v is not None else 0.0 for v in row[4:]
+        ]
         A[i, 0] = 1.0  # intercept
         for j, idx in enumerate(feature_indices):
             A[i, 1 + j] = all_features[idx]
@@ -447,9 +492,13 @@ def _fit_and_predict(rows, features_today, feature_indices):
     coeffs = result[0]
 
     # Predict for today
-    fcst_today, month_today, delta_today = features_today
+    fcst_today = features_today[0]
+    month_today = features_today[1]
+    delta_today = features_today[2]
     sin_m, cos_m = _encode_month(month_today)
-    all_today = [fcst_today, sin_m, cos_m, delta_today]
+    all_today = [fcst_today, sin_m, cos_m, delta_today] + [
+        v if v is not None else 0.0 for v in features_today[3:]
+    ]
     x_today = np.array([1.0] + [all_today[idx] for idx in feature_indices])
     predicted_bias = float(np.dot(coeffs, x_today))
 
@@ -483,8 +532,46 @@ def _get_delta_temp(con, station_id, current_date):
     return rows[0][0] - rows[1][0]
 
 
+def _get_extended_features_today(con, run_hour, station_id, current_date, model_name):
+    # type: (duckdb.DuckDBPyConnection, int, str, date, str) -> Optional[tuple]
+    """Get daily summary stats from forecast_extended for today's prediction.
+
+    Returns (mean_dewpoint, mean_humidity, max_wind, mean_pressure,
+             mean_cloud, total_precip, mean_radiation, dewpoint_depression)
+    or None if no data.
+    """
+    row = con.execute("""
+        SELECT
+            AVG(fe.dewpoint_2m_f),
+            AVG(fe.humidity_2m),
+            MAX(fe.wind_speed_10m),
+            AVG(fe.pressure_msl),
+            AVG(fe.cloud_cover),
+            COALESCE(SUM(fe.precipitation), 0),
+            AVG(fe.shortwave_rad),
+            AVG(f.temp_f) - AVG(fe.dewpoint_2m_f)
+        FROM forecasts f
+        JOIN forecast_extended fe
+            ON fe.station_id = f.station_id
+            AND fe.model_run = f.model_run
+            AND fe.valid_at = f.valid_at
+            AND fe.model_name = f.model_name
+        WHERE f.station_id = ?
+            AND f.model_run::DATE = ?
+            AND EXTRACT(HOUR FROM f.model_run) = ?
+            AND f.model_name = ?
+    """, [station_id, current_date, run_hour, model_name]).fetchone()
+
+    if row is None or row[0] is None:
+        return None
+    return tuple(v if v is not None else 0.0 for v in row)
+
+
 # Feature index mapping for _fit_and_predict:
 #   0 = fcst_high, 1 = sin(month), 2 = cos(month), 3 = delta_temp
+#   4 = mean_dewpoint, 5 = mean_humidity, 6 = max_wind, 7 = mean_pressure,
+#   8 = mean_cloud, 9 = total_precip, 10 = mean_radiation,
+#   11 = dewpoint_depression
 
 _FEATURE_SETS = {
     "wf_regression_full":  [0, 1, 2, 3],       # fcst_high + month + delta
@@ -493,10 +580,28 @@ _FEATURE_SETS = {
     "wf_regression_delta": [3],                   # delta_temp only
 }
 
+# Extended feature sets for GFS/ECMWF (Phase 3.5)
+# Base = [0, 1, 2] (fcst_high + month). Each adds one extended variable.
+_EXTENDED_FEATURE_SETS = {
+    "ext_dewpoint":   [0, 1, 2, 4],    # + mean_dewpoint
+    "ext_humidity":   [0, 1, 2, 5],    # + mean_humidity
+    "ext_wind":       [0, 1, 2, 6],    # + max_wind
+    "ext_pressure":   [0, 1, 2, 7],    # + mean_pressure
+    "ext_cloud":      [0, 1, 2, 8],    # + mean_cloud
+    "ext_precip":     [0, 1, 2, 9],    # + total_precip
+    "ext_radiation":  [0, 1, 2, 10],   # + mean_radiation
+    "ext_dewdep":     [0, 1, 2, 11],   # + dewpoint_depression
+}
 
-def _make_regression_model(name, feature_indices, model_name='hrrr'):
-    # type: (str, list, str) -> ModelFn
-    """Factory: create a walk-forward regression ModelFn for a given feature subset."""
+
+def _make_regression_model(name, feature_indices, model_name='hrrr', extended=False):
+    # type: (str, list, str, bool) -> ModelFn
+    """Factory: create a walk-forward regression ModelFn for a given feature subset.
+
+    When extended=True, the model also fetches daily summary stats from
+    forecast_extended (dewpoint, humidity, wind, pressure, etc.) and includes
+    them as features at indices 4-11.
+    """
 
     def _raw(provider, ref_time):
         # type: (BacktestDataProvider, datetime) -> Optional[Tuple[float, float]]
@@ -511,7 +616,10 @@ def _make_regression_model(name, feature_indices, model_name='hrrr'):
             return None
 
         # Get training data (expanding window, all prior dates)
-        training = _walk_forward_regression_data(con, run_hour, station_id, current_date, model_name=model_name)
+        training = _walk_forward_regression_data(
+            con, run_hour, station_id, current_date,
+            model_name=model_name, extended=extended,
+        )
         if training is None:
             return None
 
@@ -521,7 +629,16 @@ def _make_regression_model(name, feature_indices, model_name='hrrr'):
             return None
 
         month = float(current_date.month)
-        features_today = (fcst_high, month, delta_temp)
+
+        if extended:
+            ext_today = _get_extended_features_today(
+                con, run_hour, station_id, current_date, model_name,
+            )
+            if ext_today is None:
+                return None
+            features_today = (fcst_high, month, delta_temp) + ext_today
+        else:
+            features_today = (fcst_high, month, delta_temp)
 
         result = _fit_and_predict(training, features_today, feature_indices)
         if result is None:

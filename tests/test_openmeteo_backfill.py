@@ -212,3 +212,142 @@ def test_station_id_is_knyc(mock_sleep, mock_get, test_db):
         assert stations[0][0] == "KNYC"
     finally:
         con.close()
+
+
+# --- Extended variable backfill tests ---
+
+def _mock_extended_response():
+    """Build a mock Open-Meteo response with all extended variables for 1 day."""
+    times = ["2024-01-01T{:02d}:00".format(h) for h in range(24)]
+    return {
+        "hourly": {
+            "time": times,
+            "dewpoint_2m": [25.0 + float(h) for h in range(24)],
+            "relative_humidity_2m": [70.0 + float(h) * 0.5 for h in range(24)],
+            "wind_speed_10m": [5.0 + float(h) * 0.2 for h in range(24)],
+            "wind_direction_10m": [180.0 + float(h) for h in range(24)],
+            "wind_gusts_10m": [10.0 + float(h) * 0.3 for h in range(24)],
+            "pressure_msl": [1013.0 + float(h) * 0.1 for h in range(24)],
+            "cloud_cover": [50.0 + float(h) for h in range(24)],
+            "precipitation": [0.0] * 20 + [0.1, 0.2, 0.3, 0.0],
+            "shortwave_radiation": [0.0] * 6 + [100.0 + float(h) * 10 for h in range(12)] + [0.0] * 6,
+            "cape": [0.0] * 12 + [50.0 + float(h) for h in range(12)],
+        }
+    }
+
+
+@patch("scripts.backfill_openmeteo.requests.get")
+@patch("scripts.backfill_openmeteo.time.sleep")
+def test_extended_backfill_inserts_rows(mock_sleep, mock_get, test_db):
+    """Extended backfill should insert 24 rows into forecast_extended."""
+    from scripts.backfill_openmeteo import backfill_model_extended
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _mock_extended_response()
+    mock_resp.raise_for_status = MagicMock()
+    mock_get.return_value = mock_resp
+
+    count = backfill_model_extended(
+        model="gfs",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+        db_path=test_db,
+    )
+    assert count == 24
+
+    con = duckdb.connect(test_db, read_only=True)
+    try:
+        rows = con.execute("SELECT COUNT(*) FROM forecast_extended").fetchone()[0]
+        assert rows == 24
+    finally:
+        con.close()
+
+
+@patch("scripts.backfill_openmeteo.requests.get")
+@patch("scripts.backfill_openmeteo.time.sleep")
+def test_extended_has_correct_model_name(mock_sleep, mock_get, test_db):
+    """Extended rows should have correct model_name."""
+    from scripts.backfill_openmeteo import backfill_model_extended
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _mock_extended_response()
+    mock_resp.raise_for_status = MagicMock()
+    mock_get.return_value = mock_resp
+
+    backfill_model_extended(
+        model="ecmwf",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+        db_path=test_db,
+    )
+
+    con = duckdb.connect(test_db, read_only=True)
+    try:
+        names = con.execute(
+            "SELECT DISTINCT model_name FROM forecast_extended"
+        ).fetchall()
+        assert len(names) == 1
+        assert names[0][0] == "ecmwf"
+    finally:
+        con.close()
+
+
+@patch("scripts.backfill_openmeteo.requests.get")
+@patch("scripts.backfill_openmeteo.time.sleep")
+def test_extended_values_stored_correctly(mock_sleep, mock_get, test_db):
+    """Verify specific variable values are stored correctly."""
+    from scripts.backfill_openmeteo import backfill_model_extended
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _mock_extended_response()
+    mock_resp.raise_for_status = MagicMock()
+    mock_get.return_value = mock_resp
+
+    backfill_model_extended(
+        model="gfs",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+        db_path=test_db,
+    )
+
+    con = duckdb.connect(test_db, read_only=True)
+    try:
+        # First row (hour 0): dewpoint=25.0, humidity=70.0, wind=5.0
+        row = con.execute(
+            "SELECT dewpoint_2m_f, humidity_2m, wind_speed_10m, pressure_msl "
+            "FROM forecast_extended ORDER BY valid_at LIMIT 1"
+        ).fetchone()
+        assert row[0] == 25.0   # dewpoint
+        assert row[1] == 70.0   # humidity
+        assert row[2] == 5.0    # wind speed
+        assert row[3] == 1013.0 # pressure
+    finally:
+        con.close()
+
+
+@patch("scripts.backfill_openmeteo.requests.get")
+@patch("scripts.backfill_openmeteo.time.sleep")
+def test_extended_model_run_is_midnight(mock_sleep, mock_get, test_db):
+    """Extended rows should have model_run at midnight UTC."""
+    from scripts.backfill_openmeteo import backfill_model_extended
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _mock_extended_response()
+    mock_resp.raise_for_status = MagicMock()
+    mock_get.return_value = mock_resp
+
+    backfill_model_extended(
+        model="gfs",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+        db_path=test_db,
+    )
+
+    con = duckdb.connect(test_db, read_only=True)
+    try:
+        runs = con.execute("SELECT DISTINCT model_run FROM forecast_extended").fetchall()
+        for (run_ts,) in runs:
+            assert run_ts.hour == 0
+            assert run_ts.minute == 0
+    finally:
+        con.close()

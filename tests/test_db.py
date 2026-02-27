@@ -220,6 +220,58 @@ def test_drift_signals_unique_constraint():
     con.close()
 
 
+def test_forecast_extended_table_exists():
+    """forecast_extended table is created by init_db."""
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB)
+    tables = con.execute("SHOW TABLES").fetchall()
+    table_names = {t[0] for t in tables}
+    assert "forecast_extended" in table_names
+    con.close()
+
+
+def test_forecast_extended_schema():
+    """forecast_extended has all expected weather variable columns."""
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB)
+    cols = con.execute("DESCRIBE forecast_extended").fetchall()
+    col_names = {c[0] for c in cols}
+    for expected in ["station_id", "model_run", "valid_at", "model_name",
+                     "dewpoint_2m_f", "humidity_2m", "wind_speed_10m",
+                     "wind_dir_10m", "wind_gusts_10m", "pressure_msl",
+                     "cloud_cover", "precipitation", "shortwave_rad",
+                     "cape", "ingested_at"]:
+        assert expected in col_names, f"Missing column: {expected}"
+    con.close()
+
+
+def test_forecast_extended_unique_constraint():
+    """UNIQUE on (station_id, model_run, valid_at, model_name)."""
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB)
+    # First insert
+    con.execute("""
+        INSERT INTO forecast_extended
+        (station_id, model_run, valid_at, model_name, dewpoint_2m_f, ingested_at)
+        VALUES ('KNYC', '2024-01-01 00:00', '2024-01-01 12:00', 'gfs', 35.0, CURRENT_TIMESTAMP)
+    """)
+    # Different model_name — should succeed
+    con.execute("""
+        INSERT INTO forecast_extended
+        (station_id, model_run, valid_at, model_name, dewpoint_2m_f, ingested_at)
+        VALUES ('KNYC', '2024-01-01 00:00', '2024-01-01 12:00', 'ecmwf', 34.0, CURRENT_TIMESTAMP)
+    """)
+    assert con.execute("SELECT COUNT(*) FROM forecast_extended").fetchone()[0] == 2
+    # Full duplicate — should fail
+    with pytest.raises(duckdb.ConstraintException):
+        con.execute("""
+            INSERT INTO forecast_extended
+            (station_id, model_run, valid_at, model_name, dewpoint_2m_f, ingested_at)
+            VALUES ('KNYC', '2024-01-01 00:00', '2024-01-01 12:00', 'gfs', 36.0, CURRENT_TIMESTAMP)
+        """)
+    con.close()
+
+
 def test_indexes_created():
     """All performance indexes should exist after init_db."""
     init_db(TEST_DB)
@@ -236,6 +288,7 @@ def test_indexes_created():
         "idx_drift_city_time",
         "idx_market_city_time",
         "idx_bias_station_time",
+        "idx_fext_model_run",
     }
     assert expected.issubset(index_names), f"Missing indexes: {expected - index_names}"
 

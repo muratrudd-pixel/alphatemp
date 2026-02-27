@@ -14,6 +14,7 @@ MAIN_DB = "data/alphatemp.duckdb"
 
 HRRR_DBS = ["data/backfill_00z.duckdb", "data/backfill_18z.duckdb"]
 OPENMETEO_DBS = ["data/backfill_gfs.duckdb", "data/backfill_ecmwf.duckdb"]
+OPENMETEO_EXTENDED_DBS = ["data/backfill_gfs_extended.duckdb", "data/backfill_ecmwf_extended.duckdb"]
 KALSHI_TRADES_DB = "data/backfill_kalshi_trades.duckdb"
 KALSHI_CANDLES_DB = "data/backfill_kalshi_candles.duckdb"
 
@@ -39,6 +40,32 @@ def merge_forecasts(con, temp_path):
     after = con.execute("SELECT COUNT(*) FROM forecasts").fetchone()[0]
     inserted = after - before
     logger.info(f"  forecasts: +{inserted:,} rows")
+
+    con.execute("DETACH src")
+    return inserted
+
+
+def merge_forecast_extended(con, temp_path):
+    """Merge extended weather variable rows from temp DB."""
+    con.execute(f"ATTACH '{temp_path}' AS src (READ_ONLY)")
+
+    before = con.execute("SELECT COUNT(*) FROM forecast_extended").fetchone()[0]
+
+    con.execute("""
+        INSERT INTO forecast_extended
+        SELECT s.* FROM src.forecast_extended s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM forecast_extended m
+            WHERE m.station_id = s.station_id
+              AND m.model_run  = s.model_run
+              AND m.valid_at   = s.valid_at
+              AND m.model_name = s.model_name
+        )
+    """)
+
+    after = con.execute("SELECT COUNT(*) FROM forecast_extended").fetchone()[0]
+    inserted = after - before
+    logger.info(f"  forecast_extended: +{inserted:,} rows")
 
     con.execute("DETACH src")
     return inserted
@@ -110,6 +137,14 @@ def main():
         logger.info(f"Merging {temp_path}...")
         merge_forecasts(con, temp_path)
 
+    # --- GFS / ECMWF extended variables ---
+    for temp_path in OPENMETEO_EXTENDED_DBS:
+        if not os.path.exists(temp_path):
+            logger.warning(f"{temp_path} not found, skipping")
+            continue
+        logger.info(f"Merging {temp_path}...")
+        merge_forecast_extended(con, temp_path)
+
     # --- Kalshi trades ---
     if os.path.exists(KALSHI_TRADES_DB):
         logger.info(f"Merging {KALSHI_TRADES_DB}...")
@@ -130,8 +165,8 @@ def main():
     # Summary
     con = duckdb.connect(MAIN_DB, read_only=True)
     logger.info("=== FINAL COUNTS ===")
-    for table in ['forecasts', 'kalshi_trades', 'kalshi_candlesticks', 'kalshi_settlements',
-                   'observations', 'nws_daily', 'market_ticks']:
+    for table in ['forecasts', 'forecast_extended', 'kalshi_trades', 'kalshi_candlesticks',
+                   'kalshi_settlements', 'observations', 'nws_daily', 'market_ticks']:
         try:
             cnt = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             logger.info(f"  {table}: {cnt:,}")
@@ -140,7 +175,7 @@ def main():
     con.close()
 
     # Clean up temp files
-    all_temps = HRRR_DBS + OPENMETEO_DBS + [KALSHI_TRADES_DB, KALSHI_CANDLES_DB]
+    all_temps = HRRR_DBS + OPENMETEO_DBS + OPENMETEO_EXTENDED_DBS + [KALSHI_TRADES_DB, KALSHI_CANDLES_DB]
     for temp_path in all_temps:
         for f in [temp_path, temp_path + ".wal"]:
             if os.path.exists(f):

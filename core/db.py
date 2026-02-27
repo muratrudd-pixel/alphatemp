@@ -167,6 +167,27 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         )
     """)
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS forecast_extended (
+            station_id      VARCHAR NOT NULL,
+            model_run       TIMESTAMP NOT NULL,
+            valid_at        TIMESTAMP NOT NULL,
+            model_name      VARCHAR NOT NULL,
+            dewpoint_2m_f   DOUBLE,
+            humidity_2m     DOUBLE,
+            wind_speed_10m  DOUBLE,
+            wind_dir_10m    DOUBLE,
+            wind_gusts_10m  DOUBLE,
+            pressure_msl    DOUBLE,
+            cloud_cover     DOUBLE,
+            precipitation   DOUBLE,
+            shortwave_rad   DOUBLE,
+            cape            DOUBLE,
+            ingested_at     TIMESTAMP NOT NULL,
+            UNIQUE (station_id, model_run, valid_at, model_name)
+        )
+    """)
+
     # Indexes — accelerate the most common query patterns
     for stmt in [
         "CREATE INDEX IF NOT EXISTS idx_obs_station_time ON observations (station_id, observed_at)",
@@ -182,6 +203,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         "CREATE INDEX IF NOT EXISTS idx_kc_ticker ON kalshi_candlesticks (market_ticker)",
         "CREATE INDEX IF NOT EXISTS idx_kt_ticker ON kalshi_trades (market_ticker)",
         "CREATE INDEX IF NOT EXISTS idx_kt_time ON kalshi_trades (created_time)",
+        "CREATE INDEX IF NOT EXISTS idx_fext_model_run ON forecast_extended (station_id, model_run, model_name)",
     ]:
         con.execute(stmt)
 
