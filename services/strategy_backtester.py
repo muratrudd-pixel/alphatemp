@@ -931,6 +931,8 @@ class StrategyBacktester:
         all_trades = []  # type: List[TradeRecord]
         missed_capital = 0
         anomalies = []  # type: List[Dict]
+        # Track model prob and displacement per position for trade records
+        _pos_metadata = {}  # type: Dict[Tuple[date, Tuple], Tuple[float, float]]
 
         settlement_dates = self._get_settlement_dates()
         burn_in_end = config.start_date + timedelta(days=config.burn_in_days)
@@ -1078,8 +1080,8 @@ class StrategyBacktester:
                     bracket = bi["bracket"]
                     mp = model_probs.get(bracket, 0.0)
                     ask = market_asks.get(bracket)
-                    if ask is None:
-                        continue
+                    if ask is None or ask <= 0:
+                        continue  # no real market — skip
 
                     ask_cents = ask * 100
                     spread_cents = (ask - market_bids.get(bracket, ask)) * 100
@@ -1115,6 +1117,7 @@ class StrategyBacktester:
 
                     optimal = portfolio.optimal_subset(new_candidates)
                     for bracket, ask_cents, mp in optimal:
+                        displacement = mp - (ask_cents / 100.0)
                         pos = position_mgr.open_position(
                             event_date=event_date,
                             bracket=bracket,
@@ -1124,9 +1127,16 @@ class StrategyBacktester:
                         )
                         if pos is None:
                             missed_capital += 1
+                        else:
+                            _pos_metadata[(event_date, bracket)] = (mp, displacement)
 
             # -- Layer 3: Settlement --
             day_trades = position_mgr.settle_day(event_date, settled_bracket)
+            for tr in day_trades:
+                meta = _pos_metadata.get((tr.event_date, tr.bracket))
+                if meta:
+                    tr.model_prob_at_entry = meta[0]
+                    tr.displacement_at_entry = meta[1]
             all_trades.extend(day_trades)
 
         con.close()
