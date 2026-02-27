@@ -507,3 +507,68 @@ class TestEdgeAnalyzer:
         assert "model_brier" in summary[13]
         assert "market_brier" in summary[13]
         assert summary[13]["edge"] > 0
+
+
+class TestPnLSimulator:
+    def _make_trades(self):
+        trades = []
+        for i in range(10):
+            trades.append(TradeRecord(
+                event_date=date(2025, 3, 1) + timedelta(days=i),
+                bracket=(72.0, 74.0), direction='BUY_YES',
+                entry_price=30.0, entry_time=datetime(2025, 3, 1, 14, 0, tzinfo=timezone.utc),
+                exit_price=None, exit_time=None, exit_type='settlement',
+                settlement_result=1, pnl=62.7, fees_paid=7.3,
+                displacement_at_entry=0.15, model_prob_at_entry=0.40,
+                capital_locked_hours=24.0,
+            ))
+        for i in range(5):
+            trades.append(TradeRecord(
+                event_date=date(2025, 3, 11) + timedelta(days=i),
+                bracket=(74.0, 76.0), direction='BUY_YES',
+                entry_price=25.0, entry_time=datetime(2025, 3, 11, 14, 0, tzinfo=timezone.utc),
+                exit_price=None, exit_time=None, exit_type='settlement',
+                settlement_result=0, pnl=-25.25, fees_paid=0.25,
+                displacement_at_entry=0.12, model_prob_at_entry=0.20,
+                capital_locked_hours=24.0,
+            ))
+        return trades
+
+    def test_aggregate_metrics(self):
+        trades = self._make_trades()
+        sim = PnLSimulator()
+        metrics = sim.aggregate(trades, starting_capital=100.0)
+        assert metrics["total_trades"] == 15
+        assert metrics["win_rate"] == pytest.approx(10 / 15)
+        assert metrics["total_pnl"] > 0
+        assert metrics["profit_factor"] > 1.0
+
+    def test_bootstrap_confidence_interval(self):
+        daily_pnls = [(t.event_date, t.pnl) for t in self._make_trades()]
+        sim = PnLSimulator()
+        ci = sim.bootstrap(daily_pnls, n_iterations=1000, seed=42)
+        assert "pnl_ci_95" in ci
+        assert ci["pnl_ci_95"][0] < ci["pnl_ci_95"][1]
+        assert 0 <= ci["prob_profitable"] <= 1.0
+
+    def test_regime_split_by_season(self):
+        trades = self._make_trades()
+        sim = PnLSimulator()
+        def season_fn(trade):
+            m = trade.event_date.month
+            if m in (12, 1, 2):
+                return "winter"
+            elif m in (3, 4, 5):
+                return "spring"
+            elif m in (6, 7, 8):
+                return "summer"
+            return "fall"
+        splits = sim.regime_split(trades, season_fn)
+        assert "spring" in splits
+        assert splits["spring"]["total_trades"] == 15
+
+    def test_sharpe_ratio(self):
+        trades = self._make_trades()
+        sim = PnLSimulator()
+        metrics = sim.aggregate(trades, starting_capital=100.0)
+        assert metrics["sharpe_ratio"] > 0
