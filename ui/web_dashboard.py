@@ -1,10 +1,12 @@
 """AlphaTemp Web Dashboard — FastAPI backend serving Plotly + Tailwind frontend."""
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
@@ -14,6 +16,11 @@ from core.timezone import et_day_bounds_utc
 from services.probability import ProbabilityEngine
 
 app = FastAPI(title="AlphaTemp Command Center")
+
+# Static files — directory lives at project root alongside ui/
+_static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+if os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -37,10 +44,34 @@ async def startup():
 # ---------------------------------------------------------------------------
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    """Serve the main dashboard page."""
-    return templates.TemplateResponse("index.html", {"request": request})
+@app.get("/")
+async def root():
+    """Redirect root to Operations tab."""
+    return RedirectResponse(url="/operations")
+
+
+@app.get("/operations")
+async def operations_page(request: Request):
+    """Serve the Operations tab."""
+    return templates.TemplateResponse("operations.html", {"request": request, "active_tab": "operations"})
+
+
+@app.get("/performance")
+async def performance_page(request: Request):
+    """Serve the Performance tab."""
+    return templates.TemplateResponse("performance.html", {"request": request, "active_tab": "performance"})
+
+
+@app.get("/review")
+async def review_page(request: Request):
+    """Serve the Review tab."""
+    return templates.TemplateResponse("review.html", {"request": request, "active_tab": "review"})
+
+
+@app.get("/mobile")
+async def mobile_page(request: Request):
+    """Serve the Mobile tab."""
+    return templates.TemplateResponse("mobile.html", {"request": request, "active_tab": "mobile"})
 
 
 STALE_THRESHOLD_MINUTES = 30

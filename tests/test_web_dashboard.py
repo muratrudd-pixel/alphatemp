@@ -124,14 +124,35 @@ def test_empty_market(client):
     assert data["available"] is False
 
 
-# --- Index page ---
+# --- Root redirect and tab pages ---
 
 
-def test_index_returns_html(client):
-    """Index should return HTML."""
-    resp = client.get("/")
+def test_root_redirects_to_operations(client):
+    """Root should redirect to /operations."""
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 307
+    assert "/operations" in resp.headers["location"]
+
+
+def test_operations_page(client):
+    """Operations tab should return HTML with 'Operations' in content."""
+    resp = client.get("/operations")
     assert resp.status_code == 200
-    assert "text/html" in resp.headers["content-type"]
+    assert b"Operations" in resp.content
+
+
+def test_performance_page(client):
+    """Performance tab should return HTML with 'Performance' in content."""
+    resp = client.get("/performance")
+    assert resp.status_code == 200
+    assert b"Performance" in resp.content
+
+
+def test_review_page(client):
+    """Review tab should return HTML with 'Review' in content."""
+    resp = client.get("/review")
+    assert resp.status_code == 200
+    assert b"Review" in resp.content
 
 
 # --- Observations with date param ---
