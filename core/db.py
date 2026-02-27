@@ -188,6 +188,29 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         )
     """)
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS paper_positions (
+            id INTEGER,
+            city VARCHAR,
+            event_date DATE,
+            bracket_floor INTEGER,
+            bracket_cap INTEGER,
+            direction VARCHAR,
+            model_prob DOUBLE,
+            market_price DOUBLE,
+            edge DOUBLE,
+            entry_price DOUBLE,
+            entry_time TIMESTAMP,
+            exit_price DOUBLE,
+            exit_time TIMESTAMP,
+            settled_yes BOOLEAN,
+            gross_pnl DOUBLE,
+            fees DOUBLE,
+            net_pnl DOUBLE,
+            status VARCHAR DEFAULT 'open'
+        )
+    """)
+
     # Indexes — accelerate the most common query patterns
     for stmt in [
         "CREATE INDEX IF NOT EXISTS idx_obs_station_time ON observations (station_id, observed_at)",
@@ -204,6 +227,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         "CREATE INDEX IF NOT EXISTS idx_kt_ticker ON kalshi_trades (market_ticker)",
         "CREATE INDEX IF NOT EXISTS idx_kt_time ON kalshi_trades (created_time)",
         "CREATE INDEX IF NOT EXISTS idx_fext_model_run ON forecast_extended (station_id, model_run, model_name)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_positions_id ON paper_positions(id)",
+        "CREATE INDEX IF NOT EXISTS idx_paper_positions_city_date ON paper_positions(city, event_date)",
+        "CREATE INDEX IF NOT EXISTS idx_paper_positions_status ON paper_positions(status)",
     ]:
         con.execute(stmt)
 
