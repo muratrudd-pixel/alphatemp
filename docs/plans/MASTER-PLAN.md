@@ -210,24 +210,35 @@ The Kalshi market is weakest overnight through early morning (Brier ~0.63-0.87).
 
 ## Phase 3.7: Dynamic Uncertainty
 
-**Status:** NOT STARTED
+**Status:** DESIGNED (2026-02-27)
 **Depends on:** Phase 3.6 (more obs data = better confidence estimation)
+**Design doc:** [2026-02-27-dynamic-uncertainty-design.md](2026-02-27-dynamic-uncertainty-design.md)
 
 ### The Problem
-The model outputs a Gaussian with roughly fixed std regardless of evidence. At midnight, a 2-3F spread is reasonable. By late afternoon with the high clearly observed, it should be near-certain but can't collapse. The market does this — Brier drops from 0.63 to 0.14 through the day.
+The model outputs a Gaussian with roughly fixed std (2.4-3.0°F) regardless of evidence. At midnight with no obs, std ≈ 2.5°F. At 5 PM with the high clearly locked in, std ≈ 2.3°F. The market's Brier drops from 0.63 to 0.14 through the day because traders collapse uncertainty. The model can't.
 
-### Why It Matters
-Edge calculation and position sizing (Kelly criterion) require calibrated probabilities. Under/over-confidence both cost money.
+### Approach
+Parallel variance regression at the Phase 2B layer: `log(residual² + 1e-6) ~ variance_features`. Same walk-forward OLS, same expanding window. Each NWP model gets its own variance regression.
 
-### Critical: Re-evaluate killed features as variance predictors
-All prior go/no-go gates evaluated features as mean predictors under fixed std. Features that predict variance are invisible under that setup. When building dynamic uncertainty, re-test:
-- cumulative_divergence (killed at +0.6%) — may predict trajectory certainty
-- slope_divergence (killed at +0.6%) — slope near zero may signal "peak locked in"
-- Extended weather vars (killed in Phase 3.5) — may predict forecast certainty, not direction
-- neighbor_peak_signal (Phase 3.6) — direct confidence indicator
+Key safeguards:
+- Winsorization at [2nd, 98th] percentile before squaring (outlier explosion prevention)
+- Std floored at 0.3°F, capped at 5.0°F
+- Per-model regression (error profiles differ across HRRR/GFS/ECMWF)
 
-### Gate
-Calibration curve: when model says 80%, it should be right ~80% of the time.
+### Variance Feature Candidates (Full Ablation)
+**Tier 1:** update_hour, divergence_slope, neighbor_peak_signal, forecast_spread (model disagreement)
+**Tier 2:** run_to_run_convergence (spread of HRRR 00z/06z/12z/18z), hours_until_sunset (season×time interaction), cumulative_divergence, running_max_divergence
+**Tier 3 (re-evaluated killed features):** fcst_high, dewpoint_depression, cloud_cover, max_wind, mean_pressure
+
+### Gate (Dual)
+Must pass BOTH:
+1. Brier improvement >2% vs current best
+2. Improved calibration (lower Expected Calibration Error)
+
+Secondary metrics tracked: log-loss (catches overconfidence), Brier decomposition Reliability term, std trajectory by hour.
+
+### Future: Quantile Regression (Phase 3.8 Escape Hatch)
+If OLS variance regression passes but Gaussian tails assign probability to physically impossible temperatures (e.g., high < current obs late in the day), quantile regression is the documented next step. Predicts error percentiles directly, handles asymmetric risk without Gaussian assumption.
 
 ---
 
