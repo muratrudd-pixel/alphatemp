@@ -1,5 +1,60 @@
 {% extends "base.html" %}
 {% block title %}Review{% endblock %}
 {% block content %}
-<div class="text-center text-slate-500 py-20">Review tab — coming soon</div>
+
+<!-- Filter Bar -->
+<div class="flex items-center gap-2 mb-4">
+    <!-- Date Range Buttons -->
+    <button id="rr-7d" onclick="setReviewRange('7d')"
+            class="px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600">
+        7d
+    </button>
+    <button id="rr-30d" onclick="setReviewRange('30d')"
+            class="px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-100">
+        30d
+    </button>
+    <button id="rr-all" onclick="setReviewRange('all')"
+            class="px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600">
+        All
+    </button>
+
+    <!-- Separator -->
+    <div class="border-l border-slate-600 mx-2 self-stretch"></div>
+
+    <!-- Filter Buttons -->
+    <button id="filter-all" onclick="setFilter('all')"
+            class="px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-100">
+        All
+    </button>
+    <button id="filter-worst" onclick="setFilter('worst')"
+            class="px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600">
+        Worst Misses
+    </button>
+    <button id="filter-lost" onclick="setFilter('lost')"
+            class="px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600">
+        Lost Bets
+    </button>
+    <button id="filter-missed" onclick="setFilter('missed')"
+            class="px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600">
+        Missed Edge
+    </button>
+</div>
+
+<!-- Incident List -->
+<div id="incident-list" class="space-y-3 mb-6">
+    <!-- Filled by JS -->
+</div>
+
+<!-- Pattern Summary -->
+<div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <h2 class="text-sm font-bold text-slate-100 mb-2">Pattern Summary</h2>
+    <div id="pattern-summary">
+        <!-- Filled by JS -->
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/review.js"></script>
 {% endblock %}
