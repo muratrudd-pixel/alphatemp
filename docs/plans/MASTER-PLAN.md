@@ -189,22 +189,31 @@ PASSED. Ensemble beats best single model. Adaptive weights beat equal weights.
 
 ## Phase 3.6: Neighbor Station Observations
 
-**Status:** DESIGNED (2026-02-26)
+**Status:** KILLED (2026-02-27)
 **Depends on:** Phase 3.5 complete
 **Design doc:** [2026-02-26-neighbor-obs-design.md](2026-02-26-neighbor-obs-design.md)
 
 ### The Question
 Can 1-minute ASOS data from KLGA (LaGuardia) and KEWR (Newark) — already in the DB with 583K obs each — improve the Phase 2B divergence features and push the obs crossover earlier than 14 ET?
 
-### Why It Matters
-The Kalshi market is weakest overnight through early morning (Brier ~0.63-0.87). Current obs features are harmful before 14 ET because KNYC's hourly reports are too sparse. KLGA/KEWR report every minute. If neighbor data makes obs features useful at midnight or 6 AM, that opens the hours with the highest edge potential.
+### Results
+6 ablation variants tested (3 station-mapping × 2 integration). All blended curve variants (x2) killed immediately — actively worse than baseline. Feature variants (x1) showed:
+- Best: A1 (raw + features) at +1.80% at 18 ET, but only +0.2% to +1.2% during the tradeable window (13-16 ET)
+- Crossover at 13 ET (1 hour earlier than KNYC-only), but improvement too small to clear gate
+- Before 13 ET (the high-edge overnight/morning hours), neighbor features slightly hurt (-0.1% to -0.4%)
 
-### Approach
-6 ablation variants (3 station-mapping strategies x 2 integration methods) + a neighbor_peak_signal feature that detects when airports start cooling (leading indicator for Central Park's peak). Evaluated across all 3 models at every hour 0-18 ET.
+### Why Killed
+The +1.80% headline number at 18 ET is a vanity metric — by 6 PM the daily high has long passed and the market has already collapsed uncertainty. During the hours that matter for trading (13-16 ET), improvement is +0.2% to +1.2%, well below the 2% gate. The real problem is fixed std, not obs data source.
+
+### Revisit Later
+The neighbor station data (KLGA/KEWR, 583K obs each, 1-minute resolution) and all code (services/neighbor_obs.py, 17 tests) remain in the codebase. The data may prove useful as:
+- Variance predictors in Phase 3.7 (neighbor_peak_signal is a Tier 1 candidate)
+- Input to a future feature we haven't conceived yet
+- The infrastructure is built, tested, and ready to reuse
 
 ### Gate
-- PASS: >2% Brier improvement across any sustained block of hours
-- KILL: No improvement anywhere in 0-18 ET
+- PASS: >2% Brier improvement across any sustained block of tradeable hours
+- **Result: KILL** — no variant cleared 2% during 13-16 ET tradeable window
 
 ---
 
