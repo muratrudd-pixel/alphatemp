@@ -134,6 +134,7 @@ def backfill_hrrr_hour(
                     model="hrrr",
                     product="sfc",
                     fxx=fxx,
+                    priority=["aws"],
                 )
                 grib_path = H.download("TMP:2 m")
                 grbs = pygrib.open(str(grib_path))

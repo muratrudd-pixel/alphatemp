@@ -1,11 +1,11 @@
-"""Backfill ECMWF IFS forecasts via Herbie (AWS open data archive).
+"""Backfill GFS 12z/06z/18z from UCAR RDA ds084.1 via Herbie.
 
 Downloads GRIB files, extracts 2m temp at Central Park grid point,
 writes to a temp DuckDB. Merge to main DB separately.
 
 Usage:
-    python scripts/backfill_ecmwf.py --run-hour 12
-    python scripts/backfill_ecmwf.py --run-hour 0 --start 2023-06-01
+    python scripts/backfill_gfs_ucar.py --run-hour 12
+    python scripts/backfill_gfs_ucar.py --run-hour 12 --start 2023-01-01
 """
 
 import argparse
@@ -25,37 +25,21 @@ from core.db import init_db
 STATION_ID = "KNYC"
 LAT, LON = STATION_COORDS[STATION_ID]
 
-# ECMWF open data on AWS starts Jan 2023
-DATA_START = date(2023, 1, 1)
+# GFS forecast hours to extract (short-range, relevant for day+1 high)
+# 0.25deg GFS at 12z: fxx 0-48 covers 12z today through 12z day+2
+GFS_FXX_RANGE = range(0, 49)
 
-# Full runs (00z, 12z): 0-72h forecast horizon
-# Short-cutoff runs (06z, 18z): 0-30h forecast horizon
-FULL_RUN_HOURS = {0, 12}
-SHORT_RUN_HOURS = {6, 18}
-VALID_RUN_HOURS = FULL_RUN_HOURS | SHORT_RUN_HOURS
-
-
-def get_fxx_range(run_hour):
-    # type: (int) -> range
-    """Return the forecast hour range for a given ECMWF run hour."""
-    if run_hour in FULL_RUN_HOURS:
-        return range(0, 73)
-    elif run_hour in SHORT_RUN_HOURS:
-        return range(0, 31)
-    else:
-        raise ValueError(
-            "ECMWF run_hour must be 0, 6, 12, or 18 — got {}".format(run_hour)
-        )
+DATA_START = date(2015, 1, 15)  # UCAR archive starts Jan 2015
 
 
 def get_resume_date(db_path, run_hour):
     # type: (str, int) -> Optional[date]
-    """Find the latest ECMWF date for this run_hour in the DB."""
+    """Find the latest GFS date for this run_hour in the temp DB."""
     try:
         con = duckdb.connect(db_path, read_only=True)
         result = con.execute(
             "SELECT MAX(model_run) FROM forecasts "
-            "WHERE model_name = 'ecmwf' AND EXTRACT(HOUR FROM model_run) = ?",
+            "WHERE model_name = 'gfs' AND EXTRACT(HOUR FROM model_run) = ?",
             [run_hour],
         ).fetchone()
         con.close()
@@ -71,7 +55,7 @@ def get_resume_date(db_path, run_hour):
 
 def extract_nearest(msg, lat, lon):
     # type: (object, float, float) -> float
-    """Extract value at nearest grid point using cosine-weighted distance."""
+    """Extract value at nearest grid point (same as HRRRFetcher)."""
     lat_grid, lon_grid = msg.latlons()
     cos_lat = np.cos(np.radians(lat))
     dist = np.abs(lat_grid - lat) + np.abs(lon_grid - lon) * cos_lat
@@ -79,7 +63,7 @@ def extract_nearest(msg, lat, lon):
     return float(msg.values[idx])
 
 
-def backfill_ecmwf(
+def backfill_gfs(
     run_hour=12,
     start_date=None,
     end_date=None,
@@ -87,7 +71,7 @@ def backfill_ecmwf(
     delay_seconds=1.0,
 ):
     # type: (int, Optional[date], Optional[date], Optional[str], float) -> int
-    """Backfill ECMWF forecasts for one run hour from AWS.
+    """Backfill GFS forecasts for one run hour from UCAR.
 
     Args:
         run_hour: UTC hour (0, 6, 12, 18)
@@ -99,11 +83,11 @@ def backfill_ecmwf(
     Returns:
         Total rows inserted.
     """
-    if run_hour not in VALID_RUN_HOURS:
-        raise ValueError("ECMWF run_hour must be 0, 6, 12, or 18")
+    if run_hour not in (0, 6, 12, 18):
+        raise ValueError("GFS run_hour must be 0, 6, 12, or 18")
 
     if db_path is None:
-        db_path = "data/backfill_ecmwf_{:02d}z.duckdb".format(run_hour)
+        db_path = "data/backfill_gfs_{:02d}z.duckdb".format(run_hour)
 
     if start_date is None:
         start_date = DATA_START
@@ -122,16 +106,14 @@ def backfill_ecmwf(
         logger.info("Nothing to backfill")
         return 0
 
-    fxx_range = get_fxx_range(run_hour)
-
     con = duckdb.connect(db_path)
     total_inserted = 0
     total_days = (end_date - start_date).days + 1
     current = start_date
 
     logger.info(
-        "Backfilling ECMWF {:02d}z from {} to {} ({} days, fxx 0-{}) -> {}",
-        run_hour, start_date, end_date, total_days, fxx_range[-1], db_path,
+        "Backfilling GFS {:02d}z from {} to {} ({} days) -> {}",
+        run_hour, start_date, end_date, total_days, db_path,
     )
 
     day_num = 0
@@ -143,12 +125,12 @@ def backfill_ecmwf(
         model_run = datetime(current.year, current.month, current.day, run_hour)
         day_inserted = 0
 
-        for fxx in fxx_range:
+        for fxx in GFS_FXX_RANGE:
             try:
                 H = Herbie(
                     model_run.strftime("%Y-%m-%d %H:%M"),
-                    model="ecmwf",
-                    product="oper",
+                    model="gfs",
+                    product="pgrb2.0p25",
                     fxx=fxx,
                     priority=["aws"],
                 )
@@ -157,7 +139,7 @@ def backfill_ecmwf(
                 msg = grbs.select(name="2 metre temperature")[0]
             except Exception as e:
                 logger.debug(
-                    "ECMWF {:02d}z {} fxx={}: not available — {}",
+                    "GFS {:02d}z {} fxx={}: not available — {}",
                     run_hour, current, fxx, e,
                 )
                 continue
@@ -173,7 +155,7 @@ def backfill_ecmwf(
                     "INSERT INTO forecasts "
                     "(station_id, model_run, valid_at, temp_f, temp_c, "
                     "ingested_at, model_name, fxx, is_spinup) "
-                    "VALUES (?, ?, ?, ?, ?, ?, 'ecmwf', ?, FALSE)",
+                    "VALUES (?, ?, ?, ?, ?, ?, 'gfs', ?, FALSE)",
                     [STATION_ID, model_run, valid_at, temp_f, temp_c,
                      now_utc, fxx],
                 )
@@ -181,32 +163,32 @@ def backfill_ecmwf(
             except duckdb.ConstraintException:
                 pass  # Duplicate
             except Exception as e:
-                logger.warning("ECMWF extract failed fxx={}: {}", fxx, e)
+                logger.warning("GFS extract failed fxx={}: {}", fxx, e)
 
             time.sleep(delay_seconds)
 
         total_inserted += day_inserted
         if day_inserted > 0:
             logger.info(
-                "Day {}/{} ({:>3}%) — ECMWF {:02d}z {}: +{} rows (total: {})",
+                "Day {}/{} ({:>3}%) — GFS {:02d}z {}: +{} rows (total: {})",
                 day_num, total_days, pct, run_hour, current,
                 day_inserted, total_inserted,
             )
         else:
             logger.debug(
-                "Day {}/{} ({:>3}%) — ECMWF {:02d}z {}: archive gap",
+                "Day {}/{} ({:>3}%) — GFS {:02d}z {}: archive gap",
                 day_num, total_days, pct, run_hour, current,
             )
 
         current += timedelta(days=1)
 
     con.close()
-    logger.info("ECMWF {:02d}z backfill complete: {} rows", run_hour, total_inserted)
+    logger.info("GFS {:02d}z backfill complete: {} rows", run_hour, total_inserted)
     return total_inserted
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backfill ECMWF from AWS open data")
+    parser = argparse.ArgumentParser(description="Backfill GFS from UCAR RDA")
     parser.add_argument("--run-hour", type=int, default=12, choices=[0, 6, 12, 18])
     parser.add_argument("--start", type=lambda s: date.fromisoformat(s), default=None)
     parser.add_argument("--end", type=lambda s: date.fromisoformat(s), default=None)
@@ -214,7 +196,7 @@ def main():
     parser.add_argument("--delay", type=float, default=1.0)
     args = parser.parse_args()
 
-    backfill_ecmwf(
+    backfill_gfs(
         run_hour=args.run_hour,
         start_date=args.start,
         end_date=args.end,
