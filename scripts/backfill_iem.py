@@ -22,6 +22,7 @@ STATION_MAP = {
     "NYC": "KNYC",
     "LGA": "KLGA",
     "EWR": "KEWR",
+    "JFK": "KJFK",
 }
 
 CHUNK_DAYS = 30

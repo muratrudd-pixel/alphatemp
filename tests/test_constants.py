@@ -68,7 +68,7 @@ def test_all_stations_list():
     """All NYC stations should be extractable from CITIES config."""
     all_stations = get_all_station_ids()
     assert isinstance(all_stations, list)
-    assert len(all_stations) == 3  # KNYC + KLGA + KEWR
+    assert len(all_stations) == 4  # KNYC + KLGA + KEWR + KJFK
 
 
 def test_poll_interval():
@@ -85,9 +85,11 @@ def test_station_coords_exist_for_all_settlements():
         assert -180 <= lon <= 180, f"Invalid lon for {stid}"
 
 
-def test_station_coords_only_settlements():
-    """Coords should only be for settlement stations, not neighbors."""
-    assert len(STATION_COORDS) == 1
+def test_station_coords_settlement_and_kjfk():
+    """Coords should exist for settlement station and KJFK."""
+    assert len(STATION_COORDS) == 2
+    assert "KNYC" in STATION_COORDS
+    assert "KJFK" in STATION_COORDS
 
 
 def test_forecast_poll_interval():
