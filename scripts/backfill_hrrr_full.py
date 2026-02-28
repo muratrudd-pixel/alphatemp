@@ -10,8 +10,11 @@ Usage:
 """
 
 import argparse
+import gc
+import os
 import time
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import duckdb
@@ -128,6 +131,8 @@ def backfill_hrrr_hour(
         consecutive_misses = 0
 
         for fxx in fxx_range:
+            grbs = None
+            grib_path = None
             try:
                 H = Herbie(
                     model_run.strftime("%Y-%m-%d %H:%M"),
@@ -142,6 +147,13 @@ def backfill_hrrr_hour(
                 consecutive_misses = 0
             except Exception:
                 consecutive_misses += 1
+                if grbs is not None:
+                    grbs.close()
+                if grib_path is not None:
+                    try:
+                        os.remove(str(grib_path))
+                    except OSError:
+                        pass
                 if consecutive_misses >= 3:
                     break  # Archive gap — stop trying this day
                 continue
@@ -167,6 +179,14 @@ def backfill_hrrr_hour(
                 pass
             except Exception as e:
                 logger.warning("HRRR extract failed {:02d}z fxx={}: {}", run_hour, fxx, e)
+            finally:
+                if grbs is not None:
+                    grbs.close()
+                if grib_path is not None:
+                    try:
+                        os.remove(str(grib_path))
+                    except OSError:
+                        pass
 
             time.sleep(delay_seconds)
 
@@ -177,6 +197,10 @@ def backfill_hrrr_hour(
                 day_num, total_days, pct, run_hour, current,
                 day_inserted, total_inserted,
             )
+
+        # Periodic GC to reclaim any leaked memory
+        if day_num % 10 == 0:
+            gc.collect()
 
         current += timedelta(days=1)
 

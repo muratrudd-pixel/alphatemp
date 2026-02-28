@@ -9,6 +9,8 @@ Usage:
 """
 
 import argparse
+import gc
+import os
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -126,6 +128,8 @@ def backfill_gfs(
         day_inserted = 0
 
         for fxx in GFS_FXX_RANGE:
+            grbs = None
+            grib_path = None
             try:
                 H = Herbie(
                     model_run.strftime("%Y-%m-%d %H:%M"),
@@ -142,6 +146,13 @@ def backfill_gfs(
                     "GFS {:02d}z {} fxx={}: not available — {}",
                     run_hour, current, fxx, e,
                 )
+                if grbs is not None:
+                    grbs.close()
+                if grib_path is not None:
+                    try:
+                        os.remove(str(grib_path))
+                    except OSError:
+                        pass
                 continue
 
             valid_at = model_run + timedelta(hours=fxx)
@@ -164,6 +175,14 @@ def backfill_gfs(
                 pass  # Duplicate
             except Exception as e:
                 logger.warning("GFS extract failed fxx={}: {}", fxx, e)
+            finally:
+                if grbs is not None:
+                    grbs.close()
+                if grib_path is not None:
+                    try:
+                        os.remove(str(grib_path))
+                    except OSError:
+                        pass
 
             time.sleep(delay_seconds)
 
@@ -179,6 +198,10 @@ def backfill_gfs(
                 "Day {}/{} ({:>3}%) — GFS {:02d}z {}: archive gap",
                 day_num, total_days, pct, run_hour, current,
             )
+
+        # Periodic GC to reclaim any leaked memory
+        if day_num % 10 == 0:
+            gc.collect()
 
         current += timedelta(days=1)
 

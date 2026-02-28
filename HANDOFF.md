@@ -1,76 +1,94 @@
-# Handoff - 2026-02-27 (Late Night Session)
+# Handoff - 2026-02-28 (Late Afternoon)
 
 ## Current State
-- **Working from:** main repo (not a worktree)
-- **Old worktree** `.worktrees/phase37-dynamic-uncertainty` still exists — can be cleaned up
-- **Full reassessment: COMPLETE** — all decisions finalized
-- **Design doc: WRITTEN** — `docs/plans/2026-02-27-rebuild-design.md`
-- **Implementation plan: WRITTEN** — `docs/plans/2026-02-27-phase1-data-foundation-implementation.md`
-- **Ready to execute Phase 1 code**
+- **Phase 1 code: COMPLETE** — all committed
+- **EC2 fleet: RUNNING** — 8 instances, all 24 HRRR hours + GFS sequential
+- **Gold feature views: DONE** — 4 views in `core/db.py`, tested
+- **Bronze metadata table: DONE** — `bronze_grib_meta`
+- **Phase 2 implementation plan: DONE** — `docs/plans/2026-02-28-phase2-bias-correction-implementation.md`
+- **Compaction hooks: INSTALLED** — PreCompact + SessionStart in `~/.claude/settings.json`
+- **Gemini research: ALL 3 COMPLETE** — EMOS (#1), HRRR bias (#2), market efficiency (#3) all logged
+- **Compaction hook paths: FIXED** — changed from relative to `$HOME/.claude/hooks/`
 
-## What Happened This Session
+## EC2 Fleet
+All 8 instances running `scripts/batched_backfill.sh` with memory-leak fix. Memory stable at ~1-2 GB / 7.6 GB.
 
-### Continued from earlier reassessment session (compacted)
-Russell had 4 more items to consider before writing the formal plan:
+| IP | Date Range | Status |
+|----|-----------|--------|
+| 44.204.17.140 | 2021-06-01 → 2021-12-31 | All 24 HRRR hours running |
+| 3.80.188.43 | 2022-01-01 → 2022-07-15 | All 24 HRRR hours running |
+| 3.83.140.131 | 2022-07-16 → 2023-01-31 | All 24 HRRR hours running |
+| 3.83.173.71 | 2023-02-01 → 2023-08-15 | All 24 HRRR hours running |
+| 3.84.4.112 | 2023-08-16 → 2024-02-29 | All 24 HRRR hours running |
+| 32.192.64.214 | 2024-03-01 → 2024-09-15 | All 24 HRRR hours running |
+| 13.218.60.69 | 2024-09-16 → 2025-04-30 | All 24 HRRR hours running |
+| 54.144.18.212 | 2025-05-01 → 2026-02-27 | All 24 HRRR hours running |
 
-1. **Full trading window** — evaluate from Kalshi market open (10 AM ET D-1) through settlement, not just midnight onward
-2. **Edge-agnostic discovery** — no time-of-day filtering until data proves where edge exists (old plan had "morning edge focus 06z-14z" — killed)
-3. **Deferred items reviewed** — checked PROGRESS.md, MASTER-PLAN.md, decisions.md for anything to revisit. Nothing new promoted beyond what's already in rebuild plan
-4. **Concurrent P&L tracking** — run strategy backtester at every phase, not just Phase 4. Gate structure:
-   - Phase 1: not tracked
-   - Phase 2: P&L diagnostic only
-   - Phase 3: P&L becomes co-equal gate
-   - Phase 4: P&L is primary gate
+**ETA:** Most instances done early Sunday morning. Instance 8 by Sunday sunrise. Full pipeline (download + merge + gate) by Sunday mid-morning.
 
-### Documents Created
-- `docs/plans/2026-02-27-rebuild-design.md` — comprehensive rebuild design doc (all decisions, 4-phase structure, medallion schema, gate criteria)
-- `docs/plans/2026-02-27-phase1-data-foundation-implementation.md` — Phase 1 implementation plan with 9 tasks, TDD steps, exact code
+**Check fleet:**
+```bash
+for ip in 44.204.17.140 3.80.188.43 3.83.140.131 3.83.173.71 3.84.4.112 32.192.64.214 13.218.60.69 54.144.18.212; do
+    result=$(ssh -i ~/.ssh/alphatemp-hrrr.pem -o ConnectTimeout=5 ec2-user@$ip \
+        "procs=\$(pgrep -c python3 2>/dev/null || echo 0); mem=\$(free -h | awk '/Mem:/{print \$3\"/\"\$2}'); echo \"procs=\$procs RAM=\$mem\"" 2>/dev/null)
+    echo "$ip: $result"
+done
+```
 
-### Skills & Agents Used
-- **weather-data skill** — NWP conventions for data sections
-- **trading-strategy-eval skill** — strategy evaluation framework
-- **time-series-etl skill** — data pipeline patterns (idempotent writes, resume support, gap detection)
-- **3 parallel agents** — reviewed Gemini brief (found 8 gaps), mapped codebase structure (11 tables, full file inventory), reviewed state-of-engine doc
+**AWS resources — TERMINATE WHEN DONE (~$0.72/hr total):**
+- Key: `~/.ssh/alphatemp-hrrr.pem`
+- Security group: `sg-0729bc1135388b966`
+- Instance IDs: i-0cb60b4e2b3297fa8, i-0e6a0e80fd68a0112, i-09e2a3d495e9f7e37, i-0a510a018c58df2cf, i-05349669e69290a75, i-0c59a6e8826d05e43, i-017516e1962d87bce, i-0ba9ac13ea6b5837b
 
-### Key Decisions (new this session)
-- All 4 items above incorporated into design doc
-- Agreed on subagent-driven execution approach for Phase 1 code tasks
-- Cleaned up stale brainstorming task tracker
+## Uncommitted Changes
+```
+M  HANDOFF.md
+M  core/db.py                    — gold views, bronze table, indexes
+M  scripts/backfill_gfs_ucar.py  — memory leak fix
+M  scripts/backfill_hrrr_full.py — memory leak fix
+M  scripts/phase1_gate_check.py  — relaxed ECMWF to 00z only
+?? scripts/batched_backfill.sh   — new: memory-safe batched launcher
+?? scripts/fleet_harvest.sh      — new: download/merge/gate/terminate
+?? docs/plans/2026-02-28-phase2-bias-correction-implementation.md
+```
 
-## Phase 1 Implementation Tasks (Ready to Execute)
+Should be committed before any new work.
 
-| Task | What | Status |
-|------|------|--------|
-| 1 | Schema migrations (fxx, is_spinup, market_ticks UNIQUE, obs_type, KJFK) | NOT STARTED |
-| 2 | UCAR GFS 12z backfill script ⚠️ TIME-SENSITIVE | NOT STARTED |
-| 3 | HRRR 24-run backfill script + EC2 deployment | NOT STARTED |
-| 4 | ECMWF backfill script | NOT STARTED |
-| 5 | KJFK observation ingestion | NOT STARTED |
-| 6 | DSM ingestion + source hierarchy | NOT STARTED |
-| 7 | Backfill merge script | NOT STARTED |
-| 8 | Migrate existing HRRR rows (fxx/is_spinup) | NOT STARTED |
-| 9 | Phase 1 gate validation script | NOT STARTED |
+## Key Decisions This Session
+1. **ECMWF 12z killed** — archive gaps, deprioritized
+2. **NYC Micronet killed** — Russell won't get the data
+3. **EMOS cannot skip Phase 3** — Gemini confirmed (see decisions.md 2026-02-28)
+4. **Probability leakage insight** — Gaussian distributions leak mass into impossible brackets below observed running max. QR with floor constraint fixes this. Critical Phase 3 design input.
+5. **Gold tables as SQL views** — auto-update as data lands, no materialization needed
+6. **Reinstate extended features for XGBoost** — Gemini #2 found dewpoint/wind/humidity/etc. likely failed under OLS due to linear constraints, not lack of signal. XGBoost can capture non-linear interactions. Added as sub-ablation in Phase 2 Task 4.
+7. **Compaction hooks installed** — PreCompact + SessionStart hooks in `~/.claude/settings.json` with scripts at `~/.claude/hooks/`
+8. **Prediction market efficiency timing (Gemini #3)** — Kalshi Brier ~0.63 overnight → 0.14 at 18z. Weather markets structurally favor algorithmic traders (scheduled NWP releases). Overnight stale prices = potential displacement. **CAVEAT:** Brier figures are from old baseline model — need to re-measure in Phase 2 Task 8. Russell wants to be thoughtful about ALL hours, not write off late afternoon.
+9. **Compaction hook paths fixed** — relative paths didn't resolve from project directory. Changed to `$HOME/.claude/hooks/`
 
-## Execution Plan
-1. **Subagent-driven now** for Tasks 1-8 (all code)
-2. **Russell runs backfills operationally** (GFS 12z first, HRRR on EC2, ECMWF in parallel)
-3. **Come back for Task 9** (gate check) when backfills complete
-4. **New session for Phase 2** implementation plan after gate passes
+## Next Steps (in order)
+1. **Commit uncommitted changes**
+2. **Check fleet Sunday morning** — run check command above
+3. **When fleet done:** `./scripts/fleet_harvest.sh` (download, merge, gate-check, terminate)
+4. **If Phase 1 gate passes:** Begin Phase 2 per `docs/plans/2026-02-28-phase2-bias-correction-implementation.md`
+5. **Gemini research queue complete** — all 3 queries answered, findings logged to decisions.md + patterns.md
+6. **Re-measure Kalshi Brier by hour** — during Phase 2 Task 8 backtester diagnostic, compute market Brier score by ET hour against new model. Gemini's 0.63→0.14 gradient needs validation with current data.
 
-## Next Step
-Start executing Task 1 (schema migrations) immediately.
+## Gemini Research Queue (ALL COMPLETE)
+1. ~~EMOS vs Phase 3 shortcut~~ — DONE, cannot skip Phase 3
+2. ~~HRRR 2m temp bias at urban stations~~ — DONE, key finding: extended features worth retesting under XGBoost
+3. ~~Prediction market efficiency timing~~ — DONE, key finding: efficiency gradient 0.63→0.14 but numbers need re-measurement. Don't write off any hours pre-empirically.
 
-## Key Files
-- Design doc: `docs/plans/2026-02-27-rebuild-design.md`
-- Implementation plan: `docs/plans/2026-02-27-phase1-data-foundation-implementation.md`
-- Current schema: `core/db.py`
-- Station config: `core/constants.py`
-- HRRR fetcher pattern: `services/forecast.py`
-- Backfill pattern: `scripts/backfill_openmeteo.py`
-- NWS/DSM pattern: `services/nws_fetcher.py`
-- Observation pattern: `services/ingestor.py`
-
-## Blockers
-- **UCAR GFS archive shutting down early 2026** — Task 2 is time-sensitive
-- **NYC Micronet access** — email mesonet@albany.edu (no code dependency)
-- **EC2 instance** — Russell needs to provision for HRRR backfill
+## Files Changed Since Last Commit
+- `core/db.py` — gold views, bronze table, indexes, fixed GROUP BY in sin/cos
+- `scripts/backfill_hrrr_full.py` — memory leak fix (grbs.close, os.remove, gc.collect)
+- `scripts/backfill_gfs_ucar.py` — same memory leak fix
+- `scripts/phase1_gate_check.py` — relaxed ECMWF to 00z only
+- `scripts/batched_backfill.sh` — NEW: memory-safe batched launcher
+- `scripts/fleet_harvest.sh` — NEW: download/merge/gate/terminate pipeline
+- `docs/plans/2026-02-28-phase2-bias-correction-implementation.md` — NEW: 9-task Phase 2 plan
+- `HANDOFF.md` — this file
+- `~/.claude/settings.json` — merged compaction hooks + deny list
+- `~/.claude/hooks/pre-compact.sh` — NEW
+- `~/.claude/hooks/post-compact-inject.sh` — NEW
+- `~/.claude/projects/-Users-russellrudd/memory/decisions.md` — 2 new entries
+- `~/.claude/projects/-Users-russellrudd/memory/patterns.md` — Phase 2/3 + EC2 learnings added

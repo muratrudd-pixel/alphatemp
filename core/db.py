@@ -227,6 +227,124 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         )
     """)
 
+    # ---- Bronze layer: raw metadata for provenance ----
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS bronze_grib_meta (
+            model_name   VARCHAR NOT NULL,
+            model_run    TIMESTAMP NOT NULL,
+            fxx          INTEGER NOT NULL,
+            source       VARCHAR NOT NULL,
+            grib_path    VARCHAR,
+            ingested_at  TIMESTAMP NOT NULL,
+            rows_extracted INTEGER DEFAULT 0,
+            UNIQUE (model_name, model_run, fxx)
+        )
+    """)
+
+    # ---- Gold layer: pre-computed feature tables for Phase 2+ ----
+
+    # Gold: HRRR bias features — one row per (date, run_hour)
+    # fcst_high = max temp_f across all fxx for that model_run
+    con.execute("""
+        CREATE VIEW IF NOT EXISTS gold_hrrr_bias_features AS
+        SELECT
+            model_run::DATE AS forecast_date,
+            EXTRACT(HOUR FROM model_run)::INTEGER AS run_hour,
+            MAX(temp_f) AS fcst_high,
+            SIN(2 * PI() * EXTRACT(MONTH FROM model_run::DATE) / 12.0) AS sin_month,
+            COS(2 * PI() * EXTRACT(MONTH FROM model_run::DATE) / 12.0) AS cos_month,
+            MAX(temp_f) - MIN(temp_f) AS delta_temp,
+            COUNT(*) AS n_fxx,
+            MIN(fxx) AS min_fxx,
+            MAX(fxx) AS max_fxx,
+            BOOL_OR(is_spinup) AS has_spinup
+        FROM forecasts
+        WHERE model_name = 'hrrr'
+          AND station_id = 'KNYC'
+          AND fxx IS NOT NULL
+        GROUP BY model_run::DATE, EXTRACT(HOUR FROM model_run)
+    """)
+
+    # Gold: multi-model features — aligned forecasts + ensemble spread per (date, run_hour)
+    con.execute("""
+        CREATE VIEW IF NOT EXISTS gold_multi_model_features AS
+        WITH model_highs AS (
+            SELECT
+                model_run::DATE AS forecast_date,
+                EXTRACT(HOUR FROM model_run)::INTEGER AS run_hour,
+                model_name,
+                MAX(temp_f) AS fcst_high
+            FROM forecasts
+            WHERE station_id = 'KNYC'
+              AND fxx IS NOT NULL
+            GROUP BY model_run::DATE, EXTRACT(HOUR FROM model_run), model_name
+        )
+        SELECT
+            forecast_date,
+            run_hour,
+            MAX(CASE WHEN model_name = 'hrrr' THEN fcst_high END) AS hrrr_high,
+            MAX(CASE WHEN model_name = 'gfs' THEN fcst_high END) AS gfs_high,
+            MAX(CASE WHEN model_name = 'ecmwf' THEN fcst_high END) AS ecmwf_high,
+            AVG(fcst_high) AS ensemble_mean,
+            STDDEV_POP(fcst_high) AS ensemble_spread,
+            COUNT(DISTINCT model_name) AS n_models
+        FROM model_highs
+        GROUP BY forecast_date, run_hour
+    """)
+
+    # Gold: observation divergence — per (date, hour_et)
+    # Computes running_max obs temp vs latest forecast for divergence signals
+    con.execute("""
+        CREATE VIEW IF NOT EXISTS gold_obs_divergence AS
+        WITH obs_hourly AS (
+            SELECT
+                observed_at::DATE AS obs_date,
+                EXTRACT(HOUR FROM observed_at)::INTEGER AS obs_hour_utc,
+                MAX(temp_f) AS obs_max_f
+            FROM observations
+            WHERE station_id = 'KNYC'
+              AND temp_f IS NOT NULL
+            GROUP BY observed_at::DATE, EXTRACT(HOUR FROM observed_at)
+        ),
+        obs_running AS (
+            SELECT
+                obs_date,
+                obs_hour_utc,
+                obs_max_f,
+                MAX(obs_max_f) OVER (
+                    PARTITION BY obs_date
+                    ORDER BY obs_hour_utc
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS running_max_f
+            FROM obs_hourly
+        )
+        SELECT
+            obs_date,
+            obs_hour_utc,
+            obs_max_f,
+            running_max_f
+        FROM obs_running
+    """)
+
+    # Gold: market features — per (date, hour_et) from candlesticks
+    con.execute("""
+        CREATE VIEW IF NOT EXISTS gold_market_features AS
+        SELECT
+            ks.event_date,
+            ks.floor_strike,
+            ks.cap_strike,
+            kc.end_period_ts,
+            kc.yes_bid_close AS yes_bid,
+            kc.yes_ask_close AS yes_ask,
+            (kc.yes_ask_close - kc.yes_bid_close) AS spread,
+            kc.volume,
+            kc.price_close AS last_price
+        FROM kalshi_candlesticks kc
+        JOIN kalshi_settlements ks ON kc.market_ticker = ks.market_ticker
+        WHERE ks.city = 'NYC'
+          AND ks.measure = 'high'
+    """)
+
     # Indexes — accelerate the most common query patterns
     for stmt in [
         "CREATE INDEX IF NOT EXISTS idx_obs_station_time ON observations (station_id, observed_at)",
@@ -246,6 +364,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_positions_id ON paper_positions(id)",
         "CREATE INDEX IF NOT EXISTS idx_paper_positions_city_date ON paper_positions(city, event_date)",
         "CREATE INDEX IF NOT EXISTS idx_paper_positions_status ON paper_positions(status)",
+        "CREATE INDEX IF NOT EXISTS idx_bronze_grib ON bronze_grib_meta (model_name, model_run)",
+        "CREATE INDEX IF NOT EXISTS idx_fcst_model_station_run ON forecasts (model_name, station_id, model_run)",
     ]:
         con.execute(stmt)
 
