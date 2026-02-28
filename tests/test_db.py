@@ -307,6 +307,66 @@ def test_indexes_created():
     assert expected.issubset(index_names), f"Missing indexes: {expected - index_names}"
 
 
+def test_forecasts_has_fxx_column():
+    """forecasts table should have fxx INTEGER column."""
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB, read_only=True)
+    cols = con.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'forecasts' AND column_name = 'fxx'"
+    ).fetchall()
+    con.close()
+    assert len(cols) == 1
+
+
+def test_forecasts_has_is_spinup_column():
+    """forecasts table should have is_spinup BOOLEAN column."""
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB, read_only=True)
+    cols = con.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'forecasts' AND column_name = 'is_spinup'"
+    ).fetchall()
+    con.close()
+    assert len(cols) == 1
+
+
+def test_observations_has_obs_type_column():
+    """observations table should have obs_type VARCHAR column."""
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB, read_only=True)
+    cols = con.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'observations' AND column_name = 'obs_type'"
+    ).fetchall()
+    con.close()
+    assert len(cols) == 1
+
+
+def test_market_ticks_unique_constraint():
+    """market_ticks should reject duplicate (market_id, captured_at) pairs."""
+    from datetime import datetime
+    init_db(TEST_DB)
+    con = duckdb.connect(TEST_DB)
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    row = ["MKT1", "NYC", now, 0.5, 0.6, 0.4, 0.5, 0.55, 100, 70.0, 72.0]
+    con.execute(
+        "INSERT INTO market_ticks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row
+    )
+    with pytest.raises(duckdb.ConstraintException):
+        con.execute(
+            "INSERT INTO market_ticks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row
+        )
+    con.close()
+
+
+def test_kjfk_in_station_coords():
+    """KJFK should be in STATION_COORDS after constants update."""
+    from core.constants import STATION_COORDS, CITIES
+    assert "KJFK" in STATION_COORDS
+    assert "KJFK" in CITIES["NYC"]["neighbors"]
+
+
 def test_migrate_forecasts_model_name_from_old_schema():
     """Exercise the actual migration path: old schema -> new schema with model_name."""
     con = duckdb.connect(TEST_DB)

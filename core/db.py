@@ -78,6 +78,22 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     # One-time backfill: tag existing rows with ingest_source based on heuristics
     _backfill_ingest_source(con)
 
+    # Migration: add fxx and is_spinup to forecasts
+    for col, dtype in [("fxx", "INTEGER"), ("is_spinup", "BOOLEAN DEFAULT FALSE")]:
+        try:
+            con.execute(f"ALTER TABLE forecasts ADD COLUMN {col} {dtype}")
+        except Exception:
+            pass  # Column already exists
+
+    # Migration: add obs_type to observations (metar, dsm, micronet)
+    try:
+        con.execute("ALTER TABLE observations ADD COLUMN obs_type VARCHAR DEFAULT 'metar'")
+    except Exception:
+        pass
+
+    # Migration: add UNIQUE constraint to market_ticks
+    _migrate_market_ticks_unique(con)
+
     # Migration: add model_name column to forecasts (table-rebuild for UNIQUE change)
     _migrate_forecasts_model_name(con)
 
@@ -288,6 +304,68 @@ def _backfill_ingest_source(con: duckdb.DuckDBPyConnection) -> None:
     count = con.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
     if count:
         logger.info(f"Backfilled ingest_source for {count} existing observations")
+
+
+def _migrate_market_ticks_unique(con: duckdb.DuckDBPyConnection) -> None:
+    """Add UNIQUE constraint to market_ticks on (market_id, captured_at).
+
+    DuckDB can't add constraints to existing tables, so we rebuild.
+    Only runs if the constraint is missing.
+    """
+    try:
+        has_unique = con.execute("""
+            SELECT COUNT(*) FROM duckdb_constraints()
+            WHERE table_name = 'market_ticks' AND constraint_type = 'UNIQUE'
+        """).fetchone()[0]
+        if has_unique > 0:
+            return  # Already migrated
+
+        logger.info("Migrating market_ticks: adding UNIQUE constraint")
+        con.execute("DROP TABLE IF EXISTS market_ticks_new")
+
+        con.execute("""
+            CREATE TABLE market_ticks_new (
+                market_id    VARCHAR NOT NULL,
+                city         VARCHAR NOT NULL,
+                captured_at  TIMESTAMP NOT NULL,
+                yes_bid      DOUBLE,
+                yes_ask      DOUBLE,
+                no_bid       DOUBLE,
+                no_ask       DOUBLE,
+                last_trade   DOUBLE,
+                volume       INTEGER,
+                floor_strike DOUBLE,
+                cap_strike   DOUBLE,
+                UNIQUE (market_id, captured_at)
+            )
+        """)
+        con.execute("""
+            INSERT INTO market_ticks_new
+            SELECT DISTINCT ON (market_id, captured_at)
+                market_id, city, captured_at, yes_bid, yes_ask,
+                no_bid, no_ask, last_trade, volume, floor_strike, cap_strike
+            FROM market_ticks
+            ORDER BY market_id, captured_at
+        """)
+
+        old_count = con.execute("SELECT COUNT(*) FROM market_ticks").fetchone()[0]
+        new_count = con.execute("SELECT COUNT(*) FROM market_ticks_new").fetchone()[0]
+        dupes = old_count - new_count
+
+        con.execute("DROP TABLE market_ticks")
+        con.execute("ALTER TABLE market_ticks_new RENAME TO market_ticks")
+
+        # Recreate indexes
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_market_city_time "
+            "ON market_ticks (city, captured_at)"
+        )
+
+        logger.info(f"market_ticks migrated — UNIQUE added, {dupes} duplicates removed")
+    except Exception:
+        logger.warning(
+            "Failed to migrate market_ticks for UNIQUE constraint", exc_info=True
+        )
 
 
 def _migrate_forecasts_model_name(con: duckdb.DuckDBPyConnection) -> None:

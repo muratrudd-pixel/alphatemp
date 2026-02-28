@@ -1,47 +1,76 @@
-# Handoff - 2026-02-27
+# Handoff - 2026-02-27 (Late Night Session)
 
 ## Current State
-- **Phase 3.6 implementation COMPLETE** — all code written, tested, committed
-- **HRRR ablation analysis RUNNING** — script kicked off, output at `/private/tmp/claude-501/-Users-russellrudd/tasks/bu87dit2p.output`
-- Branch: `feature/phase36-neighbor-obs` (9 commits ahead of main)
+- **Working from:** main repo (not a worktree)
+- **Old worktree** `.worktrees/phase37-dynamic-uncertainty` still exists — can be cleaned up
+- **Full reassessment: COMPLETE** — all decisions finalized
+- **Design doc: WRITTEN** — `docs/plans/2026-02-27-rebuild-design.md`
+- **Implementation plan: WRITTEN** — `docs/plans/2026-02-27-phase1-data-foundation-implementation.md`
+- **Ready to execute Phase 1 code**
 
-## What's Done
-1. `services/neighbor_obs.py` — 5 functions: offset learning, neighbor divergence, peak signal, blended curve, trend extraction
-2. `tests/test_neighbor_obs.py` — 17 tests, all passing
-3. Backtester L1 cache extended with KLGA/KEWR neighbor obs
-4. 6 model factories: A1/B1/C1 (new features) + A2/B2/C2 (blended curve)
-5. `tests/test_phase2b_models.py` — 26 tests, all passing
-6. `scripts/phase36_neighbor_analysis.py` — ablation script running all 7 variants across 0-18 ET
+## What Happened This Session
 
-## Analysis Script Status
-- Running: `cd ~/Projects/alphatemp/alphatemp && ../venv/bin/python scripts/phase36_neighbor_analysis.py`
-- Output file: `/private/tmp/claude-501/-Users-russellrudd/tasks/bu87dit2p.output`
-- Can also re-run manually if output is lost
-- B variants are slow (~10 min each) due to walk-forward offset computation
-- Expected total runtime: ~40-60 minutes
+### Continued from earlier reassessment session (compacted)
+Russell had 4 more items to consider before writing the formal plan:
 
-## What to Do Next
-1. **Read the analysis output** — check the gate verdicts (PASS/DISCUSS/KILL per variant)
-2. **Task 10:** For variants that PASS, create GFS/ECMWF versions and run through ensemble
-3. **Task 11:** Update PROGRESS.md and this HANDOFF.md with results
-4. **Phase 3.7 (future):** Dynamic uncertainty — documented in master plan, not started
+1. **Full trading window** — evaluate from Kalshi market open (10 AM ET D-1) through settlement, not just midnight onward
+2. **Edge-agnostic discovery** — no time-of-day filtering until data proves where edge exists (old plan had "morning edge focus 06z-14z" — killed)
+3. **Deferred items reviewed** — checked PROGRESS.md, MASTER-PLAN.md, decisions.md for anything to revisit. Nothing new promoted beyond what's already in rebuild plan
+4. **Concurrent P&L tracking** — run strategy backtester at every phase, not just Phase 4. Gate structure:
+   - Phase 1: not tracked
+   - Phase 2: P&L diagnostic only
+   - Phase 3: P&L becomes co-equal gate
+   - Phase 4: P&L is primary gate
 
-## Key Design Decisions Made This Session
-- 6 ablation variants: 3 station-mapping (raw/offset/trend) × 2 integration (features/blended)
-- Evaluate 0-18 ET full window, not just 14-18 ET
-- Gate: >2% Brier improvement at any sustained block of hours
-- Phase 3.7 (dynamic uncertainty) added to master plan for future work
-- Re-evaluate killed features (cumul, slope, extended weather vars) as variance predictors in Phase 3.7
+### Documents Created
+- `docs/plans/2026-02-27-rebuild-design.md` — comprehensive rebuild design doc (all decisions, 4-phase structure, medallion schema, gate criteria)
+- `docs/plans/2026-02-27-phase1-data-foundation-implementation.md` — Phase 1 implementation plan with 9 tasks, TDD steps, exact code
 
-## Commits on Feature Branch
-```
-0c5f799 feat(phase3.6): add HRRR neighbor obs ablation analysis script
-129b378 feat(phase3.6): add A2/B2/C2 blended curve model factories
-5b66c1f feat(phase3.6): add A1/B1/C1 neighbor model factories
-49db88f feat(phase3.6): extend level-1 cache with neighbor obs
-ce24af9 feat(phase3.6): add trend-only extraction for C variants
-f06b92b feat(phase3.6): add blended curve construction
-b4b0106 feat(phase3.6): add neighbor peak signal detection
-5b4c074 feat(phase3.6): add neighbor divergence feature computation
-aa80274 feat(phase3.6): add neighbor_obs module with walk-forward offset
-```
+### Skills & Agents Used
+- **weather-data skill** — NWP conventions for data sections
+- **trading-strategy-eval skill** — strategy evaluation framework
+- **time-series-etl skill** — data pipeline patterns (idempotent writes, resume support, gap detection)
+- **3 parallel agents** — reviewed Gemini brief (found 8 gaps), mapped codebase structure (11 tables, full file inventory), reviewed state-of-engine doc
+
+### Key Decisions (new this session)
+- All 4 items above incorporated into design doc
+- Agreed on subagent-driven execution approach for Phase 1 code tasks
+- Cleaned up stale brainstorming task tracker
+
+## Phase 1 Implementation Tasks (Ready to Execute)
+
+| Task | What | Status |
+|------|------|--------|
+| 1 | Schema migrations (fxx, is_spinup, market_ticks UNIQUE, obs_type, KJFK) | NOT STARTED |
+| 2 | UCAR GFS 12z backfill script ⚠️ TIME-SENSITIVE | NOT STARTED |
+| 3 | HRRR 24-run backfill script + EC2 deployment | NOT STARTED |
+| 4 | ECMWF backfill script | NOT STARTED |
+| 5 | KJFK observation ingestion | NOT STARTED |
+| 6 | DSM ingestion + source hierarchy | NOT STARTED |
+| 7 | Backfill merge script | NOT STARTED |
+| 8 | Migrate existing HRRR rows (fxx/is_spinup) | NOT STARTED |
+| 9 | Phase 1 gate validation script | NOT STARTED |
+
+## Execution Plan
+1. **Subagent-driven now** for Tasks 1-8 (all code)
+2. **Russell runs backfills operationally** (GFS 12z first, HRRR on EC2, ECMWF in parallel)
+3. **Come back for Task 9** (gate check) when backfills complete
+4. **New session for Phase 2** implementation plan after gate passes
+
+## Next Step
+Start executing Task 1 (schema migrations) immediately.
+
+## Key Files
+- Design doc: `docs/plans/2026-02-27-rebuild-design.md`
+- Implementation plan: `docs/plans/2026-02-27-phase1-data-foundation-implementation.md`
+- Current schema: `core/db.py`
+- Station config: `core/constants.py`
+- HRRR fetcher pattern: `services/forecast.py`
+- Backfill pattern: `scripts/backfill_openmeteo.py`
+- NWS/DSM pattern: `services/nws_fetcher.py`
+- Observation pattern: `services/ingestor.py`
+
+## Blockers
+- **UCAR GFS archive shutting down early 2026** — Task 2 is time-sensitive
+- **NYC Micronet access** — email mesonet@albany.edu (no code dependency)
+- **EC2 instance** — Russell needs to provision for HRRR backfill
