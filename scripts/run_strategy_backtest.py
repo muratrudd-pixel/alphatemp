@@ -16,7 +16,11 @@ from services.strategy_backtester import (
     BacktestConfig,
     StrategyBacktester,
 )
-from services.backtester import uniform_model, walk_forward_model
+from services.backtester import (
+    uniform_model, walk_forward_model,
+    wf_regression_full, wf_regression_full_no_spinup,
+    wf_regression_cross_hour,
+)
 
 
 def parse_args():
@@ -30,7 +34,8 @@ def parse_args():
     p.add_argument("--min-prob", type=float, default=0.05, help="Minimum model probability")
     p.add_argument("--max-spread", type=float, default=10.0, help="Maximum spread (cents)")
     p.add_argument("--bootstrap", type=int, default=10000, help="Bootstrap iterations")
-    p.add_argument("--model", type=str, default="uniform", help="Model: uniform, walkforward")
+    p.add_argument("--model", type=str, default="uniform",
+                    help="Model: uniform, walkforward, ols, ols_no_spinup, emos, xgboost, cross_hour")
     return p.parse_args()
 
 
@@ -96,7 +101,17 @@ def main():
     models = {
         "uniform": uniform_model,
         "walkforward": walk_forward_model,
+        "ols": wf_regression_full,
+        "ols_no_spinup": wf_regression_full_no_spinup,
+        "cross_hour": wf_regression_cross_hour,
     }
+    # Lazy imports for optional candidates
+    if args.model == "emos":
+        from services.phase2_emos import emos_model_fn
+        models["emos"] = emos_model_fn
+    elif args.model == "xgboost":
+        from services.phase2_xgboost import xgboost_model_fn
+        models["xgboost"] = xgboost_model_fn
     model_fn = models.get(args.model, uniform_model)
 
     logger.info("Running strategy backtest: {} -> {}, capital=${}, model={}",

@@ -32,7 +32,7 @@ from services.data_provider import (
 # ---------------------------------------------------------------------------
 ModelFn = Callable[[BacktestDataProvider, datetime], Optional[Dict[int, float]]]
 
-RUN_HOURS = [0, 6, 12, 18]
+RUN_HOURS = list(range(24))
 
 
 # ---------------------------------------------------------------------------
@@ -365,8 +365,8 @@ def walk_forward_t_model(provider, ref_time, model_name='hrrr'):
 # Walk-forward REGRESSION models (Phase 2)
 # ---------------------------------------------------------------------------
 
-def _walk_forward_regression_data(con, run_hour, station_id, current_date, model_name='hrrr', extended=False):
-    # type: (duckdb.DuckDBPyConnection, int, str, date, str, bool) -> Optional[list]
+def _walk_forward_regression_data(con, run_hour, station_id, current_date, model_name='hrrr', extended=False, exclude_spinup=False):
+    # type: (duckdb.DuckDBPyConnection, int, str, date, str, bool, bool) -> Optional[list]
     """Expanding-window training data from prior dates.
 
     Returns tuples of:
@@ -402,6 +402,8 @@ def _walk_forward_regression_data(con, run_hour, station_id, current_date, model
         ext_join = ""
         ext_outer = ""
 
+    spinup_filter = "\n                AND f.is_spinup = FALSE" if exclude_spinup else ""
+
     query = """
         WITH daily_errors AS (
             SELECT
@@ -414,7 +416,7 @@ def _walk_forward_regression_data(con, run_hour, station_id, current_date, model
             JOIN forecasts f ON f.station_id = n.station_id
                 AND f.model_run::DATE = n.obs_date
                 AND EXTRACT(HOUR FROM f.model_run) = ?
-                AND f.model_name = ?{ext_join}
+                AND f.model_name = ?{spinup_filter}{ext_join}
             WHERE n.station_id = ?
                 AND n.obs_date < ?
                 AND n.max_temp_f IS NOT NULL
@@ -428,7 +430,8 @@ def _walk_forward_regression_data(con, run_hour, station_id, current_date, model
             LAG(actual_high, 1) OVER (ORDER BY obs_date)
                 - LAG(actual_high, 2) OVER (ORDER BY obs_date) AS delta_temp{ext_outer}
         FROM daily_errors
-    """.format(ext_select=ext_select, ext_join=ext_join, ext_outer=ext_outer)
+    """.format(ext_select=ext_select, ext_join=ext_join, ext_outer=ext_outer,
+               spinup_filter=spinup_filter)
 
     rows = con.execute(query, [run_hour, model_name, station_id, current_date]).fetchall()
 
@@ -594,13 +597,15 @@ _EXTENDED_FEATURE_SETS = {
 }
 
 
-def _make_regression_model(name, feature_indices, model_name='hrrr', extended=False):
-    # type: (str, list, str, bool) -> ModelFn
+def _make_regression_model(name, feature_indices, model_name='hrrr', extended=False, exclude_spinup=False):
+    # type: (str, list, str, bool, bool) -> ModelFn
     """Factory: create a walk-forward regression ModelFn for a given feature subset.
 
     When extended=True, the model also fetches daily summary stats from
     forecast_extended (dewpoint, humidity, wind, pressure, etc.) and includes
     them as features at indices 4-11.
+    When exclude_spinup=True, spin-up forecast hours (fxx 1-3) are excluded
+    from the forecast high calculation.
     """
 
     def _raw(provider, ref_time):
@@ -619,6 +624,7 @@ def _make_regression_model(name, feature_indices, model_name='hrrr', extended=Fa
         training = _walk_forward_regression_data(
             con, run_hour, station_id, current_date,
             model_name=model_name, extended=extended,
+            exclude_spinup=exclude_spinup,
         )
         if training is None:
             return None
@@ -668,6 +674,12 @@ wf_regression_fcst = _make_regression_model("wf_regression_fcst", _FEATURE_SETS[
 wf_regression_month = _make_regression_model("wf_regression_month", _FEATURE_SETS["wf_regression_month"])
 wf_regression_delta = _make_regression_model("wf_regression_delta", _FEATURE_SETS["wf_regression_delta"])
 
+# Spin-up ablation variant (excludes fxx 1-3)
+wf_regression_full_no_spinup = _make_regression_model(
+    "wf_regression_full_no_spinup", _FEATURE_SETS["wf_regression_full"],
+    exclude_spinup=True,
+)
+
 # --- GFS regression models (Phase 3) ---
 wf_regression_full_gfs = _make_regression_model("wf_regression_full_gfs", _FEATURE_SETS["wf_regression_full"], model_name="gfs")
 wf_regression_fcst_gfs = _make_regression_model("wf_regression_fcst_gfs", _FEATURE_SETS["wf_regression_fcst"], model_name="gfs")
@@ -679,6 +691,145 @@ wf_regression_full_ecmwf = _make_regression_model("wf_regression_full_ecmwf", _F
 wf_regression_fcst_ecmwf = _make_regression_model("wf_regression_fcst_ecmwf", _FEATURE_SETS["wf_regression_fcst"], model_name="ecmwf")
 wf_regression_month_ecmwf = _make_regression_model("wf_regression_month_ecmwf", _FEATURE_SETS["wf_regression_month"], model_name="ecmwf")
 wf_regression_delta_ecmwf = _make_regression_model("wf_regression_delta_ecmwf", _FEATURE_SETS["wf_regression_delta"], model_name="ecmwf")
+
+
+# ---------------------------------------------------------------------------
+# Cross-hour training: pool all 24 run hours with run_hour as feature
+# ---------------------------------------------------------------------------
+
+
+def _walk_forward_regression_data_cross_hour(con, station_id, current_date, model_name='hrrr'):
+    # type: (duckdb.DuckDBPyConnection, str, date, str) -> Optional[list]
+    """Expanding-window training data pooled across ALL run hours.
+
+    Returns tuples of:
+      (error, fcst_high, month, delta_temp, run_hour)
+
+    delta_temp = actual(D-1) - actual(D-2), partitioned by run_hour
+    to avoid cross-hour artifacts.
+    Returns None if fewer than WALK_FORWARD_MIN_DAYS complete rows.
+    """
+    query = """
+        WITH daily_errors AS (
+            SELECT
+                n.obs_date,
+                EXTRACT(HOUR FROM f.model_run)::INTEGER AS run_hour,
+                MAX(f.temp_f) - n.max_temp_f AS error,
+                MAX(f.temp_f) AS fcst_high,
+                EXTRACT(MONTH FROM n.obs_date) AS month,
+                n.max_temp_f AS actual_high
+            FROM nws_daily n
+            JOIN forecasts f ON f.station_id = n.station_id
+                AND f.model_run::DATE = n.obs_date
+                AND f.model_name = ?
+            WHERE n.station_id = ?
+                AND n.obs_date < ?
+                AND n.max_temp_f IS NOT NULL
+            GROUP BY n.obs_date, EXTRACT(HOUR FROM f.model_run), n.max_temp_f
+            ORDER BY n.obs_date, run_hour
+        )
+        SELECT
+            error,
+            fcst_high,
+            month,
+            LAG(actual_high, 1) OVER (PARTITION BY run_hour ORDER BY obs_date)
+                - LAG(actual_high, 2) OVER (PARTITION BY run_hour ORDER BY obs_date)
+                AS delta_temp,
+            run_hour
+        FROM daily_errors
+    """
+
+    rows = con.execute(query, [model_name, station_id, current_date]).fetchall()
+
+    # Filter out rows where delta_temp is NULL (first 2 dates per run_hour)
+    complete = [row for row in rows if row[3] is not None]
+    if len(complete) < WALK_FORWARD_MIN_DAYS:
+        return None
+    return complete
+
+
+def _make_cross_hour_regression_model(name, model_name='hrrr'):
+    # type: (str, str) -> ModelFn
+    """Factory: cross-hour OLS model with run_hour as an additional feature.
+
+    Pools all 24 run hours into one training set. Features:
+      fcst_high, sin(month), cos(month), delta_temp, sin(run_hour), cos(run_hour)
+    """
+    # Feature indices for cross-hour: 0=fcst_high, 1=sin_month, 2=cos_month,
+    # 3=delta_temp, 4=sin_run_hour, 5=cos_run_hour
+    cross_hour_indices = [0, 1, 2, 3, 4, 5]
+
+    def _raw(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Tuple[float, float]]
+        con = provider._shared_con
+        station_id = provider.station_id
+        run_hour = provider.model_run.hour
+        current_date = provider.model_run.date()
+
+        fcst_high = provider.get_forecast_high(station_id)
+        if fcst_high is None:
+            return None
+
+        training = _walk_forward_regression_data_cross_hour(
+            con, station_id, current_date, model_name=model_name,
+        )
+        if training is None:
+            return None
+
+        delta_temp = _get_delta_temp(con, station_id, current_date)
+        if delta_temp is None:
+            return None
+
+        month = float(current_date.month)
+        sin_m, cos_m = _encode_month(month)
+        sin_rh = math.sin(2 * math.pi * run_hour / 24.0)
+        cos_rh = math.cos(2 * math.pi * run_hour / 24.0)
+
+        # Build training matrix with run_hour encoding
+        n = len(training)
+        A = np.empty((n, 7), dtype=np.float64)  # intercept + 6 features
+        y = np.empty(n, dtype=np.float64)
+
+        for i, row in enumerate(training):
+            error, fh, m, dt, rh = row
+            s_m, c_m = _encode_month(m)
+            s_rh = math.sin(2 * math.pi * rh / 24.0)
+            c_rh = math.cos(2 * math.pi * rh / 24.0)
+            A[i, 0] = 1.0  # intercept
+            A[i, 1] = fh
+            A[i, 2] = s_m
+            A[i, 3] = c_m
+            A[i, 4] = dt
+            A[i, 5] = s_rh
+            A[i, 6] = c_rh
+            y[i] = error
+
+        result = lstsq(A, y)
+        coeffs = result[0]
+
+        x_today = np.array([1.0, fcst_high, sin_m, cos_m, delta_temp, sin_rh, cos_rh])
+        predicted_bias = float(np.dot(coeffs, x_today))
+
+        residuals = y - A @ coeffs
+        residual_std = float(np.std(residuals, ddof=7))
+
+        center = fcst_high - predicted_bias
+        return (center, max(0.3, residual_std))
+
+    def model_fn(provider, ref_time):
+        params = _raw(provider, ref_time)
+        if params is None:
+            return None
+        center, residual_std = params
+        return _compute_bracket_probs_from_dist(norm(0, 1), center, residual_std)
+
+    model_fn.__name__ = name
+    model_fn.__doc__ = "Walk-forward cross-hour regression: {}".format(name)
+    model_fn.raw = _raw
+    return model_fn
+
+
+wf_regression_cross_hour = _make_cross_hour_regression_model("wf_regression_cross_hour")
 
 
 # ---------------------------------------------------------------------------
@@ -720,6 +871,27 @@ _PHASE2B_FEATURE_SETS = {
 
 # Phase 2 feature set used inside Phase 2B (fcst_high + sin/cos month)
 _P2_FEATURES_FOR_P2B = [0, 1, 2]
+
+# Phase 2 model override for Phase 2B p2_preds generation.
+# When set to 'ols' (default), uses existing _fit_and_predict OLS.
+# When set to 'emos', uses phase2_emos.fit_emos for p2_preds.
+# Controlled via set_phase2b_model() below.
+_PHASE2_MODEL_FOR_P2B = 'ols'
+
+
+def set_phase2b_model(model_name):
+    # type: (str) -> None
+    """Set which Phase 2 model generates p2_preds in Phase 2B.
+
+    Args:
+        model_name: 'ols' (default) or 'emos'
+    """
+    global _PHASE2_MODEL_FOR_P2B
+    if model_name not in ('ols', 'emos'):
+        raise ValueError("Phase 2B model must be 'ols' or 'emos', got: {}".format(model_name))
+    _PHASE2_MODEL_FOR_P2B = model_name
+    # Clear level1 cache so it re-generates with the new model
+    _p2b_level1.clear()
 
 # ---------------------------------------------------------------------------
 # Two-level cache: avoids redundant SQL + Phase 2 expanding-window fits.
@@ -871,18 +1043,51 @@ def _ensure_level1(con, run_hour, station_id, model_name='hrrr'):
     # --- Phase 2 expanding-window predictions for ALL dates ---
     # Compute once, reuse across all update_hours
     p2_preds = {}  # type: Dict[date, Tuple[float, float]]  # date -> (predicted_bias, p2_std)
-    phase2_training = []  # type: list
-    for obs_date, actual_error, fcst_high, month, delta_temp in errors_list:
-        # Predict BEFORE adding this date to training (walk-forward)
-        if len(phase2_training) >= WALK_FORWARD_MIN_DAYS:
-            features_today = (fcst_high, month, delta_temp if delta_temp is not None else 0.0)
-            p2_result = _fit_and_predict(phase2_training, features_today, _P2_FEATURES_FOR_P2B)
-            if p2_result is not None:
-                p2_preds[obs_date] = p2_result  # (predicted_bias, p2_std)
 
-        # Then add to training
-        if delta_temp is not None:
-            phase2_training.append((actual_error, fcst_high, month, delta_temp))
+    if _PHASE2_MODEL_FOR_P2B == 'emos':
+        # EMOS: fit on (fcst_high, spread, actual) via CRPS minimization
+        from services.phase2_emos import fit_emos, predict_emos
+        # Gather spread data for this run_hour
+        spread_rows = con.execute("""
+            SELECT forecast_date, COALESCE(ensemble_spread, 0.0)
+            FROM gold_multi_model_features
+            WHERE run_hour = ?
+            ORDER BY forecast_date
+        """, [run_hour]).fetchall()
+        spread_by_date = {r[0]: r[1] for r in spread_rows}
+
+        emos_fcsts = []
+        emos_spreads = []
+        emos_actuals = []
+        emos_dates = []
+        for obs_date, actual_error, fcst_high, month, delta_temp in errors_list:
+            actual_high = fcst_high - actual_error
+            spread_val = spread_by_date.get(obs_date, 0.0)
+
+            if len(emos_fcsts) >= WALK_FORWARD_MIN_DAYS:
+                import numpy as np
+                coeffs = fit_emos(
+                    np.array(emos_fcsts), np.array(emos_spreads),
+                    np.array(emos_actuals),
+                )
+                center, std = predict_emos(coeffs, fcst_high, spread_val)
+                p2_preds[obs_date] = (fcst_high - center, std)
+
+            emos_fcsts.append(fcst_high)
+            emos_spreads.append(spread_val)
+            emos_actuals.append(actual_high)
+    else:
+        # OLS (default): existing _fit_and_predict approach
+        phase2_training = []  # type: list
+        for obs_date, actual_error, fcst_high, month, delta_temp in errors_list:
+            if len(phase2_training) >= WALK_FORWARD_MIN_DAYS:
+                features_today = (fcst_high, month, delta_temp if delta_temp is not None else 0.0)
+                p2_result = _fit_and_predict(phase2_training, features_today, _P2_FEATURES_FOR_P2B)
+                if p2_result is not None:
+                    p2_preds[obs_date] = p2_result
+
+            if delta_temp is not None:
+                phase2_training.append((actual_error, fcst_high, month, delta_temp))
 
     result = {
         "curves": curves,

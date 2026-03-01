@@ -286,6 +286,28 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         GROUP BY model_run::DATE, EXTRACT(HOUR FROM model_run)
     """)
 
+    # Gold: HRRR bias features WITHOUT spin-up (fxx 1-3 excluded)
+    con.execute("""
+        CREATE VIEW IF NOT EXISTS gold_hrrr_bias_features_no_spinup AS
+        SELECT
+            model_run::DATE AS forecast_date,
+            EXTRACT(HOUR FROM model_run)::INTEGER AS run_hour,
+            MAX(temp_f) AS fcst_high,
+            SIN(2 * PI() * EXTRACT(MONTH FROM model_run::DATE) / 12.0) AS sin_month,
+            COS(2 * PI() * EXTRACT(MONTH FROM model_run::DATE) / 12.0) AS cos_month,
+            MAX(temp_f) - MIN(temp_f) AS delta_temp,
+            COUNT(*) AS n_fxx,
+            MIN(fxx) AS min_fxx,
+            MAX(fxx) AS max_fxx,
+            FALSE AS has_spinup
+        FROM forecasts
+        WHERE model_name = 'hrrr'
+          AND station_id = 'KNYC'
+          AND fxx IS NOT NULL
+          AND is_spinup = FALSE
+        GROUP BY model_run::DATE, EXTRACT(HOUR FROM model_run)
+    """)
+
     # Gold: multi-model features — aligned forecasts + ensemble spread per (date, run_hour)
     con.execute("""
         CREATE VIEW IF NOT EXISTS gold_multi_model_features AS
