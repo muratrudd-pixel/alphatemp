@@ -134,6 +134,92 @@ async def health():
     }
 
 
+@app.get("/api/health/detailed")
+async def health_detailed():
+    """Comprehensive system health for the /health page."""
+    from core.heartbeat import get_all_heartbeats
+    from core.constants import (
+        POLL_INTERVAL_SECONDS,
+        FORECAST_POLL_INTERVAL_SECONDS,
+        NWS_CLI_POLL_INTERVAL_SECONDS,
+        MARKET_POLL_INTERVAL_SECONDS,
+        DRIFT_POLL_INTERVAL_SECONDS,
+    )
+
+    con = get_connection()
+    try:
+        # Data freshness — last record per source
+        freshness = {}
+        freshness_queries = {
+            "observations_synoptic": "SELECT MAX(ingested_at) FROM observations WHERE ingest_source = 'synoptic'",
+            "observations_awc": "SELECT MAX(ingested_at) FROM observations WHERE ingest_source IN ('awc', 'iem')",
+            "forecasts_hrrr": "SELECT MAX(ingested_at) FROM forecasts WHERE model_name = 'hrrr'",
+            "market_ticks": "SELECT MAX(captured_at) FROM market_ticks",
+            "drift_signals": "SELECT MAX(calculated_at) FROM drift_signals",
+            "nws_cli": "SELECT MAX(ingested_at) FROM nws_daily WHERE source = 'NWS_CLI'",
+            "nws_dsm": "SELECT MAX(ingested_at) FROM nws_daily WHERE source = 'DSM'",
+        }
+        now_utc = datetime.now(timezone.utc)
+        for key, query in freshness_queries.items():
+            row = con.execute(query).fetchone()
+            ts = row[0] if row else None
+            age = None
+            if ts:
+                if ts.tzinfo is None:
+                    age = round((now_utc.replace(tzinfo=None) - ts).total_seconds() / 60, 1)
+                else:
+                    age = round((now_utc - ts).total_seconds() / 60, 1)
+            freshness[key] = {
+                "last_seen": ts.isoformat() if ts else None,
+                "age_minutes": age,
+            }
+
+        # Pipeline heartbeats
+        pipelines = get_all_heartbeats()
+
+        # Database stats
+        table_stats = {}
+        for table in ["observations", "forecasts", "market_ticks", "drift_signals",
+                       "nws_daily", "paper_positions", "kalshi_settlements",
+                       "kalshi_candlesticks", "kalshi_trades"]:
+            try:
+                row = con.execute("SELECT COUNT(*) FROM {}".format(table)).fetchone()
+                table_stats[table] = {"rows": row[0]}
+            except Exception:
+                table_stats[table] = {"rows": 0}
+
+        try:
+            size_row = con.execute("CALL pragma_database_size()").fetchone()
+            db_size = size_row[4] if size_row else "unknown"  # human-readable size string
+        except Exception:
+            db_size = "unknown"
+
+        # Config (static values from constants)
+        config = {
+            "settlement_station": "KNYC",
+            "neighbor_stations": ["KLGA", "KEWR", "KJFK"],
+            "polling_intervals": {
+                "observations": POLL_INTERVAL_SECONDS,
+                "forecasts": FORECAST_POLL_INTERVAL_SECONDS,
+                "market": MARKET_POLL_INTERVAL_SECONDS,
+                "drift": DRIFT_POLL_INTERVAL_SECONDS,
+                "nws_cli": NWS_CLI_POLL_INTERVAL_SECONDS,
+            },
+            "stale_threshold_min": STALE_THRESHOLD_MINUTES,
+            "model": "HRRR",
+            "bias_ttl_min": 60,
+        }
+
+        return {
+            "freshness": freshness,
+            "pipelines": pipelines,
+            "database": {"tables": table_stats, "size": db_size},
+            "config": config,
+        }
+    finally:
+        con.close()
+
+
 @app.get("/api/kpi-summary")
 async def kpi_summary(city: str = "nyc"):
     """Bundled KPI metrics for the persistent header bar."""

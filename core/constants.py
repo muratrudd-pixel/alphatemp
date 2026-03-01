@@ -51,6 +51,12 @@ NWS_DAILY_POLL_INTERVAL_SECONDS: int = 14400
 # NWS CLI direct poll interval (30 min — same-day settlement data)
 NWS_CLI_POLL_INTERVAL_SECONDS: int = 1800
 
+# Market tick polling interval (Kalshi poller)
+MARKET_POLL_INTERVAL_SECONDS: int = 60
+
+# Drift/bias engine polling interval (BiasEngine runs every 60s)
+DRIFT_POLL_INTERVAL_SECONDS: int = 60
+
 # Settlement station coordinates for HRRR grid point extraction
 STATION_COORDS: dict = {
     "KNYC": (40.7789, -73.9692),

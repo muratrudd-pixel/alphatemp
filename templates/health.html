@@ -1,8 +1,31 @@
 {% extends "base.html" %}
-{% block title %}Health{% endblock %}
+{% block title %}Health — AlphaTemp{% endblock %}
 {% block content %}
-<div class="text-center py-20">
-    <h2 class="text-xl text-slate-300 font-bold">System Health</h2>
-    <p class="text-slate-500 mt-2">Coming in Task 3</p>
+<div class="p-4 space-y-6 max-w-5xl mx-auto">
+
+  <div class="bg-slate-800/50 rounded-lg p-4">
+    <h2 class="text-sm font-bold text-slate-300 mb-3 tracking-wide">DATA FRESHNESS</h2>
+    <div id="freshness-table" class="space-y-1 text-xs font-mono"></div>
+  </div>
+
+  <div class="bg-slate-800/50 rounded-lg p-4">
+    <h2 class="text-sm font-bold text-slate-300 mb-3 tracking-wide">PIPELINE STATUS</h2>
+    <div id="pipeline-table" class="space-y-1 text-xs font-mono"></div>
+  </div>
+
+  <div class="bg-slate-800/50 rounded-lg p-4">
+    <h2 class="text-sm font-bold text-slate-300 mb-3 tracking-wide">DATABASE</h2>
+    <div id="db-table" class="space-y-1 text-xs font-mono"></div>
+    <div id="db-size" class="text-xs text-slate-500 mt-2"></div>
+  </div>
+
+  <div class="bg-slate-800/50 rounded-lg p-4">
+    <h2 class="text-sm font-bold text-slate-300 mb-3 tracking-wide">CONFIGURATION</h2>
+    <div id="config-table" class="space-y-1 text-xs font-mono"></div>
+  </div>
+
 </div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/health.js"></script>
 {% endblock %}
