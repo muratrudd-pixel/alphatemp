@@ -385,6 +385,18 @@ The prior-day window (10 AM to midnight D-1) is expected to contain significant 
 - 10% daily cap: never risk more than $10 on a single day's event
 - Prediction/decision layer separation: market prices (yes_ask, spread) are inputs to the *execution layer* only, never to model features
 
+### Execution Optimization (post-model-finalization)
+
+The current backtester uses the simplest possible execution: buy YES, hold to settlement. This isolates model accuracy from trading cleverness. Once the model is finalized and proves edge (positive displacement, Brier beating market), optimize the execution layer:
+
+**1. NO-side trading.** Currently only buys YES when model_prob > market_ask. Should also buy NO when model_prob < market_bid (model thinks bracket is overpriced). Hypothesis: retail overbuys cheap tail YES brackets → structural NO opportunity. Implementation: check `(1 - model_prob) > (1 - market_bid) + fee_threshold` for each bracket. Hard-cap NO exposure per event to limit risk.
+
+**2. Early exit / profit-taking.** `PositionManager.close_position()` exists but is never called. Should sell back to market when: (a) displacement flips negative (model changed its mind), (b) profit target reached (e.g., position worth 2x entry), or (c) post-peak detection fires while holding a bracket above current temp. Requires market bid data at each trigger for exit pricing.
+
+**3. Dynamic position sizing.** Currently fixed at 1 contract. Should scale with displacement magnitude and Kelly criterion. Larger displacement = higher confidence = larger bet. Kelly/4 is already in the plan but not implemented.
+
+**Do not invest in any of these until the model proves raw accuracy edge. If Brier can't beat the market, execution optimization is irrelevant.**
+
 ### Fee Calculation (corrected 2026-02-28)
 
 ```
@@ -455,6 +467,7 @@ Forecast hours fxx=1–3 have initialization artifacts from the data assimilatio
 | DuckDB crash risk | Known issue, DuckDB 1.4.4 | Temp DB + merge pattern mandatory; never long-write to main |
 | Drift score in backtest | Hardcoded to 0.0 | Fix `BacktestDataProvider.get_drift_score()` before Phase 4 |
 | `forecast_extended` table | 65K rows, no consumer | Evaluate for medallion integration or drop in Phase 1 schema work |
+| Neighbor station optimization | Parked — post-finalization | KLGA/KEWR 1-min ASOS data (583K obs each) could detect intraday peak/reversal faster than KNYC hourly METAR. Previous testing showed marginal gain (running_max from KNYC alone captured 87% of Phase 2B improvement). Revisit as optimization after the model is finalized: ablate neighbor obs as additional divergence features (peak detection, direction change) to see if the finer resolution adds signal. Don't invest engineering time until core pipeline proves tradeable edge. |
 
 ---
 

@@ -497,6 +497,8 @@ def _fit_and_predict(rows, features_today, feature_indices):
     # Solve via least squares
     result = lstsq(A, y)
     coeffs = result[0]
+    if not np.all(np.isfinite(coeffs)):
+        return None
 
     # Predict for today
     fcst_today = features_today[0]
@@ -1442,6 +1444,8 @@ def _fit_and_predict_phase2b(training_rows, features_today, feature_indices):
 
     result = lstsq(A, y)
     coeffs = result[0]
+    if not np.all(np.isfinite(coeffs)):
+        return None
 
     x_today = np.array([1.0] + [features_today[idx] for idx in feature_indices])
     predicted_residual = float(np.dot(coeffs, x_today))

@@ -110,7 +110,7 @@ class TestDataStructures:
         cfg = BacktestConfig()
         assert cfg.starting_capital == 100.0
         assert cfg.start_date == date(2024, 11, 1)
-        assert cfg.min_displacement == 0.12
+        assert cfg.min_displacement == 0.0  # deprecated: displacement is dynamic fee-adjusted
         assert cfg.min_model_prob == 0.05
         assert cfg.bootstrap_iterations == 10000
         assert cfg.execution_latency_seconds == 60

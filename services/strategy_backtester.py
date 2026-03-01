@@ -101,7 +101,7 @@ class BacktestConfig:
     end_date: Optional[date] = None
     burn_in_days: int = 90
     fixed_bet_size: int = 1
-    min_displacement: float = 0.12
+    min_displacement: float = 0.0  # DEPRECATED: displacement is now dynamic fee-adjusted
     min_model_prob: float = 0.05
     max_spread_cents: float = 10.0
     max_model_std: float = 3.5
@@ -1112,11 +1112,46 @@ class StrategyBacktester:
                     if not ok:
                         continue
 
+                    # Dynamic fee-adjusted displacement: only trade when
+                    # model_prob exceeds price + fee (both as probabilities).
+                    # This replaces the old static min_displacement threshold.
+                    fee_cents = compute_taker_fee(ask_cents, config.fixed_bet_size)
+                    fee_hurdle = fee_cents / (100.0 * config.fixed_bet_size)
                     displacement = mp - ask
-                    if displacement < config.min_displacement:
+                    if displacement < fee_hurdle:
                         continue
 
                     candidates.append((bracket, ask_cents, mp))
+
+                # Close stale positions: if model shifted away from a held bracket,
+                # sell it back at the bid. This prevents accumulating contradictory
+                # positions on the same event (e.g., holding both 72-74 and 76-78).
+                candidate_brackets = {c[0] for c in candidates}
+                existing = position_mgr.positions_for(event_date)
+                for pos in existing:
+                    if pos.bracket not in candidate_brackets:
+                        bid_cents = market_bids.get(pos.bracket, 0.0) * 100
+                        if bid_cents > 0:
+                            pnl = position_mgr.close_position(
+                                event_date, pos.bracket, bid_cents, execution_time,
+                            )
+                            meta = _pos_metadata.get((event_date, pos.bracket))
+                            all_trades.append(TradeRecord(
+                                event_date=pos.event_date,
+                                bracket=pos.bracket,
+                                direction="sell_yes",
+                                entry_price=pos.entry_price,
+                                entry_time=pos.entry_time,
+                                exit_price=bid_cents,
+                                exit_time=execution_time,
+                                exit_type="model_shift",
+                                settlement_result=None,
+                                pnl=pnl,
+                                fees_paid=compute_taker_fee(bid_cents, pos.quantity),
+                                displacement_at_entry=meta[1] if meta else 0.0,
+                                model_prob_at_entry=meta[0] if meta else 0.0,
+                                capital_locked_hours=0.0,
+                            ))
 
                 # Portfolio-level EV optimization
                 if candidates:
