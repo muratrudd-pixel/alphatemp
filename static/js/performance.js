@@ -464,5 +464,8 @@ function onDateChange() {
     refreshPerformance();
 }
 
+// Show loading skeletons before first fetch
+showSkeleton('breakdown-stats', 6);
+
 // Initial load
 refreshPerformance();

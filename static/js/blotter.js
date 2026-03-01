@@ -141,5 +141,9 @@ function onDateChange() {
     refreshBlotter();
 }
 
+// Show loading skeletons before first fetch
+showSkeleton('countdown-today', 2);
+showSkeleton('blotter-body', 8);
+
 refreshBlotter();
 setInterval(refreshBlotter, 60000);

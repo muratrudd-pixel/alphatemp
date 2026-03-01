@@ -234,6 +234,28 @@ async function refreshKPI() {
 }
 
 // -----------------------------------------------------------------------
+// Skeleton Loading
+// -----------------------------------------------------------------------
+
+/**
+ * Show skeleton loading placeholder rows in a container.
+ * Replaced when actual content renders via innerHTML.
+ *
+ * @param {string} containerId — Element ID to fill with skeleton rows
+ * @param {number} rows       — Number of skeleton rows (default 5)
+ */
+function showSkeleton(containerId, rows) {
+    rows = rows || 5;
+    var el = document.getElementById(containerId);
+    if (!el) return;
+    var html = '';
+    for (var i = 0; i < rows; i++) {
+        html += '<div class="skeleton mb-2" style="width:' + (60 + Math.random() * 30) + '%; height: 14px;"></div>';
+    }
+    el.innerHTML = html;
+}
+
+// -----------------------------------------------------------------------
 // Toast Notifications
 // -----------------------------------------------------------------------
 

@@ -264,6 +264,12 @@ function onDateChange() {
     refreshMobileBlotter();
 }
 
+// Show loading skeletons before first fetch
+showSkeleton('mob-alerts', 3);
+showSkeleton('mob-obs-feed', 4);
+showSkeleton('mob-suggested-bets', 3);
+showSkeleton('mob-active-positions', 3);
+
 // Initial load
 refreshMobile();
 refreshMobileBlotter();

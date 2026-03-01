@@ -200,5 +200,9 @@ function onDateChange() {
     refreshReview();
 }
 
+// Show loading skeletons before first fetch
+showSkeleton('incident-list', 6);
+showSkeleton('pattern-summary', 4);
+
 // Initial load
 refreshReview();

@@ -654,6 +654,11 @@ function onDateChange() {
     refreshAll();
 }
 
+// Show loading skeletons before first fetch
+showSkeleton('obs-feed', 6);
+showSkeleton('fcst-feed', 5);
+showSkeleton('positions-panel', 8);
+
 // Initial load
 refreshAll();
 

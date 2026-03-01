@@ -104,5 +104,11 @@ async function refreshHealth() {
     document.getElementById('config-table').innerHTML = html;
 }
 
+// Show loading skeletons before first fetch
+showSkeleton('freshness-table', 7);
+showSkeleton('pipeline-table', 3);
+showSkeleton('db-table', 5);
+showSkeleton('config-table', 6);
+
 refreshHealth();
 setInterval(refreshHealth, 60000);
