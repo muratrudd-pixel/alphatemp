@@ -35,6 +35,11 @@ def et_day_bounds_utc(date_str: str = None) -> tuple:
     return start_utc, end_utc
 
 
+def get_today_et() -> str:
+    """Return today's date as 'YYYY-MM-DD' in Eastern Time."""
+    return datetime.now(ET).strftime("%Y-%m-%d")
+
+
 def utc_to_et_hour(dt: datetime) -> int:
     """Convert a UTC datetime to its Eastern Time hour (0-23).
 

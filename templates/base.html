@@ -12,43 +12,43 @@
 </head>
 <body class="min-h-screen bg-slate-900 text-slate-300" style="font-family: 'Space Mono', monospace;">
 
-    <!-- Header -->
-    <header class="px-4 lg:px-6 py-3 flex flex-col md:flex-row items-center justify-between gap-2 border-b border-slate-700/50">
+    <!-- KPI Header Bar -->
+    <header class="border-b border-slate-700 bg-slate-900/80 backdrop-blur">
+      <div class="flex items-center justify-between px-4 py-2 text-xs">
         <div class="flex items-center gap-3">
-            <div class="glow-dot"></div>
-            <h1 class="text-lg lg:text-xl font-semibold tracking-tight text-slate-100">
-                AlphaTemp
-            </h1>
-            <span class="text-sm text-slate-400 font-semibold">NYC</span>
+          <span id="kpi-status-dot" class="glow-dot"></span>
+          <span class="text-slate-300 font-bold tracking-wide">ALPHATEMP</span>
         </div>
-
-        <!-- Tab Navigation (hidden on mobile) -->
-        <nav class="hidden md:flex items-center gap-1">
-            <a href="/operations"
-               class="px-3 py-1.5 text-xs uppercase tracking-wider rounded
-                      {% if active_tab == 'operations' %}bg-blue-600 text-white{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-700{% endif %}">
-                Operations
-            </a>
-            <a href="/performance"
-               class="px-3 py-1.5 text-xs uppercase tracking-wider rounded
-                      {% if active_tab == 'performance' %}bg-blue-600 text-white{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-700{% endif %}">
-                Performance
-            </a>
-            <a href="/review"
-               class="px-3 py-1.5 text-xs uppercase tracking-wider rounded
-                      {% if active_tab == 'review' %}bg-blue-600 text-white{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-700{% endif %}">
-                Review
-            </a>
+        <div class="flex items-center gap-6 text-slate-400">
+          <span>Model High: <strong id="kpi-model-high" class="text-white">--</strong></span>
+          <span>Settlement: <strong id="kpi-settlement" class="text-white">--</strong></span>
+          <span>Consensus: <strong id="kpi-consensus" class="text-slate-300">--</strong></span>
+          <span>Drift: <strong id="kpi-drift" class="text-slate-300">--</strong></span>
+        </div>
+        <div class="flex items-center gap-6 text-slate-400">
+          <span>Open: <strong id="kpi-open-pos" class="text-white">--</strong></span>
+          <span>Day P&L: <strong id="kpi-day-pnl" class="text-white">--</strong></span>
+          <span>Total: <strong id="kpi-total-pnl" class="text-white">--</strong></span>
+          <span id="et-clock" class="text-slate-500">--:-- ET</span>
+        </div>
+      </div>
+      <div class="flex items-center justify-between px-4 py-1 border-t border-slate-800">
+        <nav class="flex gap-1">
+          {% for tab, label in [('operations', 'Operations'), ('blotter', 'Blotter'), ('health', 'Health'), ('performance', 'Performance'), ('review', 'Review')] %}
+          <a href="/{{ tab }}"
+             class="px-3 py-1 rounded text-xs {% if active_tab == tab %}bg-slate-700 text-white{% else %}text-slate-500 hover:text-slate-300{% endif %}">
+            {{ label }}
+          </a>
+          {% endfor %}
         </nav>
-
-        <div class="flex items-center gap-4">
-            <div id="date-toggle" class="flex text-sm" style="font-family: 'Space Mono', monospace;">
-                <button id="btn-today" class="px-3 py-1 rounded-l border border-slate-600 bg-blue-600 text-white">Today</button>
-                <button id="btn-tomorrow" class="px-3 py-1 rounded-r border border-l-0 border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600">Tomorrow</button>
-            </div>
-            <div id="clock" class="text-sm text-slate-400" style="font-family: 'Space Mono', monospace;"></div>
-            <span id="refresh-countdown" class="text-xs text-slate-500" style="font-family: 'Space Mono', monospace;">60s</span>
+        <div class="flex items-center gap-2">
+          <button onclick="setDateToggle('today')" id="btn-today"
+                  class="px-2 py-0.5 rounded text-xs bg-slate-700 text-white">Today</button>
+          <button onclick="setDateToggle('tomorrow')" id="btn-tomorrow"
+                  class="px-2 py-0.5 rounded text-xs text-slate-500 hover:text-slate-300">Tomorrow</button>
+          <span class="text-slate-600 text-xs ml-2" id="countdown-display">60s</span>
         </div>
+      </div>
     </header>
 
     <!-- Main Content -->
@@ -59,7 +59,7 @@
     <!-- Shared JS utilities -->
     <script src="/static/js/shared.js"></script>
 
-    <!-- Base page JS: state, clock, date toggle, countdown -->
+    <!-- Base page JS: state, clock, date toggle, countdown, KPI refresh -->
     <script>
     // -----------------------------------------------------------------------
     // Global State
@@ -77,19 +77,16 @@
     function setDateToggle(which) {
         selectedDate = getTargetDate(which);
         if (which === 'today') {
-            btnToday.className = 'px-3 py-1 rounded-l border border-slate-600 bg-blue-600 text-white';
-            btnTomorrow.className = 'px-3 py-1 rounded-r border border-l-0 border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600';
+            btnToday.className = 'px-2 py-0.5 rounded text-xs bg-slate-700 text-white';
+            btnTomorrow.className = 'px-2 py-0.5 rounded text-xs text-slate-500 hover:text-slate-300';
         } else {
-            btnToday.className = 'px-3 py-1 rounded-l border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600';
-            btnTomorrow.className = 'px-3 py-1 rounded-r border border-l-0 border-slate-600 bg-blue-600 text-white';
+            btnToday.className = 'px-2 py-0.5 rounded text-xs text-slate-500 hover:text-slate-300';
+            btnTomorrow.className = 'px-2 py-0.5 rounded text-xs bg-slate-700 text-white';
         }
         if (typeof onDateChange === 'function') {
             onDateChange();
         }
     }
-
-    btnToday.addEventListener('click', () => setDateToggle('today'));
-    btnTomorrow.addEventListener('click', () => setDateToggle('tomorrow'));
 
     // -----------------------------------------------------------------------
     // Clock (updates every second)
@@ -101,7 +98,7 @@
             hour: '2-digit', minute: '2-digit', second: '2-digit',
             hour12: false
         });
-        document.getElementById('clock').textContent = et + ' ET';
+        document.getElementById('et-clock').textContent = et + ' ET';
     }
     setInterval(updateClock, 1000);
     updateClock();
@@ -111,9 +108,15 @@
     // -----------------------------------------------------------------------
     function updateCountdown() {
         countdown = Math.max(0, countdown - 1);
-        document.getElementById('refresh-countdown').textContent = countdown + 's';
+        document.getElementById('countdown-display').textContent = countdown + 's';
     }
     setInterval(updateCountdown, 1000);
+
+    // -----------------------------------------------------------------------
+    // KPI Refresh (on load + every 60s)
+    // -----------------------------------------------------------------------
+    refreshKPI();
+    setInterval(refreshKPI, 60000);
     </script>
 
     {% block scripts %}{% endblock %}

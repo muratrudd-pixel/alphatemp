@@ -161,3 +161,72 @@ function formatEdge(edge) {
     }
     return { text: text, colorClass: colorClass };
 }
+
+// -----------------------------------------------------------------------
+// DOM Helpers
+// -----------------------------------------------------------------------
+
+/**
+ * Set the text content of an element by ID.
+ *
+ * @param {string} id   — Element ID
+ * @param {*}      text — Value to display
+ */
+function setText(id, text) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+
+/**
+ * Set text content and CSS class of an element by ID.
+ *
+ * @param {string} id         — Element ID
+ * @param {string} text       — Value to display
+ * @param {string} colorClass — Tailwind color class
+ */
+function setColoredText(id, text, colorClass) {
+    var el = document.getElementById(id);
+    if (el) {
+        el.textContent = text;
+        el.className = el.className.replace(/text-\S+/g, '').trim() + ' ' + colorClass;
+    }
+}
+
+// -----------------------------------------------------------------------
+// KPI Header Refresh
+// -----------------------------------------------------------------------
+
+/**
+ * Fetch KPI summary and update all header bar elements.
+ * Called on page load and every 60s from base.html.
+ */
+async function refreshKPI() {
+    var data = await fetchAPI('/api/kpi-summary?city=' + (window.selectedCity || 'nyc'));
+    if (!data) return;
+
+    var dot = document.getElementById('kpi-status-dot');
+    if (dot) {
+        dot.style.background = data.system_status === 'green' ? '#10b981' :
+                               data.system_status === 'amber' ? '#f59e0b' : '#ef4444';
+    }
+
+    setText('kpi-model-high', data.model_high ? data.model_high + '\u00B0F' : '--');
+
+    var stl = data.settlement || {};
+    if (stl.source === 'NWS_CLI') {
+        setText('kpi-settlement', stl.temp + '\u00B0F (CLI)');
+    } else if (stl.source === 'DSM') {
+        setText('kpi-settlement', stl.temp + '\u00B0F (DSM)');
+    } else {
+        setText('kpi-settlement', 'Pending');
+    }
+
+    setText('kpi-consensus', data.market_consensus || '--');
+    setText('kpi-drift', data.drift !== null ? (data.drift > 0 ? '+' : '') + data.drift + '\u00B0F' : '--');
+    setText('kpi-open-pos', data.open_positions);
+
+    var dayPnl = formatPnL(data.day_pnl || 0);
+    var totalPnl = formatPnL(data.total_pnl || 0);
+    setColoredText('kpi-day-pnl', dayPnl.text, dayPnl.colorClass);
+    setColoredText('kpi-total-pnl', totalPnl.text, totalPnl.colorClass);
+}

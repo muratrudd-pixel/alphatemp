@@ -12,7 +12,7 @@ from starlette.requests import Request
 
 from core.constants import CITIES, STATION_COORDS
 from core.db import get_connection, init_db
-from core.timezone import et_day_bounds_utc
+from core.timezone import et_day_bounds_utc, get_today_et
 from services.probability import ProbabilityEngine
 
 app = FastAPI(title="AlphaTemp Command Center")
@@ -132,6 +132,91 @@ async def health():
         "obs_stale": obs_stale,
         "fcst_stale": fcst_stale,
     }
+
+
+@app.get("/api/kpi-summary")
+async def kpi_summary(city: str = "nyc"):
+    """Bundled KPI metrics for the persistent header bar."""
+    city_upper = city.upper()
+    con = get_connection()
+    try:
+        # System status from health check
+        health_data = await health()
+        system_status = "red" if not health_data.get("db_connected", True) else (
+            "amber" if health_data.get("obs_stale") or health_data.get("fcst_stale") else "green"
+        )
+
+        # Model high from probability engine
+        try:
+            forecast = engine.calculate_city(city_upper, None)
+            model_high = forecast.center if forecast else None
+        except Exception:
+            model_high = None
+
+        # Settlement status from nws_daily
+        today_et = get_today_et()
+        row = con.execute("""
+            SELECT max_temp_f, source FROM nws_daily
+            WHERE station_id = 'KNYC' AND obs_date = ?
+            ORDER BY CASE source
+                WHEN 'NWS_CLI' THEN 3 WHEN 'DSM' THEN 2 ELSE 1
+            END DESC LIMIT 1
+        """, [today_et]).fetchone()
+        settlement = {
+            "temp": row[0] if row else None,
+            "source": row[1] if row else "pending",
+        }
+
+        # Drift
+        drift_row = con.execute("""
+            SELECT drift_score FROM drift_signals
+            WHERE city = ? ORDER BY calculated_at DESC LIMIT 1
+        """, [city_upper]).fetchone()
+        drift = round(drift_row[0], 1) if drift_row else 0.0
+
+        # Positions P&L
+        positions = con.execute("""
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'open') as open_count,
+                COALESCE(SUM(net_pnl) FILTER (WHERE event_date = ?), 0) as day_pnl,
+                COALESCE(SUM(net_pnl), 0) as total_pnl
+            FROM paper_positions WHERE city = ?
+        """, [today_et, city_upper]).fetchone()
+
+        # Market consensus (highest-prob bracket from market)
+        bracket_row = con.execute("""
+            SELECT floor_strike, cap_strike FROM market_ticks
+            WHERE city = ? AND captured_at >= NOW() - INTERVAL '10 minutes'
+            ORDER BY yes_bid DESC LIMIT 1
+        """, [city_upper]).fetchone()
+        market_consensus = "{}-{}F".format(
+            int(bracket_row[0]), int(bracket_row[1])
+        ) if bracket_row else None
+
+        return {
+            "system_status": system_status,
+            "model_high": model_high,
+            "settlement": settlement,
+            "market_consensus": market_consensus,
+            "drift": drift,
+            "open_positions": positions[0] if positions else 0,
+            "day_pnl": round(positions[1], 2) if positions else 0,
+            "total_pnl": round(positions[2], 2) if positions else 0,
+        }
+    finally:
+        con.close()
+
+
+@app.get("/health")
+async def health_page(request: Request):
+    """Serve the Health page."""
+    return templates.TemplateResponse("health.html", {"request": request, "active_tab": "health"})
+
+
+@app.get("/blotter")
+async def blotter_page(request: Request):
+    """Serve the Blotter page."""
+    return templates.TemplateResponse("blotter.html", {"request": request, "active_tab": "blotter"})
 
 
 @app.get("/api/observations/{city}")
