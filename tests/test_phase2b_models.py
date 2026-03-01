@@ -104,9 +104,9 @@ def _seed_phase2b_data(db_path, n_days=200, run_hour=12):
             frac = 1.0 - ((h - 10) / 10.0) ** 2
             temp_f = fcst_high - 15.0 + 15.0 * max(0, frac)
             con.execute(
-                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at) "
-                "VALUES ('KNYC', ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                [model_run, valid_at, round(temp_f, 1), round((temp_f - 32) * 5 / 9, 2)],
+                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, fxx, ingested_at) "
+                "VALUES ('KNYC', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                [model_run, valid_at, round(temp_f, 1), round((temp_f - 32) * 5 / 9, 2), h],
             )
 
         # Insert observations: hourly from 05z to 23z (midnight to 6PM ET roughly)

@@ -146,6 +146,8 @@ class LiveDataProvider(DataProvider):
         logger.debug(f"Loaded bias cache for {len(self._bias_cache)} stations")
 
     def get_forecast_high(self, station_id: str) -> Optional[float]:
+        # Settlement-day filter: only fxx whose valid_at falls within
+        # the settlement window (05z to 29z = midnight-to-midnight EST)
         con = get_connection(self.db_path)
         row = con.execute(
             """SELECT MAX(f.temp_f) FROM forecasts f
@@ -154,7 +156,9 @@ class LiveDataProvider(DataProvider):
                AND f.model_run = (
                    SELECT MAX(model_run) FROM forecasts
                    WHERE station_id = ? AND model_name = 'hrrr'
-               )""",
+               )
+               AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) >= 5
+               AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) < 29""",
             [station_id, station_id],
         ).fetchone()
         con.close()
@@ -193,6 +197,8 @@ class LiveDataProvider(DataProvider):
                FROM forecasts
                WHERE station_id = ?
                AND model_name = 'hrrr'
+               AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+               AND (EXTRACT(HOUR FROM model_run) + fxx) < 29
                GROUP BY model_run
                ORDER BY model_run DESC
                LIMIT ?""",
@@ -299,10 +305,14 @@ class BacktestDataProvider(DataProvider):
     def get_forecast_high(self, station_id: str) -> Optional[float]:
         con = self._shared_con if self._shared_con else get_connection(self.db_path)
         try:
+            # Settlement-day filter: only fxx whose valid_at falls within
+            # the settlement window (05z to 29z = midnight-to-midnight EST)
             row = con.execute(
                 """SELECT MAX(temp_f) FROM forecasts
                    WHERE station_id = ? AND model_run = ?
-                   AND model_name = ?""",
+                   AND model_name = ?
+                   AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+                   AND (EXTRACT(HOUR FROM model_run) + fxx) < 29""",
                 [station_id, self.model_run, self.model_name],
             ).fetchone()
             return row[0] if row and row[0] is not None else None
@@ -328,6 +338,8 @@ class BacktestDataProvider(DataProvider):
                    FROM forecasts
                    WHERE station_id = ? AND model_run <= ?
                    AND model_name = ?
+                   AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+                   AND (EXTRACT(HOUR FROM model_run) + fxx) < 29
                    GROUP BY model_run
                    ORDER BY model_run DESC
                    LIMIT ?""",

@@ -36,6 +36,8 @@ def run_ablation(
         from services.phase2_emos import emos_model_fn as model_fn
     elif candidate == "xgboost":
         from services.phase2_xgboost import xgboost_model_fn as model_fn
+    elif candidate == "xgboost_ext":
+        from services.phase2_xgboost import xgboost_extended_model_fn as model_fn
     elif candidate == "cross_hour":
         from services.backtester import wf_regression_cross_hour as model_fn
     else:
@@ -66,7 +68,7 @@ def main():
     parser = argparse.ArgumentParser(description="Phase 2 ablation runner")
     parser.add_argument("--candidate", required=True,
                         choices=["ols", "ols_no_spinup", "emos", "xgboost",
-                                 "cross_hour", "all"])
+                                 "xgboost_ext", "cross_hour", "all"])
     parser.add_argument("--run-hours", default=None,
                         help="Comma-separated run hours (default: all 24)")
     parser.add_argument("--start", type=lambda s: date.fromisoformat(s), default=None)
@@ -79,7 +81,7 @@ def main():
         run_hours = [int(h) for h in args.run_hours.split(",")]
 
     if args.candidate == "all":
-        candidates = ["ols", "ols_no_spinup", "emos", "xgboost", "cross_hour"]
+        candidates = ["ols", "ols_no_spinup", "emos", "xgboost", "xgboost_ext", "cross_hour"]
     else:
         candidates = [args.candidate]
 

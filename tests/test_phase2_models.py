@@ -79,11 +79,12 @@ def _seed_synthetic_data(db_path, n_days=200, run_hour=12):
 
         # Insert forecast (single row with temp_f = fcst_high for that model_run)
         model_run = datetime(obs_date.year, obs_date.month, obs_date.day, run_hour, 0)
-        valid_at = model_run + timedelta(hours=6)
+        fxx = 6  # hour offset from model_run to valid_at
+        valid_at = model_run + timedelta(hours=fxx)
         con.execute(
-            "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at) "
-            "VALUES ('KNYC', ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            [model_run, valid_at, fcst_high, round((fcst_high - 32) * 5 / 9, 2)],
+            "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, fxx, ingested_at) "
+            "VALUES ('KNYC', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            [model_run, valid_at, fcst_high, round((fcst_high - 32) * 5 / 9, 2), fxx],
         )
 
     con.close()

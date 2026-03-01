@@ -225,11 +225,13 @@ def _insert_forecast(db_path, station_id, model_run, valid_at, temp_f):
     """Helper to insert a single forecast row."""
     model_run = _strip_tz(model_run)
     valid_at = _strip_tz(valid_at)
+    # Compute fxx from hour difference for settlement-day filtering
+    fxx = int((valid_at - model_run).total_seconds() // 3600)
     con = get_connection(db_path)
     con.execute(
-        """INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at)
-           VALUES (?, ?, ?, ?, NULL, ?)""",
-        [station_id, model_run, valid_at, temp_f, valid_at],
+        """INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, fxx, ingested_at)
+           VALUES (?, ?, ?, ?, NULL, ?, ?)""",
+        [station_id, model_run, valid_at, temp_f, fxx, valid_at],
     )
     con.close()
 

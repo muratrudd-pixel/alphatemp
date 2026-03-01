@@ -246,6 +246,8 @@ def _walk_forward_bias_query(con, run_hour, station_id, current_date, model_name
                 AND f.model_run::DATE = n.obs_date
                 AND EXTRACT(HOUR FROM f.model_run) = ?
                 AND f.model_name = ?
+                AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) >= 5
+                AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) < 29
             WHERE n.station_id = ?
                 AND n.obs_date < ?
                 AND n.max_temp_f IS NOT NULL
@@ -416,7 +418,9 @@ def _walk_forward_regression_data(con, run_hour, station_id, current_date, model
             JOIN forecasts f ON f.station_id = n.station_id
                 AND f.model_run::DATE = n.obs_date
                 AND EXTRACT(HOUR FROM f.model_run) = ?
-                AND f.model_name = ?{spinup_filter}{ext_join}
+                AND f.model_name = ?
+                AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) >= 5
+                AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) < 29{spinup_filter}{ext_join}
             WHERE n.station_id = ?
                 AND n.obs_date < ?
                 AND n.max_temp_f IS NOT NULL
@@ -722,6 +726,8 @@ def _walk_forward_regression_data_cross_hour(con, station_id, current_date, mode
             JOIN forecasts f ON f.station_id = n.station_id
                 AND f.model_run::DATE = n.obs_date
                 AND f.model_name = ?
+                AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) >= 5
+                AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) < 29
             WHERE n.station_id = ?
                 AND n.obs_date < ?
                 AND n.max_temp_f IS NOT NULL
@@ -1012,7 +1018,7 @@ def _ensure_level1(con, run_hour, station_id, model_name='hrrr'):
             nbr_by_date[et_date].append((ts, temp_f))
         neighbor_obs[nbr_station] = nbr_by_date
 
-    # --- Errors + Phase 2 features ---
+    # --- Errors + Phase 2 features (settlement-day fxx only) ---
     error_rows = con.execute("""
         WITH daily_errors AS (
             SELECT
@@ -1026,6 +1032,8 @@ def _ensure_level1(con, run_hour, station_id, model_name='hrrr'):
                 AND f.model_run::DATE = n.obs_date
                 AND EXTRACT(HOUR FROM f.model_run) = ?
                 AND f.model_name = ?
+                AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) >= 5
+                AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) < 29
             WHERE n.station_id = ? AND n.max_temp_f IS NOT NULL
             GROUP BY n.obs_date, n.max_temp_f
             ORDER BY n.obs_date

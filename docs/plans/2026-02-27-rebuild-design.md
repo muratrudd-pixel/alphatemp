@@ -376,7 +376,7 @@ The prior-day window (10 AM to midnight D-1) is expected to contain significant 
 
 - Entry pricing: `yes_ask` — always cross the spread (conservative; if profitable here, profitable live)
 - Execution latency: 60 seconds after model evaluation
-- Minimum displacement: 12% (11% fee hurdle + 1% noise buffer)
+- Minimum displacement: dynamic, fee-adjusted threshold: `model_prob > (price + taker_fee) / 100`
 - Sanity filters (5, unchanged): model_prob < 0.05, post-peak detection, spread > 10¢, model_std > 3.5°F, churn prevention
 
 ### Position Sizing
@@ -385,16 +385,17 @@ The prior-day window (10 AM to midnight D-1) is expected to contain significant 
 - 10% daily cap: never risk more than $10 on a single day's event
 - Prediction/decision layer separation: market prices (yes_ask, spread) are inputs to the *execution layer* only, never to model features
 
-### Fee Calculation (unchanged)
+### Fee Calculation (corrected 2026-02-28)
 
 ```
-Entry cost:     price × qty × 1.01                        (1% trading fee)
-Win payout:     (1 - price) × qty × 0.90                  (10% settlement fee on winnings only)
-Net win P&L:    (1 - price) × qty × 0.90 - price × qty × 1.01
-Net loss P&L:   -(price × qty × 1.01)
+Taker fee:      max(ceil(0.07 * contracts * price * (1 - price)), contracts * $0.01)
+No settlement fee.
+Entry cost:     (price * contracts) + taker_fee
+Win payout:     contracts * $1.00 - entry_cost
+Net loss P&L:   -entry_cost
 ```
 
-All strategy evaluations must be net of all fee layers. No exceptions.
+Effective fee rate is ~1-2% depending on price. All strategy evaluations must be net of fees. No exceptions.
 
 ---
 

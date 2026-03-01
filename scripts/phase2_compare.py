@@ -48,13 +48,21 @@ def compare_candidates(db_path=DEFAULT_DB_PATH, start=None, end=None, run_hours=
     except Exception as e:
         logger.error("EMOS failed: {}", e)
 
-    # Candidate C: XGBoost QR
+    # Candidate C: XGBoost QR (base features)
     try:
         from services.phase2_xgboost import xgboost_model_fn
         logger.info("Running Candidate C: XGBoost QR...")
         candidates["xgboost_qr"] = bt.run(xgboost_model_fn, start, end, run_hours=hours)
     except Exception as e:
         logger.error("XGBoost failed: {}", e)
+
+    # Candidate C': XGBoost QR (extended weather features)
+    try:
+        from services.phase2_xgboost import xgboost_extended_model_fn
+        logger.info("Running Candidate C': XGBoost QR (extended features)...")
+        candidates["xgboost_ext"] = bt.run(xgboost_extended_model_fn, start, end, run_hours=hours)
+    except Exception as e:
+        logger.error("XGBoost extended failed: {}", e)
 
     # Candidate D: Cross-hour
     from services.backtester import wf_regression_cross_hour

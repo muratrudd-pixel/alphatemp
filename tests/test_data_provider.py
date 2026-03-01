@@ -43,9 +43,9 @@ def _seed_forecast(con, station_id, model_run_str, temps):
         valid_at = model_run + timedelta(hours=fxx)
         temp_c = round((temp_f - 32) * 5 / 9, 2)
         con.execute(
-            "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at) "
-            "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            [station_id, model_run, valid_at, temp_f, temp_c],
+            "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, fxx, ingested_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            [station_id, model_run, valid_at, temp_f, temp_c, fxx],
         )
 
 
@@ -424,26 +424,29 @@ def _seed_walk_forward_data(db_path, n_days=120):
                      fcst_peak_12z - 1, fcst_peak_12z - 3]
         model_run_12z = datetime(obs_date.year, obs_date.month, obs_date.day, 12, 0)
         for j, temp_f in enumerate(temps_12z):
-            valid_at = model_run_12z + timedelta(hours=j + 1)
+            fxx = j + 1  # fxx 1-5; 12+1=13 to 12+5=17, all within settlement window
+            valid_at = model_run_12z + timedelta(hours=fxx)
             temp_c = round((temp_f - 32) * 5 / 9, 2)
             con.execute(
-                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at) "
-                "VALUES ('KNYC', ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                [model_run_12z, valid_at, temp_f, temp_c],
+                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, fxx, ingested_at) "
+                "VALUES ('KNYC', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                [model_run_12z, valid_at, temp_f, temp_c, fxx],
             )
 
         # 00z forecast: intentional +0.5 bias
+        # Use fxx 6-10 so all fall within settlement window (0+6=6 >= 5)
         fcst_peak_00z = actual_high + 0.5
         temps_00z = [fcst_peak_00z - 3, fcst_peak_00z - 1, fcst_peak_00z,
                      fcst_peak_00z - 1, fcst_peak_00z - 3]
         model_run_00z = datetime(obs_date.year, obs_date.month, obs_date.day, 0, 0)
         for j, temp_f in enumerate(temps_00z):
-            valid_at = model_run_00z + timedelta(hours=j + 1)
+            fxx = j + 6  # fxx 6-10; 0+6=6 to 0+10=10, all within settlement window
+            valid_at = model_run_00z + timedelta(hours=fxx)
             temp_c = round((temp_f - 32) * 5 / 9, 2)
             con.execute(
-                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at) "
-                "VALUES ('KNYC', ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                [model_run_00z, valid_at, temp_f, temp_c],
+                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, fxx, ingested_at) "
+                "VALUES ('KNYC', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                [model_run_00z, valid_at, temp_f, temp_c, fxx],
             )
 
     con.close()

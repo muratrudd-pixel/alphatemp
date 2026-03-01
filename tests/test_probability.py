@@ -31,9 +31,9 @@ def _seed_forecast(con, station_id, model_run_str, temps):
         valid_at = model_run.replace(hour=valid_hour % 24)
         temp_c = round((temp_f - 32) * 5 / 9, 2)
         con.execute(
-            "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at) "
-            "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            [station_id, model_run, valid_at, temp_f, temp_c],
+            "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, fxx, ingested_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            [station_id, model_run, valid_at, temp_f, temp_c, fxx],
         )
 
 

@@ -125,10 +125,10 @@ class HRRRFetcher:
 
                     con.execute(
                         """INSERT INTO forecasts
-                           (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name)
-                           VALUES (?, ?, ?, ?, ?, ?, 'hrrr')""",
+                           (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name, fxx, is_spinup)
+                           VALUES (?, ?, ?, ?, ?, ?, 'hrrr', ?, ?)""",
                         [stid, model_run.replace(tzinfo=None), valid_at.replace(tzinfo=None),
-                         temp_f, temp_c, now.replace(tzinfo=None)],
+                         temp_f, temp_c, now.replace(tzinfo=None), fxx, fxx <= 3],
                     )
                     inserted += 1
                 except duckdb.ConstraintException:

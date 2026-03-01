@@ -69,24 +69,26 @@ def _seed_dual_model_data(db_path, n_days=120):
                 [obs_date, actual],
             )
 
-            # HRRR forecast: run_hour=12, bias = +2.0
+            # HRRR forecast: run_hour=12, bias = +2.0, fxx=6 (12+6=18, within 5..28)
             hrrr_fcst = actual + 2.0
             hrrr_run = datetime(obs_date.year, obs_date.month, obs_date.day, 12, 0)
-            hrrr_valid = hrrr_run + timedelta(hours=6)
+            hrrr_fxx = 6
+            hrrr_valid = hrrr_run + timedelta(hours=hrrr_fxx)
             con.execute(
-                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name) "
-                "VALUES ('KNYC', ?, ?, ?, ?, CURRENT_TIMESTAMP, 'hrrr')",
-                [hrrr_run, hrrr_valid, hrrr_fcst, round((hrrr_fcst - 32) * 5 / 9, 2)],
+                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name, fxx) "
+                "VALUES ('KNYC', ?, ?, ?, ?, CURRENT_TIMESTAMP, 'hrrr', ?)",
+                [hrrr_run, hrrr_valid, hrrr_fcst, round((hrrr_fcst - 32) * 5 / 9, 2), hrrr_fxx],
             )
 
-            # GFS forecast: run_hour=0, bias = -4.0
+            # GFS forecast: run_hour=0, bias = -4.0, fxx=6 (0+6=6, within 5..28)
             gfs_fcst = actual - 4.0
             gfs_run = datetime(obs_date.year, obs_date.month, obs_date.day, 0, 0)
-            gfs_valid = gfs_run + timedelta(hours=6)
+            gfs_fxx = 6
+            gfs_valid = gfs_run + timedelta(hours=gfs_fxx)
             con.execute(
-                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name) "
-                "VALUES ('KNYC', ?, ?, ?, ?, CURRENT_TIMESTAMP, 'gfs')",
-                [gfs_run, gfs_valid, gfs_fcst, round((gfs_fcst - 32) * 5 / 9, 2)],
+                "INSERT INTO forecasts (station_id, model_run, valid_at, temp_f, temp_c, ingested_at, model_name, fxx) "
+                "VALUES ('KNYC', ?, ?, ?, ?, CURRENT_TIMESTAMP, 'gfs', ?)",
+                [gfs_run, gfs_valid, gfs_fcst, round((gfs_fcst - 32) * 5 / 9, 2), gfs_fxx],
             )
     finally:
         con.close()

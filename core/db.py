@@ -265,7 +265,10 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     # ---- Gold layer: pre-computed feature tables for Phase 2+ ----
 
     # Gold: HRRR bias features — one row per (date, run_hour)
-    # fcst_high = max temp_f across all fxx for that model_run
+    # fcst_high = max temp_f across fxx that fall within the settlement day.
+    # NWS CLI uses Local Standard Time (EST = UTC-5 for NYC).
+    # Settlement window: midnight EST to midnight EST = 05:00 UTC to 04:59 UTC next day.
+    # Filter: (run_hour + fxx) >= 5 AND (run_hour + fxx) < 29
     con.execute("""
         CREATE VIEW IF NOT EXISTS gold_hrrr_bias_features AS
         SELECT
@@ -283,10 +286,13 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         WHERE model_name = 'hrrr'
           AND station_id = 'KNYC'
           AND fxx IS NOT NULL
+          AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+          AND (EXTRACT(HOUR FROM model_run) + fxx) < 29
         GROUP BY model_run::DATE, EXTRACT(HOUR FROM model_run)
     """)
 
     # Gold: HRRR bias features WITHOUT spin-up (fxx 1-3 excluded)
+    # Same settlement-day filter as above
     con.execute("""
         CREATE VIEW IF NOT EXISTS gold_hrrr_bias_features_no_spinup AS
         SELECT
@@ -305,10 +311,13 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
           AND station_id = 'KNYC'
           AND fxx IS NOT NULL
           AND is_spinup = FALSE
+          AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+          AND (EXTRACT(HOUR FROM model_run) + fxx) < 29
         GROUP BY model_run::DATE, EXTRACT(HOUR FROM model_run)
     """)
 
     # Gold: multi-model features — aligned forecasts + ensemble spread per (date, run_hour)
+    # Settlement-day filter applied to all models
     con.execute("""
         CREATE VIEW IF NOT EXISTS gold_multi_model_features AS
         WITH model_highs AS (
@@ -320,6 +329,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             FROM forecasts
             WHERE station_id = 'KNYC'
               AND fxx IS NOT NULL
+              AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+              AND (EXTRACT(HOUR FROM model_run) + fxx) < 29
             GROUP BY model_run::DATE, EXTRACT(HOUR FROM model_run), model_name
         )
         SELECT
