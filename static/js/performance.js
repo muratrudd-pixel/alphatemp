@@ -49,6 +49,7 @@ function refreshPerformance() {
         renderBrierComparison(results[1]);
         renderEdgeHeatmap(results[2]);
         renderBreakdown(results[0]);
+        renderPaperPnL(results[0]);
     });
 }
 
@@ -153,7 +154,7 @@ function renderBrierComparison(data) {
     var el = document.getElementById('brier-chart');
     if (!el) return;
 
-    if (!data || !data.by_hour || data.by_hour.length === 0) {
+    if (!data || !data.by_date || data.by_date.length === 0) {
         var noteText = (data && data.note) ? data.note : 'No Brier data yet';
         Plotly.react('brier-chart', [], Object.assign({}, PLOTLY_LAYOUT, {
             annotations: [{
@@ -166,23 +167,15 @@ function renderBrierComparison(data) {
         return;
     }
 
-    var hours = data.by_hour.map(function(p) { return p.hour_et; });
-    var modelScores = data.by_hour.map(function(p) { return p.model_brier; });
-    var marketScores = data.by_hour.map(function(p) { return p.market_brier; });
+    var dates = data.by_date.map(function(p) { return p.date; });
+    var marketScores = data.by_date.map(function(p) { return p.market_brier; });
+    var modelScores = data.by_date.map(function(p) { return p.model_brier; });
 
-    var traceModel = {
-        x: hours,
-        y: modelScores,
-        type: 'scatter',
-        mode: 'lines+markers',
-        line: { color: COLORS.blue, width: 2 },
-        marker: { size: 4 },
-        name: 'Model',
-        hovertemplate: '%{y:.3f}<extra>Model</extra>'
-    };
+    var traces = [];
 
-    var traceMarket = {
-        x: hours,
+    // Market Brier — always present for settled markets
+    traces.push({
+        x: dates,
         y: marketScores,
         type: 'scatter',
         mode: 'lines+markers',
@@ -190,7 +183,22 @@ function renderBrierComparison(data) {
         marker: { size: 4 },
         name: 'Market',
         hovertemplate: '%{y:.3f}<extra>Market</extra>'
-    };
+    });
+
+    // Model Brier — only if any non-null values exist
+    var hasModel = modelScores.some(function(v) { return v != null; });
+    if (hasModel) {
+        traces.push({
+            x: dates,
+            y: modelScores,
+            type: 'scatter',
+            mode: 'lines+markers',
+            line: { color: COLORS.blue, width: 2 },
+            marker: { size: 4 },
+            name: 'Model',
+            hovertemplate: '%{y:.3f}<extra>Model</extra>'
+        });
+    }
 
     var layout = Object.assign({}, PLOTLY_LAYOUT, {
         showlegend: true,
@@ -200,11 +208,11 @@ function renderBrierComparison(data) {
             title: { text: 'Brier Score (lower = better)', standoff: 8, font: { size: 10 } }
         }),
         xaxis: Object.assign({}, PLOTLY_LAYOUT.xaxis, {
-            title: { text: 'Hour (ET)', standoff: 8, font: { size: 10 } }
+            type: 'date'
         })
     });
 
-    Plotly.react('brier-chart', [traceModel, traceMarket], layout, PLOTLY_CONFIG);
+    Plotly.react('brier-chart', traces, layout, PLOTLY_CONFIG);
 }
 
 // -----------------------------------------------------------------------
@@ -377,6 +385,75 @@ function renderBreakdown(data) {
     html += '</div></div>';
 
     el.innerHTML = html;
+}
+
+// -----------------------------------------------------------------------
+// Paper P&L (cumulative line chart from /api/performance)
+// -----------------------------------------------------------------------
+
+function renderPaperPnL(data) {
+    var el = document.getElementById('paper-pnl-chart');
+    if (!el) return;
+
+    if (!data || !data.cumulative_pnl || data.cumulative_pnl.length === 0) {
+        Plotly.react('paper-pnl-chart', [], Object.assign({}, PLOTLY_LAYOUT, {
+            annotations: [{
+                text: 'No paper trading data yet',
+                showarrow: false,
+                font: { size: 14, color: COLORS.slate400 },
+                xref: 'paper', yref: 'paper', x: 0.5, y: 0.5
+            }]
+        }), PLOTLY_CONFIG);
+        updatePaperPnLStats(null);
+        return;
+    }
+
+    var dates = data.cumulative_pnl.map(function(p) { return p.date; });
+    var pnls = data.cumulative_pnl.map(function(p) { return p.pnl; });
+
+    var lineColor = data.total_net >= 0 ? COLORS.green : COLORS.red;
+    var fillColor = data.total_net >= 0 ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)';
+
+    var trace = {
+        x: dates,
+        y: pnls,
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: lineColor, width: 2 },
+        fill: 'tozeroy',
+        fillcolor: fillColor,
+        hovertemplate: '$%{y:.2f}<extra></extra>'
+    };
+
+    var layout = Object.assign({}, PLOTLY_LAYOUT, {
+        yaxis: Object.assign({}, PLOTLY_LAYOUT.yaxis, {
+            title: { text: 'Cumulative P&L ($)', standoff: 8, font: { size: 10 } }
+        }),
+        xaxis: Object.assign({}, PLOTLY_LAYOUT.xaxis, {
+            type: 'date'
+        })
+    });
+
+    Plotly.react('paper-pnl-chart', [trace], layout, PLOTLY_CONFIG);
+    updatePaperPnLStats(data);
+}
+
+function updatePaperPnLStats(data) {
+    var el = document.getElementById('paper-pnl-stats');
+    if (!el) return;
+
+    if (!data || data.total_trades === 0) {
+        el.textContent = 'No trades yet';
+        return;
+    }
+
+    var netFmt = formatPnL(data.total_net);
+    var winPct = data.win_rate != null ? (data.win_rate * 100).toFixed(1) + '%' : '--';
+
+    el.innerHTML =
+        '<span class="mr-4">Trades: <span class="text-slate-200">' + data.total_trades + '</span></span>' +
+        '<span class="mr-4">Win Rate: <span class="text-slate-200">' + winPct + '</span></span>' +
+        '<span>Net P&L: <span class="' + netFmt.colorClass + '">' + netFmt.text + '</span></span>';
 }
 
 // -----------------------------------------------------------------------

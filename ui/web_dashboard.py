@@ -1297,11 +1297,68 @@ async def get_performance(time_range: str = Query("30d", alias="range")):
 
 @app.get("/api/brier-comparison")
 async def get_brier_comparison(time_range: str = Query("30d", alias="range")):
-    """Brier score comparison — stub until backtester integration is ready."""
+    """Brier score comparison — market Brier from last candlestick price vs settlement outcome.
+
+    For each settled market, the market's implied probability is the last
+    candlestick close price (0-1 range).  Brier = avg((prob - outcome)^2) per date.
+    Model Brier requires logging model predictions at market close (not yet implemented).
+    """
+    days_map = {"7d": 7, "30d": 30, "all": 9999}
+    days = days_map.get(time_range, 30)
+
+    con = get_connection()
+    try:
+        # For each settled market, get its outcome and the last candlestick
+        # close price as the market probability.
+        rows = con.execute(
+            """
+            SELECT
+                ks.event_date,
+                ks.market_ticker,
+                ks.settled_yes,
+                kc.price_close AS market_prob
+            FROM kalshi_settlements ks
+            JOIN (
+                SELECT market_ticker, price_close
+                FROM kalshi_candlesticks kc_inner
+                WHERE (market_ticker, end_period_ts) IN (
+                    SELECT market_ticker, MAX(end_period_ts)
+                    FROM kalshi_candlesticks
+                    GROUP BY market_ticker
+                )
+            ) kc ON kc.market_ticker = ks.market_ticker
+            WHERE ks.city = 'NYC'
+              AND ks.measure = 'high'
+              AND ks.settled_yes IS NOT NULL
+              AND ks.event_date >= CURRENT_DATE - INTERVAL '{}' DAY
+            ORDER BY ks.event_date
+            """.format(days),
+        ).fetchall()
+
+        # Aggregate Brier per date: avg((market_prob - outcome)^2)
+        from collections import defaultdict
+        date_scores = defaultdict(list)  # type: ignore[var-annotated]
+        for event_date, _ticker, settled_yes, market_prob in rows:
+            if market_prob is not None and settled_yes is not None:
+                brier = (market_prob - settled_yes) ** 2
+                date_scores[str(event_date)].append(brier)
+
+        by_date = []
+        for date_str in sorted(date_scores.keys()):
+            scores = date_scores[date_str]
+            avg_brier = round(sum(scores) / len(scores), 4)
+            by_date.append({
+                "date": date_str,
+                "market_brier": avg_brier,
+                "model_brier": None,
+            })
+    finally:
+        con.close()
+
     return {
         "range": time_range,
-        "by_hour": [],
-        "note": "Brier comparison requires backtester integration (in progress on separate worktree)",
+        "by_date": by_date,
+        "note": "Model Brier requires logging predictions at market close (not yet implemented)",
     }
 
 
