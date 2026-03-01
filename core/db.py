@@ -223,9 +223,23 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             gross_pnl DOUBLE,
             fees DOUBLE,
             net_pnl DOUBLE,
-            status VARCHAR DEFAULT 'open'
+            status VARCHAR DEFAULT 'open',
+            exit_reason VARCHAR,
+            contracts INTEGER DEFAULT 1,
+            unrealized_pnl DOUBLE DEFAULT 0.0
         )
     """)
+
+    # Migration: add exit_reason, contracts, unrealized_pnl to paper_positions
+    for col, dtype in [
+        ("exit_reason", "VARCHAR"),
+        ("contracts", "INTEGER DEFAULT 1"),
+        ("unrealized_pnl", "DOUBLE DEFAULT 0.0"),
+    ]:
+        try:
+            con.execute(f"ALTER TABLE paper_positions ADD COLUMN {col} {dtype}")
+        except Exception:
+            pass  # Column already exists
 
     # ---- Bronze layer: raw metadata for provenance ----
     con.execute("""
