@@ -15,6 +15,7 @@ from services.bias import BiasEngine
 from services.market_fetcher import MarketFetcher
 from services.nws_fetcher import NWSFetcher
 from services.iem_ingestor import IEMIngestor
+from services.paper_trader import PaperTrader
 
 
 async def main():
@@ -32,6 +33,7 @@ async def main():
     engine = BiasEngine()
     market = MarketFetcher()
     nws = NWSFetcher()
+    paper_trader = PaperTrader()
 
     tasks = [
         ingestor.run(),    # Synoptic — 11 stations (broad coverage)
@@ -40,6 +42,7 @@ async def main():
         engine.run(),
         market.run(),
         nws.run(),
+        paper_trader.run(),  # Paper trading (placeholder strategy)
     ]
 
     if "--dashboard" in sys.argv:
