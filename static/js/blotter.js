@@ -85,7 +85,8 @@ function renderBlotter(brackets, positions) {
         var rowClass = hasPos ? 'text-white' : 'text-slate-500';
         var indicator = hasPos ? '<span class="text-emerald-400 mr-1">\u25CF</span>' : '';
 
-        var modelProb = b.model_prob || 0;
+        var modelProb = b.model_prob;
+        var modelDisplay = modelProb != null ? (modelProb * 100).toFixed(1) + '%' : '--';
         // market_mid is a decimal (0-1); display as cents
         var marketMid = b.market_mid;
         var marketDisplay = marketMid !== null && marketMid !== undefined
@@ -94,9 +95,15 @@ function renderBlotter(brackets, positions) {
         // edge is model_prob - market_mid (decimal); formatEdge expects decimal
         var edgeFmt = formatEdge(b.edge);
 
+        // Bracket label: handle tails
+        var bracketLabel;
+        if (b.floor == null) bracketLabel = '\u2264' + (b.cap - 1) + '\u00B0F';
+        else if (b.cap == null) bracketLabel = '\u2265' + (b.floor + 1) + '\u00B0F';
+        else bracketLabel = b.floor + '-' + b.cap + '\u00B0F';
+
         html += '<tr class="' + rowClass + ' border-b border-slate-800/50">'
-            + '<td class="py-1.5">' + indicator + b.floor + '-' + b.cap + '\u00B0F</td>'
-            + '<td class="text-right">' + (modelProb * 100).toFixed(1) + '%</td>'
+            + '<td class="py-1.5">' + indicator + bracketLabel + '</td>'
+            + '<td class="text-right">' + modelDisplay + '</td>'
             + '<td class="text-right">' + marketDisplay + '</td>'
             + '<td class="text-right ' + edgeFmt.colorClass + '">' + edgeFmt.text + '</td>'
             + '<td class="text-center">' + (pos ? pos.direction : '\u2014') + '</td>'

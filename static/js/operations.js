@@ -441,9 +441,9 @@ function refreshBracketChart() {
             return;
         }
 
-        // Filter brackets where model_prob > 0.01 or market_mid > 0.01
+        // Show all brackets that have market data
         var filtered = data.brackets.filter(function(b) {
-            return b.model_prob > 0.01 || (b.market_mid != null && b.market_mid > 0.01);
+            return b.market_mid != null;
         });
 
         if (filtered.length === 0) {
@@ -458,43 +458,50 @@ function refreshBracketChart() {
             return;
         }
 
-        // Build labels: "40-42°F", "42-44°F", etc.
+        // Build labels: "≤37°F", "38-39°F", "≥46°F", etc.
         var labels = filtered.map(function(b) {
+            if (b.floor == null) return '\u2264' + (b.cap - 1) + '\u00b0F';
+            if (b.cap == null) return '\u2265' + (b.floor + 1) + '\u00b0F';
             return b.floor + '-' + b.cap + '\u00b0F';
         });
 
         var modelProbs = filtered.map(function(b) {
-            return Math.round(b.model_prob * 10000) / 100;
+            return b.model_prob != null ? Math.round(b.model_prob * 10000) / 100 : 0;
         });
         var marketProbs = filtered.map(function(b) {
             return b.market_mid != null ? Math.round(b.market_mid * 10000) / 100 : 0;
         });
 
-        // Model trace (horizontal bar)
-        var traceModel = {
-            y: labels,
-            x: modelProbs,
-            type: 'bar',
-            orientation: 'h',
-            name: 'Model',
-            marker: { color: COLORS.blue, opacity: 0.8 },
-            hovertemplate: '%{x:.1f}%<extra>Model</extra>'
-        };
+        // Only show model trace if model data exists
+        var hasModel = modelProbs.some(function(v) { return v > 0; });
+
+        var traces = [];
+        if (hasModel) {
+            traces.push({
+                y: labels,
+                x: modelProbs,
+                type: 'bar',
+                orientation: 'h',
+                name: 'Model',
+                marker: { color: COLORS.blue, opacity: 0.8 },
+                hovertemplate: '%{x:.1f}%<extra>Model</extra>'
+            });
+        }
 
         // Kalshi trace (horizontal bar)
-        var traceKalshi = {
+        traces.push({
             y: labels,
             x: marketProbs,
             type: 'bar',
             orientation: 'h',
             name: 'Kalshi',
-            marker: { color: COLORS.amber, opacity: 0.6 },
+            marker: { color: COLORS.amber, opacity: 0.8 },
             hovertemplate: '%{x:.1f}%<extra>Kalshi</extra>'
-        };
+        });
 
         var layout = Object.assign({}, PLOTLY_LAYOUT, {
             barmode: 'group',
-            showlegend: true,
+            showlegend: hasModel,
             legend: { x: 1, y: 1, xanchor: 'right', font: { size: 10 } },
             xaxis: Object.assign({}, PLOTLY_LAYOUT.xaxis, {
                 title: { text: 'Probability %', standoff: 8, font: { size: 10 } }
@@ -505,7 +512,7 @@ function refreshBracketChart() {
             margin: { t: 10, r: 20, b: 40, l: 70 }
         });
 
-        Plotly.react('bracket-chart', [traceModel, traceKalshi], layout, PLOTLY_CONFIG);
+        Plotly.react('bracket-chart', traces, layout, PLOTLY_CONFIG);
 
         // Render liquidity info below the chart
         var liqEl = document.getElementById('liquidity-bar');

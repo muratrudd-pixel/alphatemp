@@ -232,11 +232,15 @@ async def kpi_summary(city: str = "nyc"):
             "amber" if health_data.get("obs_stale") or health_data.get("fcst_stale") else "green"
         )
 
-        # Model high from probability engine
-        try:
-            forecast = engine.calculate_city(city_upper, None)
-            model_high = forecast.center if forecast else None
-        except Exception:
+        # Model high from probability engine (disabled while engine is pinned for rework)
+        from core.constants import PROBABILITY_ENGINE_ENABLED
+        if PROBABILITY_ENGINE_ENABLED:
+            try:
+                forecast = engine.calculate_city(city_upper, None)
+                model_high = forecast.center if forecast else None
+            except Exception:
+                model_high = None
+        else:
             model_high = None
 
         # Settlement status from nws_daily
@@ -554,9 +558,30 @@ async def forecast_curve(city: str, date: str = None):
         ).fetchall()
 
     if not forecasts:
+        # Still fetch observations even when no forecasts available
+        obs_points = []
+        running_high_f = None
+        settlement_marker = None
+        if day_start_utc:
+            obs_rows = con.execute(
+                """SELECT observed_at, temp_f FROM observations
+                   WHERE station_id = ? AND observed_at >= ? AND observed_at < ?
+                   ORDER BY observed_at""",
+                [station_id, day_start_utc, day_end_utc],
+            ).fetchall()
+            for observed_at_ts, temp_f in obs_rows:
+                if temp_f is not None:
+                    obs_points.append({
+                        "observed_at": observed_at_ts.isoformat(),
+                        "temp_f": round(temp_f, 1),
+                    })
+                    if running_high_f is None or temp_f > running_high_f:
+                        running_high_f = temp_f
         con.close()
-        return {"city": city, "forecasts": [], "observations": [],
-                "ribbon": [], "prior_runs": []}
+        return {"city": city, "forecasts": [], "observations": obs_points,
+                "ribbon": [], "prior_runs": [],
+                "running_high": running_high_f,
+                "settlement_marker": settlement_marker}
 
     # Build ribbon bounds using the engine's uncertainty model
     bias = engine.provider.get_bias_stats(station_id)
@@ -966,23 +991,28 @@ async def bracket_spread(city: str, date: str = None):
     if city not in CITIES:
         return {"error": f"Unknown city: {city}"}
 
-    # 1. Get model probabilities — handle engine failures gracefully
-    try:
-        forecast = engine.calculate_city(city)
-    except Exception:
-        forecast = None
-
-    model_center = forecast.center if forecast else None
-    model_std = forecast.std if forecast else None
-
-    # Map 1°F model probs to 2°F Kalshi brackets: floor = (temp_f // 2) * 2
+    # 1. Get model probabilities (disabled while engine is pinned for rework)
+    from core.constants import PROBABILITY_ENGINE_ENABLED
+    model_center = None
+    model_std = None
     model_2f = {}  # type: Dict[tuple, float]
-    if forecast and forecast.bracket_probs:
-        for temp_f, prob in forecast.bracket_probs.items():
-            floor = (temp_f // 2) * 2
-            cap = floor + 2
-            key = (floor, cap)
-            model_2f[key] = model_2f.get(key, 0.0) + prob
+
+    if PROBABILITY_ENGINE_ENABLED:
+        try:
+            forecast = engine.calculate_city(city)
+        except Exception:
+            forecast = None
+
+        model_center = forecast.center if forecast else None
+        model_std = forecast.std if forecast else None
+
+        # Map 1°F model probs to Kalshi brackets
+        if forecast and forecast.bracket_probs:
+            for temp_f, prob in forecast.bracket_probs.items():
+                floor = (temp_f // 2) * 2
+                cap = floor + 2
+                key = (floor, cap)
+                model_2f[key] = model_2f.get(key, 0.0) + prob
 
     # 2. Get latest Kalshi market ticks for this city + date
     from core.timezone import ET as _ET
@@ -1012,29 +1042,44 @@ async def bracket_spread(city: str, date: str = None):
         [city, f"%{kalshi_date}%", city, f"%{kalshi_date}%"],
     ).fetchall()
 
-    # Index market data by (floor, cap) for merging
+    # Index market data by (floor, cap) for merging — include tail brackets
     market_by_bracket = {}  # type: Dict[tuple, dict]
     for market_id, yes_bid, yes_ask, last_trade, floor_strike, cap_strike, volume in ticks:
-        if floor_strike is not None and cap_strike is not None:
-            key = (int(floor_strike), int(cap_strike))
-            market_by_bracket[key] = {
-                "yes_bid": yes_bid,
-                "yes_ask": yes_ask,
-                "volume": volume or 0,
-            }
+        # Bottom tail: floor=None, cap=X → "below X"
+        # Range: floor=X, cap=Y → "X to Y"
+        # Top tail: floor=X, cap=None → "above X"
+        f = int(floor_strike) if floor_strike is not None else None
+        c = int(cap_strike) if cap_strike is not None else None
+        key = (f, c)
+        market_by_bracket[key] = {
+            "yes_bid": yes_bid,
+            "yes_ask": yes_ask,
+            "volume": volume or 0,
+        }
 
     con.close()
 
     # 3. Merge model + market into bracket objects
-    all_keys = set(model_2f.keys()) | set(market_by_bracket.keys())
+    # When model is disabled, only show market brackets
+    if model_2f:
+        all_keys = set(model_2f.keys()) | set(market_by_bracket.keys())
+    else:
+        all_keys = set(market_by_bracket.keys())
+
+    # Sort: bottom tail first (floor=None), then ranges by floor, then top tail (cap=None)
+    def bracket_sort_key(k):
+        f, c = k
+        return (f if f is not None else -9999, c if c is not None else 9999)
+
     brackets = []
     total_volume = 0
     spread_sum = 0.0
     spread_count = 0
 
-    for key in sorted(all_keys):
+    for key in sorted(all_keys, key=bracket_sort_key):
         floor, cap = key
-        model_prob = round(model_2f.get(key, 0.0), 4)
+        has_model = key in model_2f
+        model_prob = round(model_2f[key], 4) if has_model else None
         mkt = market_by_bracket.get(key, {})
         yes_bid = mkt.get("yes_bid")
         yes_ask = mkt.get("yes_ask")
@@ -1044,7 +1089,7 @@ async def bracket_spread(city: str, date: str = None):
         if yes_bid is not None and yes_ask is not None:
             market_mid = round((yes_bid + yes_ask) / 2.0, 4)
 
-        edge = round(model_prob - market_mid, 4) if market_mid is not None else None
+        edge = round(model_prob - market_mid, 4) if (model_prob is not None and market_mid is not None) else None
 
         brackets.append({
             "floor": floor,
@@ -1848,20 +1893,23 @@ async def blotter_data(city: str, date: str = None):
     con = get_connection()
     try:
         # --- Countdown ---
-        try:
-            forecast = engine.calculate_city(city_upper, None)
-        except Exception:
-            forecast = None
-        model_high = forecast.center if forecast else None
+        from core.constants import PROBABILITY_ENGINE_ENABLED
+        model_high = None
         model_bracket = None
         model_bracket_prob = None
-        if forecast and forecast.bracket_probs:
-            floor_2f = int((model_high // 2) * 2)
-            model_bracket_prob = round(
-                forecast.bracket_probs.get(floor_2f, 0)
-                + forecast.bracket_probs.get(floor_2f + 1, 0), 3
-            )
-            model_bracket = "{}-{}".format(floor_2f, floor_2f + 2)
+        if PROBABILITY_ENGINE_ENABLED:
+            try:
+                forecast = engine.calculate_city(city_upper, None)
+            except Exception:
+                forecast = None
+            model_high = forecast.center if forecast else None
+            if forecast and forecast.bracket_probs and model_high is not None:
+                floor_2f = int((model_high // 2) * 2)
+                model_bracket_prob = round(
+                    forecast.bracket_probs.get(floor_2f, 0)
+                    + forecast.bracket_probs.get(floor_2f + 1, 0), 3
+                )
+                model_bracket = "{}-{}".format(floor_2f, floor_2f + 2)
 
         # Running obs max
         obs_row = con.execute("""

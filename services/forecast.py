@@ -150,12 +150,16 @@ class HRRRFetcher:
 
         total = 0
         loop = asyncio.get_event_loop()
+        consecutive_empty = 0
         for run in runs:
             count = await loop.run_in_executor(None, self.fetch_run, run)
-            if count == 0 and run == runs[0]:
-                # Newest run not published yet — normal, just wait
-                logger.debug(f"HRRR {run.strftime('%Hz')} not available yet")
-                break
+            if count == 0:
+                consecutive_empty += 1
+                if consecutive_empty >= 3:
+                    # 3 consecutive misses — remaining runs likely unavailable too
+                    break
+                continue
+            consecutive_empty = 0
             total += count
         return total
 

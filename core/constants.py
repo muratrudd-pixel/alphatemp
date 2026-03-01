@@ -57,6 +57,9 @@ MARKET_POLL_INTERVAL_SECONDS: int = 60
 # Drift/bias engine polling interval (BiasEngine runs every 60s)
 DRIFT_POLL_INTERVAL_SECONDS: int = 60
 
+# Probability engine kill switch — disabled while engine is pinned for rework
+PROBABILITY_ENGINE_ENABLED: bool = False
+
 # Settlement station coordinates for HRRR grid point extraction
 STATION_COORDS: dict = {
     "KNYC": (40.7789, -73.9692),

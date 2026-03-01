@@ -59,6 +59,13 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         except Exception:
             pass  # Column already exists
 
+    # Migration: add open_interest/liquidity/volume_24h to market_ticks
+    for col, dtype in [("open_interest", "BIGINT"), ("liquidity", "BIGINT"), ("volume_24h", "BIGINT")]:
+        try:
+            con.execute(f"ALTER TABLE market_ticks ADD COLUMN {col} {dtype}")
+        except Exception:
+            pass  # Column already exists
+
     # Migration: add 6-hour synoptic max/min columns to observations
     for col in ("six_hr_max_c", "six_hr_min_c"):
         try:
@@ -470,6 +477,9 @@ def _migrate_market_ticks_unique(con: duckdb.DuckDBPyConnection) -> None:
                 volume       INTEGER,
                 floor_strike DOUBLE,
                 cap_strike   DOUBLE,
+                open_interest BIGINT,
+                liquidity    BIGINT,
+                volume_24h   BIGINT,
                 UNIQUE (market_id, captured_at)
             )
         """)
@@ -477,7 +487,8 @@ def _migrate_market_ticks_unique(con: duckdb.DuckDBPyConnection) -> None:
             INSERT INTO market_ticks_new
             SELECT DISTINCT ON (market_id, captured_at)
                 market_id, city, captured_at, yes_bid, yes_ask,
-                no_bid, no_ask, last_trade, volume, floor_strike, cap_strike
+                no_bid, no_ask, last_trade, volume, floor_strike, cap_strike,
+                open_interest, liquidity, volume_24h
             FROM market_ticks
             ORDER BY market_id, captured_at
         """)
