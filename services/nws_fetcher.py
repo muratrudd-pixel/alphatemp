@@ -28,6 +28,7 @@ from core.constants import (
     NWS_DAILY_POLL_INTERVAL_SECONDS,
 )
 from core.db import get_connection
+from core.heartbeat import record_heartbeat
 from core.retry import retry_async
 
 ACIS_URL = "https://data.rcc-acis.org/StnData"
@@ -511,14 +512,23 @@ class NWSFetcher:
         last_cli = 0.0
         last_dsm = 0.0
         while True:
-            now = time.monotonic()
-            if now - last_cli >= cli_interval:
-                await self.poll_cli()
-                last_cli = time.monotonic()
-            if now - last_dsm >= dsm_interval:
-                await self.poll_dsm()
-                last_dsm = time.monotonic()
-            if now - last_acis >= acis_interval:
-                await self.poll_once()
-                last_acis = time.monotonic()
+            try:
+                cycle_start = time.monotonic()
+                now = time.monotonic()
+                if now - last_cli >= cli_interval:
+                    await self.poll_cli()
+                    last_cli = time.monotonic()
+                if now - last_dsm >= dsm_interval:
+                    await self.poll_dsm()
+                    last_dsm = time.monotonic()
+                if now - last_acis >= acis_interval:
+                    await self.poll_once()
+                    last_acis = time.monotonic()
+                record_heartbeat(
+                    "NWSFetcher",
+                    duration_ms=(time.monotonic() - cycle_start) * 1000,
+                )
+            except Exception as e:
+                record_heartbeat("NWSFetcher", duration_ms=0, status="error", error=str(e))
+                logger.error(f"NWS fetch cycle failed: {e}")
             await asyncio.sleep(60)

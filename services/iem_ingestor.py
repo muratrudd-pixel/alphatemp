@@ -6,6 +6,7 @@ for non-airport stations like KNYC (Central Park).
 """
 
 import asyncio
+import time
 from datetime import datetime, timezone
 
 import duckdb
@@ -14,6 +15,7 @@ from loguru import logger
 
 from core.constants import IEM_POLL_INTERVAL_SECONDS
 from core.db import get_connection
+from core.heartbeat import record_heartbeat
 from core.retry import retry_async
 from services.ingestor import parse_t_group, parse_6h_max, parse_6h_min, _is_metar_stub
 
@@ -153,5 +155,14 @@ class IEMIngestor:
             f"every {IEM_POLL_INTERVAL_SECONDS}s"
         )
         while True:
-            await self.poll_once()
+            try:
+                cycle_start = time.monotonic()
+                await self.poll_once()
+                record_heartbeat(
+                    "IEMIngestor",
+                    duration_ms=(time.monotonic() - cycle_start) * 1000,
+                )
+            except Exception as e:
+                record_heartbeat("IEMIngestor", duration_ms=0, status="error", error=str(e))
+                logger.error(f"AWC ingestor cycle failed: {e}")
             await asyncio.sleep(IEM_POLL_INTERVAL_SECONDS)

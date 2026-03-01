@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -12,6 +13,7 @@ from loguru import logger
 
 from core.constants import get_all_station_ids, POLL_INTERVAL_SECONDS
 from core.db import get_connection
+from core.heartbeat import record_heartbeat
 from core.retry import retry_async
 
 T_GROUP_PATTERN = re.compile(r"\bT(\d)(\d{3})")
@@ -223,5 +225,14 @@ class SynopticIngestor:
         await self._recover_gap()
         logger.info(f"Starting Synoptic ingestor — polling {len(self.stations)} stations every {POLL_INTERVAL_SECONDS}s")
         while True:
-            await self.poll_once()
+            try:
+                cycle_start = time.monotonic()
+                await self.poll_once()
+                record_heartbeat(
+                    "SynopticIngestor",
+                    duration_ms=(time.monotonic() - cycle_start) * 1000,
+                )
+            except Exception as e:
+                record_heartbeat("SynopticIngestor", duration_ms=0, status="error", error=str(e))
+                logger.error(f"Synoptic ingestor cycle failed: {e}")
             await asyncio.sleep(POLL_INTERVAL_SECONDS)

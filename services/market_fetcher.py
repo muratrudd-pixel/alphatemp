@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -9,6 +10,7 @@ from loguru import logger
 
 from core.constants import CITIES
 from core.db import get_connection
+from core.heartbeat import record_heartbeat
 from services.exchange import KalshiClient, SERIES_MAP, get_temperature_markets
 
 # Poll every 60 seconds — Kalshi books update frequently
@@ -132,7 +134,13 @@ class MarketFetcher:
 
         while True:
             try:
+                cycle_start = time.monotonic()
                 self._fetch_and_store()
+                record_heartbeat(
+                    "MarketFetcher",
+                    duration_ms=(time.monotonic() - cycle_start) * 1000,
+                )
             except Exception as e:
+                record_heartbeat("MarketFetcher", duration_ms=0, status="error", error=str(e))
                 logger.error(f"Market fetch cycle failed: {e}")
             await asyncio.sleep(MARKET_POLL_INTERVAL)

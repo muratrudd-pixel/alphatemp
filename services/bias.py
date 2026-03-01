@@ -1,5 +1,6 @@
 """Bias Engine — real-time drift detection between observations and HRRR forecasts."""
 
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -9,6 +10,7 @@ from scipy import stats
 
 from core.constants import CITIES, STATION_COORDS
 from core.db import get_connection
+from core.heartbeat import record_heartbeat
 
 
 def compute_drift(obs_temps: List[float], fcst_temps: List[float]) -> float:
@@ -229,7 +231,13 @@ class BiasEngine:
         logger.info("Starting Bias Engine — calculating drift every 60s")
         while True:
             try:
+                cycle_start = time.monotonic()
                 self.calculate_and_store()
+                record_heartbeat(
+                    "BiasEngine",
+                    duration_ms=(time.monotonic() - cycle_start) * 1000,
+                )
             except Exception as e:
+                record_heartbeat("BiasEngine", duration_ms=0, status="error", error=str(e))
                 logger.error(f"Bias engine cycle failed: {e}")
             await asyncio.sleep(POLL_INTERVAL_SECONDS)

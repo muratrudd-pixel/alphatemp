@@ -6,6 +6,7 @@ HRRR publishes hourly; data typically lands on AWS ~45-90 min after run time.
 """
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
@@ -17,6 +18,7 @@ from loguru import logger
 
 from core.constants import STATION_COORDS
 from core.db import get_connection
+from core.heartbeat import record_heartbeat
 
 # Poll every 2 minutes — frequent short checks to catch new runs ASAP
 FETCH_INTERVAL_SECONDS = 120
@@ -165,7 +167,13 @@ class HRRRFetcher:
         )
         while True:
             try:
+                cycle_start = time.monotonic()
                 await self.fetch_latest()
+                record_heartbeat(
+                    "HRRRFetcher",
+                    duration_ms=(time.monotonic() - cycle_start) * 1000,
+                )
             except Exception as e:
+                record_heartbeat("HRRRFetcher", duration_ms=0, status="error", error=str(e))
                 logger.error(f"HRRR fetch cycle failed: {e}")
             await asyncio.sleep(FETCH_INTERVAL_SECONDS)
