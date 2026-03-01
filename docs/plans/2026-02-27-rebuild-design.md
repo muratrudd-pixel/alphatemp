@@ -284,6 +284,43 @@ Market Brier collapses 0.63 → 0.14 through the day. The model barely moves. Un
 
 **Why Phase 3.7 failed:** The two-level cache was keyed by `update_hour_et`, so all training rows in a given batch had the same `update_hour` value. The primary variance feature was constant in every regression. The fix is cross-hour training.
 
+### Phase 2 Empirical Findings (2026-03-01 ablation)
+
+These findings inform Phase 3 design decisions:
+
+**1. Static std is the Brier bottleneck, not the center.** OLS center accuracy improved year-over-year (MAE: 2023=2.62, 2024=2.75, 2025=2.54) but Brier degraded (0.728 → 0.748 → 0.785). The expanding walk-forward window helps bias coefficients but produces a static residual std that averages together calm and volatile periods. Phase 3 MUST replace this static std — it's the single largest source of Brier loss.
+
+**2. Tail errors dominate.** 50% of evaluations are within 2°F (Brier 0.682, solid). But the 14% with 5-10°F errors produce Brier 0.951, and the 2% with 10°F+ errors hit 1.216. Phase 3's dynamic uncertainty must widen the distribution on high-error days — these are where Brier bleeds most.
+
+**3. Cold days are hardest.** Cold (<40°F) Brier 0.853 vs warm (60-80°F) 0.731. Winter inversions, snow cover, radiative cooling — processes HRRR's 3km grid can't resolve. Phase 3 should learn higher uncertainty for cold regimes. Also investigate whether the market is equally bad here (potential edge despite worse model accuracy).
+
+**4. Keep all historical data for bias correction.** Rolling window was considered and rejected — the expanding window's center prediction is fine (MAE improves with more data). Only the std degrades, and Phase 3 replaces that entirely. Don't throw away training data that helps the center.
+
+**5. Simple OLS beat everything.** EMOS (-3.5%), cross-hour OLS (-5.8%), OLS-no-spinup (-11.4%) all worse. The bias-forecast relationship is fundamentally linear. Don't over-engineer Phase 2 — invest complexity in Phase 3 (dynamic uncertainty) where it's needed.
+
+### Phase 2 P&L Diagnostic Findings (2026-03-01)
+
+Strategy backtester results using OLS champion on 2023-06-01 to 2026-02-01.
+These findings inform both Phase 3 design and execution optimization.
+
+**Headline:** -100% return, 800 settlement trades, 1.0% win rate (8 wins). 632 model-shift exits. Total loss: -$99.99 from $100 starting capital.
+
+**6. Cheap contracts are a death trap.** 47% of settlement trades (374/800) were at ask < 5¢ — ALL lost. The 0-10¢ bucket (571 trades) also had 0% win rate. The model overvalues brackets the market correctly prices as near-impossible. **Fix applied:** added `min_ask_cents = 5.0` sanity filter. Phase 3's calibrated probabilities should reduce but not eliminate this failure mode — keep the filter as a permanent failsafe.
+
+**7. The model is worse than random at bracket selection.** 1.0% win rate vs 20% random chance (5 brackets). The static std spreads a normal distribution across multiple 2°F brackets, buys 2-3 per day, and almost never picks the one that settles. Interior brackets: 561 trades, 0.2% win rate. Phase 3 must produce a distribution that concentrates probability correctly, not smear it.
+
+**8. Model instability causes massive churn losses.** 632 model-shift exits (selling when model changes preferred bracket) lost -4,052¢. The model flip-flops between brackets across triggers because small forecast updates shift the static normal distribution. Phase 3's dynamic uncertainty should stabilize bracket selection — wider uncertainty = less confident commitment to a single bracket = fewer false trades.
+
+**9. It's a picking problem, not a fee problem.** Gross P&L (before fees) was -5,075¢. Fees were only 872¢ (17% drag). Even with zero fees, the strategy loses $50+. The model's probability estimates are fundamentally miscalibrated, creating phantom displacement that triggers trades on the wrong brackets.
+
+**10. Illustrative failure mode.** 2023-09-03: model assigned 99% probability to lower tail bracket (<85°F), market priced it at 7¢. The actual high was ~90°F. The model's forecast center was ~10°F low, and the static std couldn't flag this as a high-uncertainty day. Phase 3 must learn to widen the distribution when forecast error is likely large (early morning, cold regime, high model spread).
+
+**Implications for Phase 3:**
+- The P&L diagnostic is a trajectory tracker, not a kill signal. At Phase 2, P&L will be negative — that's expected.
+- Re-run this diagnostic after Phase 3. Target: win rate > 20% (above random), positive gross P&L. Profitability requires calibrated probabilities, not just a good center.
+- The `min_ask_cents = 5¢` filter should remain even after Phase 3 as a structural failsafe.
+- Model-shift exit count is a proxy for probability stability — track it across phases. Lower = better calibration.
+
 ### Candidate A: EMOS Variance Layer
 
 If EMOS (Phase 2 Candidate B) won the bias ablation, it already outputs a calibrated variance. Test whether EMOS variance, conditioned on additional features (running_max, hours to settlement, ensemble spread), closes the dynamic uncertainty gap without a separate Phase 3 model.

@@ -103,6 +103,7 @@ class BacktestConfig:
     fixed_bet_size: int = 1
     min_displacement: float = 0.0  # DEPRECATED: displacement is now dynamic fee-adjusted
     min_model_prob: float = 0.05
+    min_ask_cents: float = 5.0
     max_spread_cents: float = 10.0
     max_model_std: float = 3.5
     min_reentry_minutes: int = 60
@@ -173,6 +174,7 @@ class SanityFilter:
     def __init__(self, config):
         # type: (BacktestConfig) -> None
         self.min_model_prob = config.min_model_prob
+        self.min_ask_cents = config.min_ask_cents
         self.max_spread_cents = config.max_spread_cents
         self.max_model_std = config.max_model_std
 
@@ -190,6 +192,8 @@ class SanityFilter:
         """Run 5 filters in order. Return (True, '') or (False, reason)."""
         if model_prob < self.min_model_prob:
             return (False, "model_prob %.3f below min %.3f" % (model_prob, self.min_model_prob))
+        if market_ask_cents < self.min_ask_cents:
+            return (False, "ask %.1f¢ below min %.1f¢" % (market_ask_cents, self.min_ask_cents))
         if is_post_peak:
             return (False, "post_peak: daily high likely passed")
         if spread_cents > self.max_spread_cents:
