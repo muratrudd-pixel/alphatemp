@@ -1682,3 +1682,116 @@ async def get_review_patterns(time_range: str = Query("30d", alias="range")):
         "range": time_range,
         "patterns": patterns,
     }
+
+
+# ---------------------------------------------------------------------------
+# Blotter — bundled countdown + brackets + positions
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/blotter/{city}")
+async def blotter_data(city: str, date: str = None):
+    """Bundled data for the blotter page: countdown + brackets + positions."""
+    city_upper = city.upper()
+    target_date = date or get_today_et()
+    con = get_connection()
+    try:
+        # --- Countdown ---
+        try:
+            forecast = engine.calculate_city(city_upper, None)
+        except Exception:
+            forecast = None
+        model_high = forecast.center if forecast else None
+        model_bracket = None
+        model_bracket_prob = None
+        if forecast and forecast.bracket_probs:
+            floor_2f = int((model_high // 2) * 2)
+            model_bracket_prob = round(
+                forecast.bracket_probs.get(floor_2f, 0)
+                + forecast.bracket_probs.get(floor_2f + 1, 0), 3
+            )
+            model_bracket = "{}-{}".format(floor_2f, floor_2f + 2)
+
+        # Running obs max
+        obs_row = con.execute("""
+            SELECT MAX(temp_f), MAX(observed_at)
+            FROM observations
+            WHERE station_id = 'KNYC'
+              AND observed_at >= ?::DATE
+              AND observed_at < ?::DATE + INTERVAL '1 day'
+        """, [target_date, target_date]).fetchone()
+        running_obs_max = obs_row[0] if obs_row else None
+        obs_max_time = obs_row[1].isoformat() if obs_row and obs_row[1] else None
+
+        # Settlement source
+        settle_row = con.execute("""
+            SELECT max_temp_f, source FROM nws_daily
+            WHERE station_id = 'KNYC' AND obs_date = ?
+            ORDER BY CASE source
+                WHEN 'NWS_CLI' THEN 3 WHEN 'DSM' THEN 2 ELSE 1
+            END DESC LIMIT 1
+        """, [target_date]).fetchone()
+
+        # Market close time
+        close_row = con.execute("""
+            SELECT close_time FROM kalshi_settlements
+            WHERE city = ? AND event_date = ?
+            LIMIT 1
+        """, [city_upper, target_date]).fetchone()
+
+        countdown = {
+            "event_date": target_date,
+            "model_high": model_high,
+            "model_bracket": model_bracket,
+            "model_bracket_prob": model_bracket_prob,
+            "running_obs_max": running_obs_max,
+            "obs_max_time": obs_max_time,
+            "settlement": {
+                "temp": settle_row[0] if settle_row else None,
+                "source": settle_row[1] if settle_row else "pending",
+            },
+            "close_time": close_row[0].isoformat() if close_row and close_row[0] else None,
+        }
+
+        # --- Brackets (reuse existing endpoint) ---
+        brackets_resp = await bracket_spread(city, target_date)
+
+        # --- Positions ---
+        positions = con.execute("""
+            SELECT bracket_floor, bracket_cap, direction, contracts,
+                   entry_price, unrealized_pnl, net_pnl, status, exit_reason
+            FROM paper_positions
+            WHERE city = ? AND event_date = ?
+            ORDER BY bracket_floor
+        """, [city_upper, target_date]).fetchall()
+
+        position_list = []
+        for p in positions:
+            position_list.append({
+                "bracket_floor": p[0], "bracket_cap": p[1],
+                "direction": p[2], "contracts": p[3],
+                "entry_price": p[4],
+                "pnl": p[5] if p[7] == "open" else p[6],
+                "status": p[7], "exit_reason": p[8],
+            })
+
+        open_positions = [p for p in positions if p[7] == "open"]
+        open_count = len(open_positions)
+        day_exposure = sum((p[4] * p[3] / 100.0) for p in open_positions if p[4] and p[3])
+        day_pnl = sum(
+            (p[5] if p[7] == "open" else (p[6] or 0))
+            for p in positions
+        )
+
+        return {
+            "countdown": countdown,
+            "brackets": brackets_resp,
+            "positions": position_list,
+            "positions_summary": {
+                "open_count": open_count,
+                "day_exposure": round(day_exposure, 2),
+                "day_pnl": round(day_pnl, 2),
+            },
+        }
+    finally:
+        con.close()
