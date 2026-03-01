@@ -16,6 +16,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set, Tuple
+from zoneinfo import ZoneInfo
 
 import duckdb
 import numpy as np
@@ -161,7 +162,7 @@ class TradeRecord:
 
 # ── Timezone Constant ──────────────────────────────────────────────────────
 
-_ET = timezone(timedelta(hours=-5))
+_ET = ZoneInfo("America/New_York")  # DST-aware via zoneinfo
 
 
 # ── Sanity Filter ──────────────────────────────────────────────────────────
@@ -971,14 +972,15 @@ class StrategyBacktester:
                 continue
 
             # Market window: prior day 10 AM ET -> settlement day 11 PM ET
+            prior_day = event_date - timedelta(days=1)
             market_open = datetime(
-                event_date.year, event_date.month, event_date.day,
-                15, 0, tzinfo=timezone.utc,  # 10 AM ET = 15 UTC
-            ) - timedelta(days=1)
+                prior_day.year, prior_day.month, prior_day.day,
+                10, 0, tzinfo=_ET,
+            ).astimezone(timezone.utc)
             market_close = datetime(
                 event_date.year, event_date.month, event_date.day,
-                23, 0, tzinfo=timezone.utc,
-            )
+                23, 0, tzinfo=_ET,
+            ).astimezone(timezone.utc)
 
             # Get triggers for this event
             triggers = self.trigger_detector.get_triggers(

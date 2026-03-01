@@ -216,14 +216,14 @@ class TestSanityFilter:
 
     def test_not_post_peak_too_early(self):
         """Declining but before 2 PM ET -> False."""
-        base = datetime(2025, 7, 15, 15, 0, tzinfo=timezone.utc)  # 10 AM ET
+        base = datetime(2025, 7, 15, 14, 0, tzinfo=timezone.utc)  # 10 AM EDT
         obs = [
             (base, 80.0),
             (base + timedelta(hours=1), 82.0),
             (base + timedelta(hours=2), 81.0),  # declining
             (base + timedelta(hours=3), 79.0),  # declining
         ]
-        current = base + timedelta(hours=3)  # 1 PM ET = 18:00 UTC
+        current = base + timedelta(hours=3)  # 1 PM EDT = 17:00 UTC
         assert SanityFilter.is_post_peak_check(obs, current) is False
 
 
