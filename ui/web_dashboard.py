@@ -1636,7 +1636,7 @@ async def get_review_incidents(time_range: str = Query("30d", alias="range"),
                              int(bc) if bc is not None else None))
 
         # Get daily best market prices per bracket from market_ticks
-        # Use the last snapshot per day per bracket
+        # Average daily midpoint per bracket
         missed_rows = con.execute(
             """SELECT
                    mt.city,
@@ -1723,7 +1723,7 @@ async def get_review_incidents(time_range: str = Query("30d", alias="range"),
 
         date_str = str(event_date)
         sd = settlement_data.get(date_str)
-        settlement_temp = sd["temp"] if sd else None
+        settlement_temp = sd.get("temp") if sd else None
         settlement_source = sd.get("source") if sd else None
 
         pos_dict = {
