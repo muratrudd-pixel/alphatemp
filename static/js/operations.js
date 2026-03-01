@@ -209,7 +209,21 @@ function refreshTempChart() {
         // 9. Settlement marker
         var traceSettlement = null;
         if (data.observed_high != null && data.observed_high_at) {
-            var isNWS = data.settlement_source === 'nws_cli';
+            var src = data.settlement_source;
+            var settleName, settleHover, settleSymbol;
+            if (src === 'nws_cli') {
+                settleName = 'NWS Settlement (CLI)';
+                settleHover = 'NWS Settlement: ';
+                settleSymbol = 'diamond';
+            } else if (src === 'dsm') {
+                settleName = 'Settlement (DSM)';
+                settleHover = 'DSM Settlement: ';
+                settleSymbol = 'diamond';
+            } else {
+                settleName = 'Running High (est)';
+                settleHover = 'Running High: ';
+                settleSymbol = 'circle';
+            }
             traceSettlement = {
                 x: [toETIso(data.observed_high_at)],
                 y: [data.observed_high],
@@ -217,11 +231,11 @@ function refreshTempChart() {
                 marker: {
                     size: 14,
                     color: COLORS.amber,
-                    symbol: isNWS ? 'diamond' : 'circle',
+                    symbol: settleSymbol,
                     line: { color: '#ffffff', width: 1.5 }
                 },
-                name: isNWS ? 'NWS Settlement' : 'Running High (est)',
-                hovertemplate: (isNWS ? 'NWS Settlement: ' : 'Running High: ') + '%{y:.1f}\u00b0F<extra></extra>'
+                name: settleName,
+                hovertemplate: settleHover + '%{y:.1f}\u00b0F<extra></extra>'
             };
         }
 
@@ -285,7 +299,7 @@ function refreshTempChart() {
 
         // Settlement horizontal line
         if (data.observed_high != null) {
-            var isNWSSL = data.settlement_source === 'nws_cli';
+            var isAuthoritative = data.settlement_source === 'nws_cli' || data.settlement_source === 'dsm';
             shapes.push({
                 type: 'line',
                 x0: 0, x1: 1, xref: 'paper',
@@ -293,7 +307,7 @@ function refreshTempChart() {
                 line: {
                     color: 'rgba(245,158,11,0.4)',
                     width: 1,
-                    dash: isNWSSL ? 'solid' : 'dot'
+                    dash: isAuthoritative ? 'solid' : 'dot'
                 }
             });
         }
@@ -602,6 +616,26 @@ function refreshPositions() {
 }
 
 // -----------------------------------------------------------------------
+// Stale Data Check
+// -----------------------------------------------------------------------
+
+async function checkStaleness() {
+    var health = await fetchAPI('/api/health');
+    if (!health) return;
+    var warnings = [];
+    if (health.obs_stale) warnings.push('Observations (' + Math.round(health.obs_age_minutes) + ' min)');
+    if (health.fcst_stale) warnings.push('Forecasts (' + Math.round(health.fcst_age_minutes) + ' min)');
+    var banner = document.getElementById('stale-banner');
+    if (!banner) return;
+    if (warnings.length > 0) {
+        banner.textContent = 'Stale data: ' + warnings.join(', ');
+        banner.classList.remove('hidden');
+    } else {
+        banner.classList.add('hidden');
+    }
+}
+
+// -----------------------------------------------------------------------
 // Refresh Loop
 // -----------------------------------------------------------------------
 
@@ -611,6 +645,7 @@ function refreshAll() {
     refreshFcstFeed();
     refreshBracketChart();
     refreshPositions();
+    checkStaleness();
     countdown = 60;
 }
 

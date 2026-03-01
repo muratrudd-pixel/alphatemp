@@ -111,12 +111,14 @@ function fetchAPI(url) {
         .then(function(r) {
             if (!r.ok) {
                 console.error('fetchAPI non-OK:', r.status, url);
+                showToast('API error: ' + url, 'error');
                 return null;
             }
             return r.json();
         })
         .catch(function(e) {
             console.error('fetchAPI error:', url, e);
+            showToast('API error: ' + url, 'error');
             return null;
         });
 }
@@ -229,4 +231,31 @@ async function refreshKPI() {
     var totalPnl = formatPnL(data.total_pnl || 0);
     setColoredText('kpi-day-pnl', dayPnl.text, dayPnl.colorClass);
     setColoredText('kpi-total-pnl', totalPnl.text, totalPnl.colorClass);
+}
+
+// -----------------------------------------------------------------------
+// Toast Notifications
+// -----------------------------------------------------------------------
+
+/**
+ * Show a temporary toast notification in the bottom-right corner.
+ *
+ * @param {string} message — Text to display
+ * @param {string} type    — 'error', 'warning', or 'info'
+ */
+function showToast(message, type) {
+    type = type || 'error';
+    var container = document.getElementById('toast-container');
+    if (!container) return;
+    var colors = {
+        error: 'bg-red-900/80 border-red-700 text-red-200',
+        warning: 'bg-amber-900/80 border-amber-700 text-amber-200',
+        info: 'bg-slate-800/80 border-slate-600 text-slate-300',
+    };
+    var toast = document.createElement('div');
+    toast.className = 'px-4 py-2 rounded border text-xs font-mono mb-2 transition-opacity duration-500 ' + (colors[type] || colors.info);
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(function() { toast.style.opacity = '0'; }, 8000);
+    setTimeout(function() { toast.remove(); }, 10000);
 }
