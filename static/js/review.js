@@ -141,6 +141,9 @@ function renderIncidents(data) {
         html += '<span>Edge: <span class="' + edge.colorClass + '">' + edge.text + '</span></span>';
         html += '</div>';
 
+        // Settlement source
+        html += '<div class="text-slate-600 text-[10px]">Settlement: ' + (inc.settlement_source || 'unknown') + '</div>';
+
         // Narrative
         if (inc.narrative) {
             html += '<p class="text-slate-300 text-xs mt-1">' + inc.narrative + '</p>';

@@ -229,12 +229,41 @@ function refreshMobile() {
 }
 
 // -----------------------------------------------------------------------
+// Blotter Summary
+// -----------------------------------------------------------------------
+
+async function refreshMobileBlotter() {
+    var date = getTargetDate(window.selectedDate || 'today');
+    var data = await fetchAPI('/api/blotter/nyc?date=' + date);
+    if (!data) return;
+    var el = document.getElementById('mobile-blotter');
+    if (!el) return;
+    var positions = data.positions || [];
+    var open = positions.filter(function(p) { return p.status === 'open'; });
+    if (open.length === 0) {
+        el.innerHTML = '<div class="text-slate-600 text-xs">No open positions</div>';
+        return;
+    }
+    var html = '';
+    open.forEach(function(p) {
+        var pnl = formatPnL(p.pnl || 0);
+        html += '<div class="flex justify-between py-1 border-b border-slate-800/50 text-xs">'
+            + '<span>' + p.bracket_floor + '-' + p.bracket_cap + '\u00b0F ' + p.direction + '</span>'
+            + '<span class="' + pnl.colorClass + '">' + pnl.text + '</span>'
+            + '</div>';
+    });
+    el.innerHTML = html;
+}
+
+// -----------------------------------------------------------------------
 // Hooks
 // -----------------------------------------------------------------------
 
 function onDateChange() {
     refreshMobile();
+    refreshMobileBlotter();
 }
 
 // Initial load
 refreshMobile();
+refreshMobileBlotter();

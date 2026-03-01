@@ -1589,7 +1589,9 @@ async def get_review_incidents(time_range: str = Query("30d", alias="range"),
     """Return incident cards for the Review (Model Autopsy) tab.
 
     Compares model predictions vs settlements to identify lost bets
-    and categorize what went wrong.
+    and categorize what went wrong.  Also identifies missed_edge cases
+    where a bracket settled YES but no position was taken despite the
+    model having predicted edge > 5%.
     """
     days_map = {"7d": 7, "30d": 30, "all": 9999}
     days = days_map.get(time_range, 30)
@@ -1607,24 +1609,108 @@ async def get_review_incidents(time_range: str = Query("30d", alias="range"),
                ORDER BY event_date DESC""".format(days),
         ).fetchall()
 
-        # Get settlement temps from nws_daily for KNYC
-        # Collect unique dates from positions
-        dates = list(set(str(row[0]) for row in pos_rows))
-        settlement_temps = {}  # type: dict
-        if dates:
-            nws_rows = con.execute(
-                """SELECT obs_date, max_temp_f FROM nws_daily
-                   WHERE station_id = 'KNYC'
-                   AND obs_date IN ({})""".format(
-                    ", ".join("'{}'".format(d) for d in dates)
-                ),
-            ).fetchall()
-            for obs_date, max_temp_f in nws_rows:
-                settlement_temps[str(obs_date)] = max_temp_f
+        # Get settlement data from nws_daily for KNYC (temp + source)
+        # Collect all dates we might need: from lost positions + missed edge window
+        nws_rows = con.execute(
+            """SELECT obs_date, max_temp_f, source FROM nws_daily
+               WHERE station_id = 'KNYC'
+               AND obs_date >= CURRENT_DATE - INTERVAL '{}' DAY""".format(days),
+        ).fetchall()
+        settlement_data = {}  # type: dict
+        for obs_date, max_temp_f, source in nws_rows:
+            settlement_data[str(obs_date)] = {
+                "temp": max_temp_f,
+                "source": source,
+            }
+
+        # --- Missed edge: brackets that settled YES but we had no position ---
+        # Get all brackets we traded (any status) so we can exclude them
+        traded_keys = set()  # type: set
+        all_pos_rows = con.execute(
+            """SELECT event_date, bracket_floor, bracket_cap
+               FROM paper_positions
+               WHERE event_date >= CURRENT_DATE - INTERVAL '{}' DAY""".format(days),
+        ).fetchall()
+        for ev_date, bf, bc in all_pos_rows:
+            traded_keys.add((str(ev_date), int(bf) if bf is not None else None,
+                             int(bc) if bc is not None else None))
+
+        # Get daily best market prices per bracket from market_ticks
+        # Use the last snapshot per day per bracket
+        missed_rows = con.execute(
+            """SELECT
+                   mt.city,
+                   CAST(mt.captured_at AS DATE) AS tick_date,
+                   CAST(mt.floor_strike AS INTEGER) AS bracket_floor,
+                   CAST(mt.cap_strike AS INTEGER) AS bracket_cap,
+                   AVG((mt.yes_bid + mt.yes_ask) / 2.0) AS market_mid
+               FROM market_ticks mt
+               WHERE mt.city = 'NYC'
+               AND mt.floor_strike IS NOT NULL
+               AND mt.cap_strike IS NOT NULL
+               AND mt.yes_bid IS NOT NULL
+               AND mt.yes_ask IS NOT NULL
+               AND CAST(mt.captured_at AS DATE) >= CURRENT_DATE - INTERVAL '{}' DAY
+               GROUP BY mt.city,
+                        CAST(mt.captured_at AS DATE),
+                        CAST(mt.floor_strike AS INTEGER),
+                        CAST(mt.cap_strike AS INTEGER)""".format(days),
+        ).fetchall()
     finally:
         con.close()
 
-    # Build incident cards
+    # Build missed_edge incidents
+    missed_edge_incidents = []
+    for _, tick_date, bracket_floor, bracket_cap, market_mid in missed_rows:
+        date_str = str(tick_date)
+        sd = settlement_data.get(date_str)
+        if sd is None or sd["temp"] is None:
+            continue
+        settlement_temp = sd["temp"]
+        # Did this bracket settle YES?
+        if not (bracket_floor <= settlement_temp <= bracket_cap):
+            continue
+        # Did we already trade this bracket?
+        if (date_str, bracket_floor, bracket_cap) in traded_keys:
+            continue
+        # Edge: model predicted YES probability > market_mid by > 5%
+        # Since it settled YES (value = 1.0), the true probability was high.
+        # The "missed edge" is 1.0 - market_mid (hindsight edge).
+        # Only include if market_mid < 0.95 (meaningful opportunity)
+        hindsight_edge = 1.0 - market_mid if market_mid is not None else 0
+        if hindsight_edge < 0.05:
+            continue
+
+        bracket_label = "{}-{}°F".format(bracket_floor, bracket_cap)
+        # Estimate severity by hindsight edge (higher edge = bigger miss)
+        severity = round(min(1.0, hindsight_edge), 2)
+
+        narrative = ("Bracket {} settled YES at {}°F. Market was at {}¢ — "
+                     "could have bought for ~{}¢ profit per contract.").format(
+            bracket_label,
+            int(round(settlement_temp)),
+            int(round(market_mid * 100)),
+            int(round(hindsight_edge * 100)),
+        )
+
+        missed_edge_incidents.append({
+            "date": date_str,
+            "type": "missed_edge",
+            "severity": severity,
+            "bracket": bracket_label,
+            "direction": "BUY YES",
+            "model_prob": None,
+            "market_price": round(market_mid, 4) if market_mid else None,
+            "edge": round(hindsight_edge, 4),
+            "net_pnl": 0.0,
+            "pnl": 0.0,
+            "settlement_temp": settlement_temp,
+            "settlement_source": sd.get("source"),
+            "category": "missed_edge",
+            "narrative": narrative,
+        })
+
+    # Build lost_bet incident cards
     incidents = []
     # Track max abs pnl for severity normalization
     max_abs_pnl = max((abs(row[8]) for row in pos_rows), default=1.0)
@@ -1636,7 +1722,9 @@ async def get_review_incidents(time_range: str = Query("30d", alias="range"),
             market_price, edge, entry_price, net_pnl = row
 
         date_str = str(event_date)
-        settlement_temp = settlement_temps.get(date_str)
+        sd = settlement_data.get(date_str)
+        settlement_temp = sd["temp"] if sd else None
+        settlement_source = sd.get("source") if sd else None
 
         pos_dict = {
             "bracket_floor": bracket_floor,
@@ -1669,10 +1757,15 @@ async def get_review_incidents(time_range: str = Query("30d", alias="range"),
             "market_price": round(market_price, 4) if market_price is not None else None,
             "edge": round(edge, 4) if edge is not None else None,
             "net_pnl": round(net_pnl, 2),
+            "pnl": round(net_pnl, 2),
             "settlement_temp": settlement_temp,
+            "settlement_source": settlement_source,
             "category": category,
             "narrative": narrative,
         })
+
+    # Merge lost_bet + missed_edge incidents
+    incidents.extend(missed_edge_incidents)
 
     # Apply filter
     if filter_type == "worst":
@@ -1711,6 +1804,7 @@ async def get_review_patterns(time_range: str = Query("30d", alias="range")):
         "threshold_too_conservative": "Backtest threshold at lower values (e.g., 8% vs 10%)",
         "stale_pricing": "Add stale-price detection to trigger model re-evaluation",
         "model_miss": "Review model accuracy for these conditions in backtester",
+        "missed_edge": "Bracket settled YES at low market price — review entry threshold or sizing",
         "unknown": "Insufficient settlement data to categorize — check NWS ingestion",
     }
 
