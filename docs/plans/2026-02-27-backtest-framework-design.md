@@ -1,5 +1,7 @@
 # AlphaTemp Kalshi Strategy Backtester — Final Design
 
+> **Fee Notice (2026-02-28):** Fee math in this document (1% trading, 10% settlement) is SUPERSEDED. Actual: taker fee = max(ceil(0.07*C*P*(1-P)), C*$0.01). No settlement fee. Code is already corrected in `services/strategy_backtester.py`.
+
 ## Project Context
 
 AlphaTemp predicts daily high temperature settlement brackets for Kalshi KXHIGHNY markets (NYC, Central Park / KNYC). We have a 3-model ensemble (HRRR + GFS + ECMWF) with walk-forward adaptive weights that produces 1°F bracket probabilities, mapped to Kalshi's 2°F brackets. Current best Brier score: 0.7705 at 18 ET.

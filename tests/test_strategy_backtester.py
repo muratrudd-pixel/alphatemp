@@ -30,6 +30,7 @@ from services.strategy_backtester import (
     compute_entry_cost,
     compute_exit_pnl,
     compute_settlement_pnl,
+    compute_taker_fee,
 )
 
 
@@ -47,37 +48,61 @@ def test_db():
 
 
 class TestFeeMath:
-    def test_entry_cost_includes_trading_fee(self):
+    def test_taker_fee_at_50c(self):
+        # 0.07 * 1 * 0.50 * 0.50 = $0.0175, ceil = 2 cents
+        assert compute_taker_fee(50, 1) == 2.0
+
+    def test_taker_fee_at_10c(self):
+        # 0.07 * 1 * 0.10 * 0.90 = $0.0063, ceil = 1c, min = 1c
+        assert compute_taker_fee(10, 1) == 1.0
+
+    def test_taker_fee_100_contracts(self):
+        # 0.07 * 100 * 0.50 * 0.50 = $1.75 = 175 cents
+        assert compute_taker_fee(50, 100) == 175.0
+
+    def test_taker_fee_minimum_floor(self):
+        # Very cheap contract: raw fee < 1c, floor applies
+        assert compute_taker_fee(2, 1) == 1.0
+
+    def test_entry_cost_includes_taker_fee(self):
+        # 40c + 2c taker fee = 42c
         cost = compute_entry_cost(price_cents=40, quantity=1)
-        assert cost == pytest.approx(40.4)
+        assert cost == pytest.approx(42.0)
 
     def test_entry_cost_multiple_contracts(self):
+        # 25c * 3 = 75c + fee(25, 3) = ceil(0.07*3*0.25*0.75*100)=4c -> 79c
         cost = compute_entry_cost(price_cents=25, quantity=3)
-        assert cost == pytest.approx(75.75)
+        assert cost == pytest.approx(79.0)
 
-    def test_settlement_pnl_winner(self):
+    def test_settlement_pnl_winner_no_settlement_fee(self):
+        # Win: (100-40)*1 - 2c fee = 58c
         pnl = compute_settlement_pnl(entry_price_cents=40, quantity=1, settled_yes=True)
-        assert pnl == pytest.approx(53.6)
+        assert pnl == pytest.approx(58.0)
 
     def test_settlement_pnl_loser(self):
+        # Lose: -(40 + 2c fee) = -42c
         pnl = compute_settlement_pnl(entry_price_cents=40, quantity=1, settled_yes=False)
-        assert pnl == pytest.approx(-40.4)
+        assert pnl == pytest.approx(-42.0)
 
     def test_settlement_pnl_winner_multiple_contracts(self):
+        # Win: (100-30)*5 - fee(30,5)=ceil(0.07*5*0.30*0.70*100)=8c -> 350-8=342c
         pnl = compute_settlement_pnl(entry_price_cents=30, quantity=5, settled_yes=True)
-        assert pnl == pytest.approx(313.5)
+        assert pnl == pytest.approx(342.0)
 
     def test_exit_pnl_profitable_sell(self):
+        # 50 - fee(50,1)=2 - 30 - fee(30,1)=2 = 16c
         pnl = compute_exit_pnl(entry_price_cents=30, exit_price_cents=50, quantity=1)
-        assert pnl == pytest.approx(19.2)
+        assert pnl == pytest.approx(16.0)
 
     def test_exit_pnl_loss_sell(self):
+        # 25 - fee(25,1)=2 - 40 - fee(40,1)=2 = -19c
         pnl = compute_exit_pnl(entry_price_cents=40, exit_price_cents=25, quantity=1)
-        assert pnl == pytest.approx(-15.65)
+        assert pnl == pytest.approx(-19.0)
 
-    def test_minimum_profitable_displacement(self):
-        pnl_at_breakeven = compute_settlement_pnl(entry_price_cents=50, quantity=1, settled_yes=True)
-        assert pnl_at_breakeven == pytest.approx(44.5)
+    def test_settlement_pnl_at_50c(self):
+        # Win at 50c: 50 - 2c fee = 48c
+        pnl = compute_settlement_pnl(entry_price_cents=50, quantity=1, settled_yes=True)
+        assert pnl == pytest.approx(48.0)
 
 
 class TestDataStructures:
@@ -209,18 +234,22 @@ class TestEventPortfolio:
         self.portfolio = EventPortfolio(event_date=date(2025, 7, 15))
 
     def test_single_bracket_ev(self):
+        # fee=2c, loss=42, gain=58; EV = 0.50*58 + 0.50*(-42) = 8.0
         ev = self.portfolio.combined_ev(entry_prices=[40], model_probs=[0.50])
-        assert ev == pytest.approx(6.6, abs=0.1)
+        assert ev == pytest.approx(8.0, abs=0.1)
 
     def test_single_bracket_negative_ev(self):
-        ev = self.portfolio.combined_ev(entry_prices=[45], model_probs=[0.48])
+        # fee=2c, loss=57, gain=43; EV = 0.48*43 + 0.52*(-57) = -9.0
+        ev = self.portfolio.combined_ev(entry_prices=[55], model_probs=[0.48])
         assert ev < 0
 
     def test_two_bracket_portfolio_ev(self):
+        # fee(22)=2c, fee(17)=1c; losses=[24,18], gains=[76,82]
+        # EV = 0.35*58 + 0.30*58 + 0.35*(-42) = 23.0
         ev = self.portfolio.combined_ev(
             entry_prices=[22, 17], model_probs=[0.35, 0.30]
         )
-        assert ev == pytest.approx(20.39, abs=0.1)
+        assert ev == pytest.approx(23.0, abs=0.1)
 
     def test_adding_bracket_can_decrease_ev(self):
         """Adding an expensive, low-prob bracket hurts the portfolio."""
@@ -274,15 +303,15 @@ class TestPositionManager:
             self.event_date, (72.0, 74.0), 30, self.t0, 1
         )
         assert pos is not None
-        # 30 + 30*0.01 = 30.3 cents = $0.303
-        assert pm.capital_locked == pytest.approx(0.303)
+        # 30 + 2c taker fee = 32 cents = $0.32
+        assert pm.capital_locked == pytest.approx(0.32)
 
     def test_reject_when_insufficient_capital(self):
         pm = PositionManager(bankroll=0.20)  # only $0.20
         pos = pm.open_position(
             self.event_date, (72.0, 74.0), 30, self.t0, 1
         )
-        # 30.3 cents = $0.303 > $0.20
+        # 32 cents = $0.32 > $0.20
         assert pos is None
 
     def test_close_position_frees_capital(self):
@@ -291,8 +320,8 @@ class TestPositionManager:
         pnl = pm.close_position(
             self.event_date, (72.0, 74.0), 45, self.t0 + timedelta(hours=1)
         )
-        # exit_pnl(30, 45, 1) = 45 - 0.45 - 30 - 0.3 = 14.25
-        assert pnl == pytest.approx(14.25)
+        # exit_pnl(30, 45, 1) = 45 - 2 - 30 - 2 = 11.0
+        assert pnl == pytest.approx(11.0)
         assert len(pm.positions) == 0
 
     def test_settle_day_winner(self):
@@ -300,8 +329,8 @@ class TestPositionManager:
         pm.open_position(self.event_date, (72.0, 74.0), 30, self.t0, 1)
         records = pm.settle_day(self.event_date, (72.0, 74.0))
         assert len(records) == 1
-        # settlement_pnl(30, 1, True) = 70*0.9 - 30*0.01 = 63 - 0.3 = 62.7
-        assert records[0].pnl == pytest.approx(62.7)
+        # settlement_pnl(30, 1, True) = 70 - 2c fee = 68.0
+        assert records[0].pnl == pytest.approx(68.0)
         assert records[0].settlement_result == 1
 
     def test_settle_day_loser(self):
@@ -309,8 +338,8 @@ class TestPositionManager:
         pm.open_position(self.event_date, (72.0, 74.0), 25, self.t0, 1)
         records = pm.settle_day(self.event_date, (76.0, 78.0))  # different bracket wins
         assert len(records) == 1
-        # settlement_pnl(25, 1, False) = -(25 + 0.25) = -25.25
-        assert records[0].pnl == pytest.approx(-25.25)
+        # settlement_pnl(25, 1, False) = -(25 + 2c fee) = -27.0
+        assert records[0].pnl == pytest.approx(-27.0)
         assert records[0].settlement_result == 0
 
     def test_settle_day_mixed(self):
@@ -519,7 +548,7 @@ class TestPnLSimulator:
                 bracket=(72.0, 74.0), direction='BUY_YES',
                 entry_price=30.0, entry_time=datetime(2025, 3, 1, 14, 0, tzinfo=timezone.utc),
                 exit_price=None, exit_time=None, exit_type='settlement',
-                settlement_result=1, pnl=62.7, fees_paid=7.3,
+                settlement_result=1, pnl=68.0, fees_paid=2.0,
                 displacement_at_entry=0.15, model_prob_at_entry=0.40,
                 capital_locked_hours=24.0,
             ))
@@ -529,7 +558,7 @@ class TestPnLSimulator:
                 bracket=(74.0, 76.0), direction='BUY_YES',
                 entry_price=25.0, entry_time=datetime(2025, 3, 11, 14, 0, tzinfo=timezone.utc),
                 exit_price=None, exit_time=None, exit_type='settlement',
-                settlement_result=0, pnl=-25.25, fees_paid=0.25,
+                settlement_result=0, pnl=-27.0, fees_paid=2.0,
                 displacement_at_entry=0.12, model_prob_at_entry=0.20,
                 capital_locked_hours=24.0,
             ))

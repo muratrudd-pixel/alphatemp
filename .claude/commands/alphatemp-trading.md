@@ -35,12 +35,26 @@ Each interior bracket covers exactly 2 integer temperatures. Typical event has ~
 - Results are binary per bracket: YES ($1.00) or NO ($0.00)
 - Exactly one bracket per event settles YES
 
-## Fee Structure
+## Fee Structure (Verified Feb 2026)
 
-**Current Kalshi fees for alphatemp (verify if these change):**
-- 1% trading fee
-- 10% settlement fee (on winnings)
-- 2% withdrawal fee
+**Kalshi taker fee formula:**
+```
+fee = max(ceil(0.07 × C × P × (1-P)), C × $0.01)
+```
+Where C = number of contracts, P = contract price in dollars.
+
+- **No settlement fee.** No withdrawal fee. Only the taker fee at entry.
+- Maker fee uses 0.04 coefficient instead of 0.07 (not relevant for our market orders).
+- S&P 500 / Nasdaq markets get half rate (0.035) — not applicable to weather.
+- Effective rate: ~1-2% depending on price level (lowest at tails, highest at 50c).
+
+| Price | Fee (1 contract) | Break-even Edge |
+|-------|------------------|-----------------|
+| 10c   | 1c               | ~1%             |
+| 25c   | 2c               | ~2%             |
+| 50c   | 2c               | ~2%             |
+| 75c   | 2c               | ~2%             |
+| 90c   | 1c               | ~1%             |
 
 CRITICAL: ALL strategy evaluations MUST be net of fees — no exceptions. This is a hard constraint from CLAUDE.md.
 
@@ -63,9 +77,9 @@ Near-settlement trading tends to produce stronger edge because:
 ### Trade Threshold
 
 Not yet established for alphatemp. Must be determined through backtesting analysis that accounts for:
-- Fee drag (all three fee layers)
+- Fee drag (taker fee at entry, ~1-2% effective rate)
 - Model uncertainty (Brier score from backtests)
-- Market microstructure costs
+- Market microstructure costs (spread)
 
 ## Probability Model
 
@@ -107,7 +121,7 @@ When position sizing is implemented:
 
 ## Common Pitfalls
 
-1. **Fee calculation shortcuts** — All three fee layers must be applied. Rounding errors compound across many trades
+1. **Fee calculation shortcuts** — Taker fee must always be applied. Use `compute_taker_fee()` from `services/strategy_backtester.py`
 2. **Timezone confusion** — NWS CLI uses Local Standard Time. Kalshi contract days may not align with UTC days. HRRR model runs are UTC
 3. **Stale data** — If data providers go down, the system may compute on stale observations. Always check data freshness
 4. **Bracket mapping errors** — 1°F model probabilities must map correctly to 2°F Kalshi brackets. The tail brackets are open-ended (not capped)

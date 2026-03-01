@@ -60,31 +60,32 @@ raw_edge = model_prob - market_prob
 
 ### Step 5: Calculate Net-of-Fees Expected Value
 
-**Fee layers (all must be applied):**
+**Kalshi taker fee (verified Feb 2026):**
+```
+fee = max(ceil(0.07 × C × P × (1-P)), C × $0.01)
+```
+No settlement fee. No withdrawal fee.
 
-1. **Trading fee (1%):** Applied to the cost of entering the position
-2. **Settlement fee (10%):** Applied to winnings only (if the contract settles in your favor)
-3. **Withdrawal fee (2%):** Applied when withdrawing profits
-
-**For a YES trade at price P with C contracts:**
+**For a YES trade at price P (in dollars) with C contracts:**
 ```
 entry_cost = C × P
-trading_fee = entry_cost × 0.01
-total_cost = entry_cost + trading_fee
+taker_fee = max(ceil(0.07 × C × P × (1-P) × 100), C) / 100  # in dollars
+total_cost = entry_cost + taker_fee
 
 # If contract settles YES:
-gross_payout = C × $1.00
-winnings = gross_payout - entry_cost
-settlement_fee = winnings × 0.10
-net_payout = gross_payout - settlement_fee
+net_payout = C × $1.00 - total_cost  # No settlement fee
+
+# If contract settles NO:
+loss = total_cost
 
 # Expected value:
-EV = (model_prob × net_payout) - ((1 - model_prob) × total_cost) - trading_fee
+EV = (model_prob × net_payout) - ((1 - model_prob) × total_cost)
 ```
 
-**Simplified:**
+**For 1 contract, simplified:**
 ```
-net_EV_per_contract = (model_prob × (1 - P) × 0.90) - ((1 - model_prob) × P) - (P × 0.01)
+fee_cents = max(ceil(7 × P × (1-P)), 1)
+EV_cents = model_prob × (100 - P_cents - fee_cents) - (1 - model_prob) × (P_cents + fee_cents)
 ```
 
 ### Step 6: Determine If Trade Is Justified
@@ -106,15 +107,15 @@ Current constraint: $100 starting bankroll, paper trading only.
 
 ## Fee Impact Reference Table
 
-| Contract Price | Trading Fee | Settlement Fee (if win) | Breakeven Edge |
-|---------------|-------------|------------------------|----------------|
-| $0.10 | $0.001 | $0.09 | ~2% |
-| $0.25 | $0.0025 | $0.068 | ~4% |
-| $0.50 | $0.005 | $0.045 | ~6% |
-| $0.75 | $0.0075 | $0.023 | ~4% |
-| $0.90 | $0.009 | $0.009 | ~2% |
+| Contract Price | Taker Fee (1 contract) | Break-even Edge |
+|---------------|------------------------|-----------------|
+| $0.10 | $0.01 (floor)          | ~1%             |
+| $0.25 | $0.02                  | ~2%             |
+| $0.50 | $0.02                  | ~2%             |
+| $0.75 | $0.02                  | ~2%             |
+| $0.90 | $0.01 (floor)          | ~1%             |
 
-Fees hurt most at mid-range prices (around $0.50) where both trading and settlement fees are significant.
+Fee is symmetric around 50c (parabolic shape: 0.07 * P * (1-P)), with a 1c minimum floor.
 
 ## Red Flags — When NOT to Trade
 
@@ -126,8 +127,8 @@ Fees hurt most at mid-range prices (around $0.50) where both trading and settlem
 
 ## Common Mistakes
 
-1. **Ignoring settlement fees** — The 10% settlement fee on winnings is the biggest fee drag
+1. **Miscalculating taker fee** — Use `compute_taker_fee()` from `services/strategy_backtester.py`, not manual math
 2. **Using bid instead of ask** — You pay the ask to enter, not the bid
-3. **Not accounting for withdrawal fees** — The 2% withdrawal fee applies to all profits taken out
+3. **Assuming settlement/withdrawal fees exist** — Kalshi has NO settlement fee and NO withdrawal fee (verified Feb 2026)
 4. **Comparing against wrong bracket** — Verify the Kalshi bracket maps correctly to your model's temperature range
 5. **Trading stale model output** — Always check when the model last ran before acting on its probabilities

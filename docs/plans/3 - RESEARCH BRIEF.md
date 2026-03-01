@@ -2,6 +2,7 @@
 
 **Date:** 2026-02-27
 **Project:** AlphaTemp — Kalshi Weather Trading System
+**Fee Notice (2026-02-28):** Fee references in this document (1% trading, 10% settlement, 11% hurdle) are WRONG. Actual: taker fee = max(ceil(0.07*C*P*(1-P)), C*$0.01). No settlement fee. Real hurdle ~1-2%.
 **Goal:** Comprehensive research to inform a full rebuild of our temperature prediction pipeline for trading Kalshi KXHIGHNY daily high temperature bracket markets.
 
 ---

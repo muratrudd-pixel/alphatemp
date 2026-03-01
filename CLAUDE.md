@@ -28,7 +28,7 @@ NYC only — settlement station is KNYC (Central Park).
 
 ## Key Constraints
 - Starting capital: $100 (paper trading phase)
-- Kalshi fees: 1% trading, 10% settlement, 2% withdrawal
+- Kalshi fees: taker fee = max(ceil(0.07 * C * P * (1-P)), C * $0.01). No settlement fee. ~1-2% effective rate.
 - ALL strategy evaluations MUST be net of fees — no exceptions
 - Settlement source: NWS Daily Climate Report (CLI) from Central Park (KNYC)
 - CLI uses Local Standard Time, NOT Daylight Saving Time

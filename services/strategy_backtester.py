@@ -5,12 +5,13 @@ Foundation layer for the strategy backtester. Defines:
 - Core dataclasses (BacktestConfig, MarketSnapshot, ModelUpdate, Position, TradeRecord)
 
 All P&L calculations are in cents unless stated otherwise.
-Kalshi fee structure: 1% trading fee on entry, 10% settlement fee on profit (winners only).
-Execution modeled at yes_ask (crossing the spread).
+Kalshi fee structure: taker fee = max(ceil(0.07 * C * P * (1-P)), C * $0.01).
+No settlement fee. Execution modeled at yes_ask (crossing the spread).
 
 Design doc: docs/plans/2026-02-27-backtest-framework-design.md
 """
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -27,22 +28,36 @@ from services.backtester import (
 )
 from services.data_provider import BacktestDataProvider
 
-# ── Fee Constants ────────────────────────────────────────────────────────────
+# ── Fee Constants (Kalshi, verified Feb 2026) ────────────────────────────────
 
-TRADING_FEE_RATE = 0.01       # 1% of contract value
-SETTLEMENT_FEE_RATE = 0.10    # 10% of profit (winners only)
+TAKER_FEE_MULTIPLIER = 0.07   # Kalshi taker fee coefficient
+MIN_FEE_PER_CONTRACT = 1.0    # Minimum 1 cent per contract
 
 
 # ── Fee Functions ────────────────────────────────────────────────────────────
 
-def compute_entry_cost(price_cents: float, quantity: int) -> float:
-    """Total capital locked when buying YES contracts.
+def compute_taker_fee(price_cents: float, quantity: int) -> float:
+    """Kalshi taker fee in cents.
 
-    Returns price * qty + trading fee (in cents).
+    Formula: max(ceil(0.07 * C * P * (1-P)), C * $0.01)
+    where P = contract price in dollars, C = number of contracts.
+    Result rounded up to nearest cent.
+    """
+    p = price_cents / 100.0
+    raw_fee_dollars = TAKER_FEE_MULTIPLIER * quantity * p * (1 - p)
+    fee_cents = math.ceil(round(raw_fee_dollars * 100, 10))
+    min_cents = quantity  # $0.01 per contract = 1 cent per contract
+    return float(max(fee_cents, min_cents))
+
+
+def compute_entry_cost(price_cents: float, quantity: int) -> float:
+    """Total capital locked when buying contracts.
+
+    Returns price * qty + taker fee (in cents).
     """
     gross = price_cents * quantity
-    trading_fee = gross * TRADING_FEE_RATE
-    return gross + trading_fee
+    fee = compute_taker_fee(price_cents, quantity)
+    return gross + fee
 
 
 def compute_settlement_pnl(
@@ -50,28 +65,30 @@ def compute_settlement_pnl(
 ) -> float:
     """Net P&L at settlement, in cents.
 
-    Winners: (100 - entry) * qty * (1 - settlement_fee) - entry * qty * trading_fee
-    Losers:  -(entry * qty + entry * qty * trading_fee)
+    No settlement fee (Kalshi charges zero). Fee was paid at entry.
+    Winners: (100 - entry) * qty - taker_fee
+    Losers:  -(entry * qty + taker_fee)
     """
-    gross_entry = entry_price_cents * quantity
-    trading_fee = gross_entry * TRADING_FEE_RATE
+    entry_fee = compute_taker_fee(entry_price_cents, quantity)
     if settled_yes:
         gross_profit = (100 - entry_price_cents) * quantity
-        settlement_fee = gross_profit * SETTLEMENT_FEE_RATE
-        return gross_profit - settlement_fee - trading_fee
+        return gross_profit - entry_fee
     else:
-        return -(gross_entry + trading_fee)
+        return -(entry_price_cents * quantity + entry_fee)
 
 
 def compute_exit_pnl(
     entry_price_cents: float, exit_price_cents: float, quantity: int
 ) -> float:
-    """Net P&L from early exit (sell YES back to market), in cents."""
+    """Net P&L from early exit (sell back to market), in cents.
+
+    Taker fee charged on both entry and exit.
+    """
+    entry_fee = compute_taker_fee(entry_price_cents, quantity)
+    exit_fee = compute_taker_fee(exit_price_cents, quantity)
     revenue = exit_price_cents * quantity
-    exit_trading_fee = revenue * TRADING_FEE_RATE
     entry_cost = entry_price_cents * quantity
-    entry_trading_fee = entry_cost * TRADING_FEE_RATE
-    return revenue - exit_trading_fee - entry_cost - entry_trading_fee
+    return revenue - exit_fee - entry_cost - entry_fee
 
 
 # ── Data Structures ─────────────────────────────────────────────────────────
@@ -239,8 +256,8 @@ class EventPortfolio:
         - If bracket j wins (prob q_j): gain on j, lose on all others.
         - If none win (prob 1 - sum(q)): lose all entries.
 
-        Loss per bracket = price + price * TRADING_FEE_RATE
-        Gain per bracket = (100-price) * (1-SETTLEMENT_FEE_RATE) - price * TRADING_FEE_RATE
+        Loss per bracket = price + taker_fee
+        Gain per bracket = (100 - price) - taker_fee
         """
         n = len(entry_prices)
         if n == 0:
@@ -250,8 +267,9 @@ class EventPortfolio:
         losses = []  # type: List[float]
         gains = []   # type: List[float]
         for p in entry_prices:
-            losses.append(p + p * TRADING_FEE_RATE)
-            gains.append((100 - p) * (1 - SETTLEMENT_FEE_RATE) - p * TRADING_FEE_RATE)
+            fee = compute_taker_fee(p, 1)
+            losses.append(p + fee)
+            gains.append((100 - p) - fee)
 
         total_loss = sum(losses)
         total_prob = sum(model_probs)
@@ -395,14 +413,8 @@ class PositionManager:
             pnl = compute_settlement_pnl(pos.entry_price, pos.quantity, won)
             self.bankroll += pnl / 100.0
 
-            # Compute fees for the record
-            entry_trading_fee = pos.entry_price * pos.quantity * TRADING_FEE_RATE
-            if won:
-                gross_profit = (100 - pos.entry_price) * pos.quantity
-                settlement_fee = gross_profit * SETTLEMENT_FEE_RATE
-                fees = entry_trading_fee + settlement_fee
-            else:
-                fees = entry_trading_fee
+            # Compute fees for the record (taker fee only, no settlement fee)
+            fees = compute_taker_fee(pos.entry_price, pos.quantity)
 
             # Capital locked hours
             hours_locked = 0.0  # will be filled by caller if needed

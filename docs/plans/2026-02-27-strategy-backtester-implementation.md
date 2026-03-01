@@ -1,5 +1,7 @@
 # Strategy Backtester Implementation Plan
 
+> **Fee Notice (2026-02-28):** Fee math in this plan (1% trading, 10% settlement) is SUPERSEDED. Code has already been corrected in `services/strategy_backtester.py` with actual Kalshi formula: taker fee = max(ceil(0.07*C*P*(1-P)), C*$0.01). No settlement fee.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Build a three-layer Kalshi strategy backtester that simulates trading performance against historical market data with realistic execution, capital constraints, and fee accounting.

@@ -2,6 +2,7 @@
 
 **Created:** 2026-02-24
 **Status:** Active
+**Fee Notice (2026-02-28):** All fee references in this document (1% trading, 10% settlement, 11% hurdle) are WRONG. Actual Kalshi fees: taker fee = max(ceil(0.07*C*P*(1-P)), C*$0.01). No settlement fee. Real hurdle ~1-2%. See `services/strategy_backtester.py`.
 **Goal:** Build a backtested probability model that predicts daily high temperature brackets for Kalshi KXHIGHNY markets, proving value at each step before adding complexity.
 
 ---

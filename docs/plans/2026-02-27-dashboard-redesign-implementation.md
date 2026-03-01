@@ -1,5 +1,7 @@
 # Dashboard Redesign Implementation Plan
 
+> **Fee Notice (2026-02-28):** The hardcoded `0.11` fee hurdle in JS code below is WRONG. Actual Kalshi fee: taker fee = max(ceil(0.07*C*P*(1-P)), C*$0.01). No settlement fee. Real hurdle ~1-2%. When implementing, use dynamic fee calculation.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Replace the existing single-page dashboard with a three-tab trading terminal (Operations, Performance, Review) plus a mobile Trade view.

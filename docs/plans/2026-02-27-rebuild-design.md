@@ -1,6 +1,7 @@
 # AlphaTemp Rebuild Design — 2026-02-27
 
 **Status:** Approved for implementation
+**Fee Notice (2026-02-28):** Fee references in this document (1% trading, 10% settlement, 12% min displacement) are SUPERSEDED. Actual: taker fee = max(ceil(0.07*C*P*(1-P)), C*$0.01). No settlement fee. Real hurdle ~1-2%.
 **Authors:** Russell Rudd + Claude (with Gemini Deep Research consultation)
 **Replaces:** MASTER-PLAN.md (phases 0–4), all prior phase design docs
 **Next step:** Invoke writing-plans skill to generate implementation plan
