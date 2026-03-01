@@ -23,6 +23,7 @@ from services.data_provider import (
     HRRR_AVAILABILITY_LAG_HOURS,
     _strip_tz,
 )
+from services.ensemble import _find_latest_run_hour
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +34,23 @@ from services.data_provider import (
 ModelFn = Callable[[BacktestDataProvider, datetime], Optional[Dict[int, float]]]
 
 RUN_HOURS = list(range(24))
+
+
+# ---------------------------------------------------------------------------
+# Model-specific forecast high query (fixes multi-model ensemble bug)
+# ---------------------------------------------------------------------------
+
+def _get_forecast_high_for_model(con, station_id, model_run, model_name):
+    # type: (duckdb.DuckDBPyConnection, str, datetime, str) -> Optional[float]
+    """Get MAX(temp_f) for a specific model, with settlement-day fxx filter."""
+    row = con.execute(
+        """SELECT MAX(temp_f) FROM forecasts
+           WHERE station_id = ? AND model_run = ? AND model_name = ?
+           AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+           AND (EXTRACT(HOUR FROM model_run) + fxx) < 29""",
+        [station_id, model_run, model_name],
+    ).fetchone()
+    return row[0] if row and row[0] is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +286,7 @@ def _walk_forward_raw(provider, ref_time, model_name='hrrr'):
     run_hour = provider.model_run.hour
     current_date = provider.model_run.date()
 
-    fcst_high = provider.get_forecast_high(station_id)
+    fcst_high = _get_forecast_high_for_model(con, station_id, provider.model_run, model_name)
     if fcst_high is None:
         return None
 
@@ -341,7 +359,7 @@ def walk_forward_t_model(provider, ref_time, model_name='hrrr'):
     run_hour = provider.model_run.hour
     current_date = provider.model_run.date()
 
-    fcst_high = provider.get_forecast_high(station_id)
+    fcst_high = _get_forecast_high_for_model(con, station_id, provider.model_run, model_name)
     if fcst_high is None:
         return None
 
@@ -622,7 +640,7 @@ def _make_regression_model(name, feature_indices, model_name='hrrr', extended=Fa
         run_hour = provider.model_run.hour
         current_date = provider.model_run.date()
 
-        fcst_high = provider.get_forecast_high(station_id)
+        fcst_high = _get_forecast_high_for_model(con, station_id, provider.model_run, model_name)
         if fcst_high is None:
             return None
 
@@ -700,6 +718,287 @@ wf_regression_delta_ecmwf = _make_regression_model("wf_regression_delta_ecmwf", 
 
 
 # ---------------------------------------------------------------------------
+# Multi-model OLS stacking (Level 3)
+# ---------------------------------------------------------------------------
+
+def _get_latest_model_fcst_highs_bulk(con, model_name, station_id, max_hour, before_date):
+    # type: (duckdb.DuckDBPyConnection, str, str, int, date) -> Dict[date, float]
+    """Bulk fetch: for each prior date, get fcst_high from latest run <= max_hour.
+
+    Returns dict mapping settlement date to that model's forecast high, using
+    settlement-day fxx filtering and picking the most recent run hour available.
+    """
+    rows = con.execute("""
+        WITH ranked AS (
+            SELECT model_run::DATE as obs_date,
+                   MAX(temp_f) as fcst_high,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY model_run::DATE
+                       ORDER BY EXTRACT(HOUR FROM model_run) DESC
+                   ) as rn
+            FROM forecasts
+            WHERE model_name = ? AND station_id = ?
+              AND EXTRACT(HOUR FROM model_run) <= ?
+              AND model_run::DATE < ?
+              AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+              AND (EXTRACT(HOUR FROM model_run) + fxx) < 29
+            GROUP BY model_run::DATE, EXTRACT(HOUR FROM model_run)
+        )
+        SELECT obs_date, fcst_high FROM ranked WHERE rn = 1
+    """, [model_name, station_id, max_hour, before_date]).fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def _fit_and_predict_multimodel(rows, features_today, feature_indices):
+    # type: (list, tuple, list) -> Optional[Tuple[float, float]]
+    """OLS for multi-model feature vectors.
+
+    rows: list of tuples where:
+        [0] = error, [1] = hrrr_high, [2] = gfs_high, [3] = ecmwf_high,
+        [4] = month, [5] = delta_temp
+    features_today: (hrrr_high, gfs_high, ecmwf_high, month, delta_temp)
+    feature_indices: which columns to use from all_features:
+        0=hrrr_high, 1=gfs_high, 2=ecmwf_high, 3=sin(month), 4=cos(month), 5=delta_temp
+
+    Returns (predicted_bias, residual_std) or None on failure.
+    """
+    n = len(rows)
+    if n < WALK_FORWARD_MIN_DAYS:
+        return None
+
+    n_features = len(feature_indices)
+    A = np.empty((n, 1 + n_features), dtype=np.float64)
+    y = np.empty(n, dtype=np.float64)
+
+    for i, row in enumerate(rows):
+        error = row[0]
+        hrrr_high = row[1]
+        gfs_high = row[2]
+        ecmwf_high = row[3]
+        month = row[4]
+        delta_temp = row[5]
+        sin_m, cos_m = _encode_month(month)
+        all_features = [hrrr_high, gfs_high, ecmwf_high, sin_m, cos_m, delta_temp]
+        A[i, 0] = 1.0  # intercept
+        for j, idx in enumerate(feature_indices):
+            A[i, 1 + j] = all_features[idx]
+        y[i] = error
+
+    result = lstsq(A, y)
+    coeffs = result[0]
+    if not np.all(np.isfinite(coeffs)):
+        return None
+
+    # Predict for today
+    hrrr_today, gfs_today, ecmwf_today, month_today, delta_today = features_today
+    sin_m, cos_m = _encode_month(month_today)
+    all_today = [hrrr_today, gfs_today, ecmwf_today, sin_m, cos_m, delta_today]
+    x_today = np.array([1.0] + [all_today[idx] for idx in feature_indices])
+    predicted_bias = float(np.dot(coeffs, x_today))
+
+    residuals = y - A @ coeffs
+    residual_std = float(np.std(residuals, ddof=1 + n_features))
+
+    return (predicted_bias, max(0.3, residual_std))
+
+
+def _make_multimodel_regression_model(name, feature_indices, secondary_models=None):
+    # type: (str, list, Optional[List[str]]) -> ModelFn
+    """Factory: OLS with multi-model forecast highs as features.
+
+    Feature vector layout:
+      Index 0: hrrr_fcst_high
+      Index 1: gfs_fcst_high (latest run, impute with HRRR if missing)
+      Index 2: ecmwf_fcst_high (latest run, impute with HRRR if missing)
+      Index 3: sin(month)
+      Index 4: cos(month)
+      Index 5: delta_temp
+
+    Training uses _walk_forward_regression_data for HRRR base, then merges
+    secondary model fcst_highs via _get_latest_model_fcst_highs_bulk.
+    Missing secondary forecasts are imputed with HRRR's value.
+    """
+    if secondary_models is None:
+        secondary_models = ['gfs', 'ecmwf']
+
+    def _raw(provider, ref_time):
+        # type: (object, datetime) -> Optional[Tuple[float, float]]
+        con = provider._shared_con
+        station_id = provider.station_id
+        run_hour = provider.model_run.hour
+        current_date = provider.model_run.date()
+
+        # HRRR base training data: (error, fcst_high, month, delta_temp)
+        training = _walk_forward_regression_data(
+            con, run_hour, station_id, current_date, model_name='hrrr',
+        )
+        if training is None:
+            return None
+
+        # Get HRRR forecast high for today
+        hrrr_high = _get_forecast_high_for_model(
+            con, station_id, provider.model_run, 'hrrr',
+        )
+        if hrrr_high is None:
+            return None
+
+        delta_temp = _get_delta_temp(con, station_id, current_date)
+        if delta_temp is None:
+            return None
+
+        month = float(current_date.month)
+
+        # Bulk fetch secondary model highs for training dates
+        secondary_highs = {}  # type: Dict[str, Dict[date, float]]
+        for sec_model in secondary_models:
+            secondary_highs[sec_model] = _get_latest_model_fcst_highs_bulk(
+                con, sec_model, station_id, run_hour, current_date,
+            )
+
+        # Get secondary model highs for today's prediction
+        today_secondary = {}  # type: Dict[str, float]
+        for sec_model in secondary_models:
+            latest_hour = _find_latest_run_hour(
+                con, sec_model, station_id, current_date, run_hour,
+            )
+            if latest_hour is not None:
+                sec_run = datetime(
+                    current_date.year, current_date.month,
+                    current_date.day, latest_hour,
+                )
+                sec_high = _get_forecast_high_for_model(
+                    con, station_id, sec_run, sec_model,
+                )
+                if sec_high is not None:
+                    today_secondary[sec_model] = sec_high
+            # Missing → impute with HRRR below
+
+        # Build expanded training rows: (error, hrrr_high, gfs_high, ecmwf_high, month, delta_temp)
+        # We need obs_date to look up secondary highs, but _walk_forward_regression_data
+        # doesn't return it. Re-derive from the training data dates query.
+        # Actually, the training rows don't contain obs_date. We need to get dates separately.
+        training_dates_rows = con.execute("""
+            SELECT n.obs_date, MAX(f.temp_f) AS fcst_high
+            FROM nws_daily n
+            JOIN forecasts f ON f.station_id = n.station_id
+                AND f.model_run::DATE = n.obs_date
+                AND EXTRACT(HOUR FROM f.model_run) = ?
+                AND f.model_name = 'hrrr'
+                AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) >= 5
+                AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) < 29
+            WHERE n.station_id = ?
+                AND n.obs_date < ?
+                AND n.max_temp_f IS NOT NULL
+            GROUP BY n.obs_date
+            ORDER BY n.obs_date
+        """, [run_hour, station_id, current_date]).fetchall()
+
+        date_to_hrrr = {row[0]: row[1] for row in training_dates_rows}
+        ordered_dates = [row[0] for row in training_dates_rows]
+
+        # Build expanded rows aligned with training data
+        # training has delta_temp computed via LAG, so first 2 dates are missing
+        # We skip them (filtered by _walk_forward_regression_data already)
+        expanded_rows = []
+        # The training rows are in date order with first ~2 rows removed (NULL delta_temp)
+        # We need to align: training[i] corresponds to ordered_dates[i+2] roughly
+        # Safer approach: iterate training rows, match by fcst_high to find date
+        # Even safer: just re-query with dates included
+        # Let's take the efficient path: training rows are ordered by date.
+        # ordered_dates are also ordered. training skips first 2 (NULL delta_temp).
+        # So training[i] ≈ ordered_dates[i + offset] where offset accounts for removed rows.
+
+        # Most reliable: rebuild from scratch with dates included
+        date_rows = con.execute("""
+            WITH daily_errors AS (
+                SELECT
+                    n.obs_date,
+                    MAX(f.temp_f) - n.max_temp_f AS error,
+                    MAX(f.temp_f) AS fcst_high,
+                    EXTRACT(MONTH FROM n.obs_date) AS month,
+                    n.max_temp_f AS actual_high
+                FROM nws_daily n
+                JOIN forecasts f ON f.station_id = n.station_id
+                    AND f.model_run::DATE = n.obs_date
+                    AND EXTRACT(HOUR FROM f.model_run) = ?
+                    AND f.model_name = 'hrrr'
+                    AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) >= 5
+                    AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) < 29
+                WHERE n.station_id = ?
+                    AND n.obs_date < ?
+                    AND n.max_temp_f IS NOT NULL
+                GROUP BY n.obs_date, n.max_temp_f
+                ORDER BY n.obs_date
+            )
+            SELECT
+                obs_date,
+                error,
+                fcst_high,
+                month,
+                LAG(actual_high, 1) OVER (ORDER BY obs_date)
+                    - LAG(actual_high, 2) OVER (ORDER BY obs_date) AS delta_temp
+            FROM daily_errors
+        """, [run_hour, station_id, current_date]).fetchall()
+
+        for row in date_rows:
+            obs_d, error, hrrr_fh, m, dt = row
+            if dt is None:
+                continue  # skip rows without delta_temp
+
+            # Look up secondary model highs, impute with HRRR if missing
+            gfs_fh = hrrr_fh   # default imputation
+            ecmwf_fh = hrrr_fh  # default imputation
+            if 'gfs' in secondary_models:
+                gfs_fh = secondary_highs.get('gfs', {}).get(obs_d, hrrr_fh)
+            if 'ecmwf' in secondary_models:
+                ecmwf_fh = secondary_highs.get('ecmwf', {}).get(obs_d, hrrr_fh)
+
+            expanded_rows.append((error, hrrr_fh, gfs_fh, ecmwf_fh, m, dt))
+
+        if len(expanded_rows) < WALK_FORWARD_MIN_DAYS:
+            return None
+
+        # Today's features
+        gfs_today = today_secondary.get('gfs', hrrr_high)
+        ecmwf_today = today_secondary.get('ecmwf', hrrr_high)
+        features_today = (hrrr_high, gfs_today, ecmwf_today, month, delta_temp)
+
+        result = _fit_and_predict_multimodel(
+            expanded_rows, features_today, feature_indices,
+        )
+        if result is None:
+            return None
+
+        predicted_bias, residual_std = result
+        center = hrrr_high - predicted_bias
+        return (center, residual_std)
+
+    def model_fn(provider, ref_time):
+        # type: (object, datetime) -> Optional[Dict[int, float]]
+        params = _raw(provider, ref_time)
+        if params is None:
+            return None
+        center, residual_std = params
+        return _compute_bracket_probs_from_dist(norm(0, 1), center, residual_std)
+
+    model_fn.__name__ = name
+    model_fn.__doc__ = "Multi-model OLS stacking: {}".format(name)
+    model_fn.raw = _raw
+    return model_fn
+
+
+# Pre-built multi-model regression instances
+# Full: HRRR + GFS + ECMWF with all features
+wf_multimodel_full = _make_multimodel_regression_model(
+    "wf_multimodel_full", [0, 1, 2, 3, 4, 5], secondary_models=['gfs', 'ecmwf'],
+)
+# HRRR + GFS only (no ECMWF)
+wf_multimodel_hrrr_gfs = _make_multimodel_regression_model(
+    "wf_multimodel_hrrr_gfs", [0, 1, 3, 4, 5], secondary_models=['gfs'],
+)
+
+
+# ---------------------------------------------------------------------------
 # Cross-hour training: pool all 24 run hours with run_hour as feature
 # ---------------------------------------------------------------------------
 
@@ -774,7 +1073,7 @@ def _make_cross_hour_regression_model(name, model_name='hrrr'):
         run_hour = provider.model_run.hour
         current_date = provider.model_run.date()
 
-        fcst_high = provider.get_forecast_high(station_id)
+        fcst_high = _get_forecast_high_for_model(con, station_id, provider.model_run, model_name)
         if fcst_high is None:
             return None
 
@@ -1476,7 +1775,7 @@ def _make_phase2b_model(name, feature_indices, model_name='hrrr'):
         run_hour = provider.model_run.hour
         current_date = provider.model_run.date()
 
-        fcst_high = provider.get_forecast_high(station_id)
+        fcst_high = _get_forecast_high_for_model(con, station_id, provider.model_run, model_name)
         if fcst_high is None:
             return None
 
@@ -1604,7 +1903,7 @@ def _make_phase2b_neighbor_model(name, variant, model_name='hrrr'):
         run_hour = provider.model_run.hour
         current_date = provider.model_run.date()
 
-        fcst_high = provider.get_forecast_high(station_id)
+        fcst_high = _get_forecast_high_for_model(con, station_id, provider.model_run, model_name)
         if fcst_high is None:
             return None
 
@@ -1785,7 +2084,7 @@ def _make_phase2b_blended_model(name, variant, model_name='hrrr'):
         run_hour = provider.model_run.hour
         current_date = provider.model_run.date()
 
-        fcst_high = provider.get_forecast_high(station_id)
+        fcst_high = _get_forecast_high_for_model(con, station_id, provider.model_run, model_name)
         if fcst_high is None:
             return None
 
