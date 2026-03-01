@@ -1,4 +1,10 @@
-# AlphaTemp Master Plan — Prediction Engine v2
+# SUPERSEDED — See 2026-02-27-rebuild-design.md
+
+This document is historical only. Do not use for implementation. The rebuild design doc (2026-02-27-rebuild-design.md) replaces all phases and decisions below.
+
+---
+
+# AlphaTemp Master Plan — Prediction Engine v2 (HISTORICAL)
 
 **Created:** 2026-02-24
 **Status:** Active
@@ -286,7 +292,7 @@ Apply Isotonic Regression (or Platt Scaling) to the ensemble's bracket probabili
 
 ## Phase 4: Kalshi Strategy Layer
 
-**Status:** IN PROGRESS (separate worktree)
+**Status:** IN PROGRESS — Dashboard V2 complete (2026-03-01), PaperTrader shell live with placeholder strategy. Strategy brainstorm session pending.
 **Depends on:** A calibrated model from Phases 1-3.8
 
 ### What
@@ -295,13 +301,14 @@ Map the model's bracket probabilities to actual Kalshi trading decisions.
 ### Concrete Steps
 1. Compare model bracket probabilities vs Kalshi market prices
 2. Identify brackets where `model_prob - market_prob > fee_threshold`
-3. Fee structure: 1% trading fee, 10% settlement fee, 2% withdrawal fee
+3. Fee structure: taker fee = max(ceil(0.07*C*P*(1-P)), C*$0.01). No settlement fee. ~1-2% effective rate.
 4. Simulate historical P&L net of all fees (requires market tick history)
 5. Define position sizing rules (Fractional Kelly — Kelly/4 with hard cap)
 6. Paper trade before going live
+7. **Dashboard V2 (DONE 2026-03-01):** KPI header, health page, blotter, paper trader shell, polish. Supports YES/NO positions and early exit.
 
 ### Edge Threshold
-With ~11% total fee drag, model's predicted probability must exceed market's implied probability by at least 11% to break even in EV. Any edge < 11% is noise.
+With ~1-2% effective fee drag, edge threshold is much lower than originally estimated. Strategy brainstorm session needed to define exact entry/exit rules, position sizing, and NO-side logic.
 
 ### Position Sizing
 - **Fractional Kelly (Kelly/4):** Full Kelly is optimal but assumes infinite divisibility and no model error. With $100, a single bad beat on full Kelly could wipe 40%+ of the account.
