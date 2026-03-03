@@ -2391,6 +2391,7 @@ def _make_qr_model(name, feature_indices, model_name='hrrr'):
         today_full = [
             float(update_hour_et), float(fcst_high),
             sin_m, cos_m, 0.0, 0.0,
+            0.0,                                     # [6] cumulative_divergence
         ]
 
         # Extract running_max from observations for physical floor clamping
@@ -2415,6 +2416,7 @@ def _make_qr_model(name, feature_indices, model_name='hrrr'):
                 if today_feats is not None:
                     today_full[4] = today_feats["running_max_divergence"]
                     today_full[5] = today_feats["slope_divergence"]
+                    today_full[6] = today_feats["cumulative_divergence"]
 
         features_today = np.array([today_full[i] for i in feature_indices])
 
@@ -2655,6 +2657,7 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
             float(gfs_today), float(ecmwf_today),
             0.0,  # [8] remaining_gap — updated below
             0.0,  # [9] time_until_peak — updated below
+            0.0,  # [10] cumulative_divergence — updated below
         ]
 
         running_max = None
@@ -2678,6 +2681,7 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
                 if today_feats is not None:
                     today_full[4] = today_feats["running_max_divergence"]
                     today_full[5] = today_feats["slope_divergence"]
+                    today_full[10] = today_feats["cumulative_divergence"]
 
         # [8] remaining_gap
         if running_max is not None:
