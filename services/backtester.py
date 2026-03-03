@@ -2238,6 +2238,479 @@ wf_phase2b_neighbor_c2 = _make_phase2b_blended_model("wf_phase2b_neighbor_c2", "
 
 
 # ---------------------------------------------------------------------------
+# Phase 3 Quantile Regression Model Factory
+# ---------------------------------------------------------------------------
+
+from services.quantile_model import (
+    fit_quantile_regression,
+    bracket_probs_from_quantiles,
+    QUANTILES as _QR_QUANTILES,
+)
+
+# QR features: indices into the feature vector built in _make_qr_model
+# [0] update_hour_et, [1] fcst_high, [2] sin_month, [3] cos_month,
+# [4] running_max_divergence, [5] slope_divergence
+_QR_FEATURE_SETS = {
+    "qr_base": [0, 1, 2, 3],              # update_hour + fcst_high + sin/cos month
+    "qr_full": [0, 1, 2, 3, 4, 5],        # all 6 features
+}
+
+# Rolling window: use at most this many days for QR training.
+# Weather bias is seasonal, so >1 year of data adds noise more than signal.
+# Also critical for LP performance: n>10K rows makes each LP solve expensive.
+_QR_TRAIN_WINDOW_DAYS = 180
+
+
+def _make_qr_model(name, feature_indices, model_name='hrrr'):
+    # type: (str, list, str) -> ModelFn
+    """Factory: Quantile regression model with cross-hour training.
+
+    Critical difference from Phase 2B: trains across ALL update hours
+    for a given run_hour, so update_hour_et varies in training data.
+    This gives ~24x more training data and lets the model learn
+    uncertainty collapse through the day.
+
+    Performance optimizations (3 layers):
+    1. Data precomputation: build full cross-hour dataset ONCE per run_hour,
+       sorted by date. Use bisect for O(log n) windowed slicing per date.
+    2. Coefficient caching: fit QR once per (date, run_hour), reuse across
+       all 24 update hours (24x fewer LP solves).
+    3. Rolling window: cap training to 365 days for bounded LP solve time.
+    """
+
+    import bisect as _bisect
+
+    # Precomputed data: run_hour -> (dates_arr, errors_arr, feats_arr)
+    # Sorted by date for O(log n) windowed slicing via bisect
+    _data_cache = {}  # type: Dict[int, tuple]
+    # Coefficient cache: (date, run_hour) -> list of 7 coeff vectors or None
+    _qr_cache = {}  # type: Dict[tuple, Optional[list]]
+
+    def _ensure_data(con, run_hour, station_id):
+        # type: (...) -> tuple
+        """Build full cross-hour training dataset ONCE per run_hour."""
+        if run_hour in _data_cache:
+            return _data_cache[run_hour]
+
+        l1 = _ensure_level1(con, run_hour, station_id, model_name=model_name)
+        errors_list = l1["errors_list"]
+        date_info = {d: (fh, m) for d, _e, fh, m, _dt in errors_list}
+        p2_preds = l1["p2_preds"]
+
+        # Gather ALL cross-hour training rows (0-23 ET)
+        rows = []  # (obs_date, actual_error, [6 qr_feats])
+        for uh in range(0, 24):
+            l2 = _ensure_level2(con, run_hour, station_id, uh, model_name=model_name)
+            for obs_date, residual, div_feats in l2:
+                p2_for_date = p2_preds.get(obs_date)
+                if p2_for_date is None:
+                    continue
+                info = date_info.get(obs_date)
+                if info is None:
+                    continue
+                actual_error = residual + p2_for_date[0]
+                train_fh, train_month = info
+                sin_m = math.sin(2.0 * math.pi * train_month / 12.0)
+                cos_m = math.cos(2.0 * math.pi * train_month / 12.0)
+                rows.append((obs_date, actual_error, [
+                    float(uh), float(train_fh),
+                    sin_m, cos_m,
+                    div_feats[2], div_feats[3],
+                ]))
+
+        # Sort by date for bisect windowing
+        rows.sort(key=lambda r: r[0])
+        dates = [r[0] for r in rows]
+        errors = np.array([r[1] for r in rows], dtype=np.float64)
+        feats = np.array([r[2] for r in rows], dtype=np.float64)
+
+        result = (dates, errors, feats)
+        _data_cache[run_hour] = result
+        return result
+
+    def model_fn(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+        con = provider._shared_con
+        station_id = provider.station_id
+        run_hour = provider.model_run.hour
+        current_date = provider.model_run.date()
+
+        fcst_high = provider.get_forecast_high(station_id)
+        if fcst_high is None:
+            return None
+
+        l1 = _ensure_level1(con, run_hour, station_id, model_name=model_name)
+        if current_date not in l1["p2_preds"]:
+            return None
+
+        ref_utc = ref_time if ref_time.tzinfo else ref_time.replace(tzinfo=timezone.utc)
+        update_hour_et = ref_utc.astimezone(_ET).hour
+        cutoff_ts = ref_utc.timestamp()
+
+        cache_key = (current_date, run_hour)
+
+        # --- Fit QR coefficients (once per date, cached across update hours) ---
+        if cache_key not in _qr_cache:
+            dates, errors, feats = _ensure_data(con, run_hour, station_id)
+
+            # O(log n) window: [min_train_date, current_date)
+            min_train_date = current_date - timedelta(days=_QR_TRAIN_WINDOW_DAYS)
+            idx_lo = _bisect.bisect_left(dates, min_train_date)
+            idx_hi = _bisect.bisect_left(dates, current_date)
+
+            n_rows = idx_hi - idx_lo
+            if n_rows < WALK_FORWARD_MIN_DAYS:
+                _qr_cache[cache_key] = None
+            else:
+                X_train = feats[idx_lo:idx_hi][:, feature_indices]
+                y_train = errors[idx_lo:idx_hi]
+
+                coefficients = []  # type: List[np.ndarray]
+                for tau in _QR_QUANTILES:
+                    coeffs = fit_quantile_regression(X_train, y_train, tau)
+                    if coeffs is None:
+                        coefficients = None
+                        break
+                    coefficients.append(coeffs)
+                _qr_cache[cache_key] = coefficients
+
+        cached = _qr_cache[cache_key]
+        if cached is None:
+            return None
+
+        # --- Predict using cached coefficients (fast: just dot products) ---
+        today_month = current_date.month
+        sin_m = math.sin(2.0 * math.pi * today_month / 12.0)
+        cos_m = math.cos(2.0 * math.pi * today_month / 12.0)
+
+        curves = l1["curves"]
+        obs_by_date = l1["obs_by_date"]
+
+        today_full = [
+            float(update_hour_et), float(fcst_high),
+            sin_m, cos_m, 0.0, 0.0,
+        ]
+
+        # Extract running_max from observations for physical floor clamping
+        running_max = None
+        if current_date in curves and len(curves[current_date]) >= 2:
+            curve = curves[current_date]
+            day_obs = obs_by_date.get(current_date, [])
+            truncated = [(ts, temp) for ts, temp in day_obs if ts <= cutoff_ts]
+            if len(truncated) >= 2:
+                obs_ts = [o[0] for o in truncated]
+                obs_temps = [o[1] for o in truncated]
+                running_max = max(obs_temps)
+                fc_ts = [c[0] for c in curve]
+                fc_temps = [c[1] for c in curve]
+                fcst_interp = interpolate_forecast(fc_ts, fc_temps, obs_ts)
+                t0 = obs_ts[0]
+                obs_hours = [(t - t0) / 3600.0 for t in obs_ts]
+                fcst_up_to_t = [temp for ts, temp in curve if ts <= cutoff_ts]
+                today_feats = compute_divergence_features(
+                    obs_temps, fcst_interp, obs_hours, fcst_up_to_t
+                )
+                if today_feats is not None:
+                    today_full[4] = today_feats["running_max_divergence"]
+                    today_full[5] = today_feats["slope_divergence"]
+
+        features_today = np.array([today_full[i] for i in feature_indices])
+
+        # Dot-product prediction from cached coefficients
+        x_row = np.concatenate([[1.0], features_today])
+        error_quantiles = [float(np.dot(c, x_row)) for c in cached]
+        # temp = fcst - error is decreasing → invert tau ordering
+        temp_quantiles = [fcst_high - eq for eq in error_quantiles]
+        inverted_taus = [1.0 - tau for tau in _QR_QUANTILES]
+        return bracket_probs_from_quantiles(
+            temp_quantiles, inverted_taus, running_max=running_max,
+        )
+
+    model_fn.__name__ = name
+    model_fn.__doc__ = "Phase 3 QR: {}".format(name)
+    return model_fn
+
+
+# Pre-built Phase 3 QR model variants
+wf_qr_base = _make_qr_model("wf_qr_base", _QR_FEATURE_SETS["qr_base"])
+wf_qr_full = _make_qr_model("wf_qr_full", _QR_FEATURE_SETS["qr_full"])
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 Multi-model Quantile Regression Factory
+# ---------------------------------------------------------------------------
+
+def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
+    # type: (str, list, Optional[List[str]]) -> ModelFn
+    """Factory: QR with multi-model forecast highs as additional features.
+
+    Feature vector layout (10 features):
+      [0] update_hour_et
+      [1] hrrr_fcst_high
+      [2] sin_month
+      [3] cos_month
+      [4] running_max_divergence
+      [5] slope_divergence
+      [6] gfs_fcst_high (latest run, imputed with HRRR if missing)
+      [7] ecmwf_fcst_high (latest run, imputed with HRRR if missing)
+      [8] remaining_gap: max(fcst_high - running_max, 0) — post-peak spread signal
+      [9] time_until_peak: max(peak_hour_et - update_hour_et, 0) — pre-peak spread signal
+
+    Uses same cross-hour training approach as _make_qr_model but adds
+    secondary model forecast highs to the feature vector.
+    """
+
+    import bisect as _bisect
+
+    if secondary_models is None:
+        secondary_models = ['gfs', 'ecmwf']
+
+    _data_cache = {}  # type: Dict[int, tuple]
+    _qr_cache = {}  # type: Dict[tuple, Optional[list]]
+
+    def _ensure_data(con, run_hour, station_id):
+        # type: (...) -> tuple
+        """Build cross-hour dataset with secondary model features."""
+        if run_hour in _data_cache:
+            return _data_cache[run_hour]
+
+        l1 = _ensure_level1(con, run_hour, station_id, model_name='hrrr')
+        errors_list = l1["errors_list"]
+        date_info = {d: (fh, m) for d, _e, fh, m, _dt in errors_list}
+        p2_preds = l1["p2_preds"]
+        curves = l1["curves"]
+        obs_by_date = l1["obs_by_date"]
+
+        # Pre-compute peak hour per date from forecast curves
+        peak_hours = {}  # type: Dict[date, int]
+        for d, curve in curves.items():
+            if curve:
+                max_ts, _max_temp = max(curve, key=lambda c: c[1])
+                peak_dt = datetime.fromtimestamp(max_ts, tz=timezone.utc).astimezone(_ET)
+                peak_hours[d] = peak_dt.hour
+
+        # Pre-compute running_max per (date, update_hour) from observations
+        running_max_cache = {}  # type: Dict[tuple, Optional[float]]
+        for d, obs_list in obs_by_date.items():
+            for uh in range(0, 24):
+                ref_et = datetime(d.year, d.month, d.day, uh, 0, tzinfo=_ET)
+                cutoff_ts = ref_et.astimezone(timezone.utc).timestamp()
+                truncated = [temp for ts, temp in obs_list if ts <= cutoff_ts]
+                running_max_cache[(d, uh)] = max(truncated) if len(truncated) >= 2 else None
+
+        # Bulk fetch secondary model highs
+        sec_highs = {}  # type: Dict[str, Dict[date, float]]
+        # Get max date from errors_list for before_date
+        max_date = max(d for d, *_ in errors_list) if errors_list else None
+        if max_date is not None:
+            for sec_model in secondary_models:
+                sec_highs[sec_model] = _get_latest_model_fcst_highs_bulk(
+                    con, sec_model, station_id, run_hour, max_date + timedelta(days=1),
+                )
+
+        # Gather ALL cross-hour training rows (0-23 ET)
+        rows = []  # (obs_date, actual_error, [10 qr_feats])
+        for uh in range(0, 24):
+            l2 = _ensure_level2(con, run_hour, station_id, uh, model_name='hrrr')
+            for obs_date, residual, div_feats in l2:
+                p2_for_date = p2_preds.get(obs_date)
+                if p2_for_date is None:
+                    continue
+                info = date_info.get(obs_date)
+                if info is None:
+                    continue
+                actual_error = residual + p2_for_date[0]
+                train_fh, train_month = info
+                sin_m = math.sin(2.0 * math.pi * train_month / 12.0)
+                cos_m = math.cos(2.0 * math.pi * train_month / 12.0)
+
+                # Secondary model highs, imputed with HRRR if missing
+                gfs_fh = sec_highs.get('gfs', {}).get(obs_date, train_fh)
+                ecmwf_fh = sec_highs.get('ecmwf', {}).get(obs_date, train_fh)
+
+                # [8] remaining_gap: post-peak spread signal
+                rm = running_max_cache.get((obs_date, uh))
+                if rm is not None:
+                    remaining_gap = max(train_fh - rm, 0.0)
+                else:
+                    remaining_gap = train_fh * 0.15
+
+                # [9] time_until_peak: pre-peak spread signal
+                ph = peak_hours.get(obs_date)
+                if ph is not None:
+                    time_until_peak = max(float(ph - uh), 0.0)
+                else:
+                    time_until_peak = max(14.0 - float(uh), 0.0)
+
+                rows.append((obs_date, actual_error, [
+                    float(uh), float(train_fh),
+                    sin_m, cos_m,
+                    div_feats[2], div_feats[3],
+                    float(gfs_fh), float(ecmwf_fh),
+                    remaining_gap,
+                    time_until_peak,
+                ]))
+
+        rows.sort(key=lambda r: r[0])
+        dates = [r[0] for r in rows]
+        errors = np.array([r[1] for r in rows], dtype=np.float64)
+        feats = np.array([r[2] for r in rows], dtype=np.float64)
+
+        result = (dates, errors, feats)
+        _data_cache[run_hour] = result
+        return result
+
+    def model_fn(provider, ref_time):
+        # type: (BacktestDataProvider, datetime) -> Optional[Dict[int, float]]
+        con = provider._shared_con
+        station_id = provider.station_id
+        run_hour = provider.model_run.hour
+        current_date = provider.model_run.date()
+
+        fcst_high = provider.get_forecast_high(station_id)
+        if fcst_high is None:
+            return None
+
+        l1 = _ensure_level1(con, run_hour, station_id, model_name='hrrr')
+        if current_date not in l1["p2_preds"]:
+            return None
+
+        ref_utc = ref_time if ref_time.tzinfo else ref_time.replace(tzinfo=timezone.utc)
+        update_hour_et = ref_utc.astimezone(_ET).hour
+        cutoff_ts = ref_utc.timestamp()
+
+        cache_key = (current_date, run_hour)
+
+        if cache_key not in _qr_cache:
+            dates, errors, feats = _ensure_data(con, run_hour, station_id)
+
+            min_train_date = current_date - timedelta(days=_QR_TRAIN_WINDOW_DAYS)
+            idx_lo = _bisect.bisect_left(dates, min_train_date)
+            idx_hi = _bisect.bisect_left(dates, current_date)
+
+            n_rows = idx_hi - idx_lo
+            if n_rows < WALK_FORWARD_MIN_DAYS:
+                _qr_cache[cache_key] = None
+            else:
+                X_train = feats[idx_lo:idx_hi][:, feature_indices]
+                y_train = errors[idx_lo:idx_hi]
+
+                coefficients = []  # type: List[np.ndarray]
+                for tau in _QR_QUANTILES:
+                    coeffs = fit_quantile_regression(X_train, y_train, tau)
+                    if coeffs is None:
+                        coefficients = None
+                        break
+                    coefficients.append(coeffs)
+                _qr_cache[cache_key] = coefficients
+
+        cached = _qr_cache[cache_key]
+        if cached is None:
+            return None
+
+        today_month = current_date.month
+        sin_m = math.sin(2.0 * math.pi * today_month / 12.0)
+        cos_m = math.cos(2.0 * math.pi * today_month / 12.0)
+
+        # Get secondary model highs for today
+        gfs_today = fcst_high  # default impute with HRRR
+        ecmwf_today = fcst_high
+        for sec_model in secondary_models:
+            latest_hour = _find_latest_run_hour(
+                con, sec_model, station_id, current_date, run_hour,
+            )
+            if latest_hour is not None:
+                sec_run = datetime(
+                    current_date.year, current_date.month,
+                    current_date.day, latest_hour,
+                )
+                sec_high = _get_forecast_high_for_model(
+                    con, station_id, sec_run, sec_model,
+                )
+                if sec_high is not None:
+                    if sec_model == 'gfs':
+                        gfs_today = sec_high
+                    elif sec_model == 'ecmwf':
+                        ecmwf_today = sec_high
+
+        curves = l1["curves"]
+        obs_by_date = l1["obs_by_date"]
+
+        # Compute peak hour from forecast curve
+        peak_hour_et = 14  # default: 2 PM ET
+        if current_date in curves and curves[current_date]:
+            curve_today = curves[current_date]
+            max_ts, _max_temp = max(curve_today, key=lambda c: c[1])
+            peak_hour_et = datetime.fromtimestamp(max_ts, tz=timezone.utc).astimezone(_ET).hour
+
+        today_full = [
+            float(update_hour_et), float(fcst_high),
+            sin_m, cos_m, 0.0, 0.0,
+            float(gfs_today), float(ecmwf_today),
+            0.0,  # [8] remaining_gap — updated below
+            0.0,  # [9] time_until_peak — updated below
+        ]
+
+        running_max = None
+        if current_date in curves and len(curves[current_date]) >= 2:
+            curve = curves[current_date]
+            day_obs = obs_by_date.get(current_date, [])
+            truncated = [(ts, temp) for ts, temp in day_obs if ts <= cutoff_ts]
+            if len(truncated) >= 2:
+                obs_ts = [o[0] for o in truncated]
+                obs_temps = [o[1] for o in truncated]
+                running_max = max(obs_temps)
+                fc_ts = [c[0] for c in curve]
+                fc_temps = [c[1] for c in curve]
+                fcst_interp = interpolate_forecast(fc_ts, fc_temps, obs_ts)
+                t0 = obs_ts[0]
+                obs_hours = [(t - t0) / 3600.0 for t in obs_ts]
+                fcst_up_to_t = [temp for ts, temp in curve if ts <= cutoff_ts]
+                today_feats = compute_divergence_features(
+                    obs_temps, fcst_interp, obs_hours, fcst_up_to_t
+                )
+                if today_feats is not None:
+                    today_full[4] = today_feats["running_max_divergence"]
+                    today_full[5] = today_feats["slope_divergence"]
+
+        # [8] remaining_gap
+        if running_max is not None:
+            today_full[8] = max(fcst_high - running_max, 0.0)
+        else:
+            today_full[8] = fcst_high * 0.15
+
+        # [9] time_until_peak
+        today_full[9] = max(float(peak_hour_et - update_hour_et), 0.0)
+
+        features_today = np.array([today_full[i] for i in feature_indices])
+
+        x_row = np.concatenate([[1.0], features_today])
+        error_quantiles = [float(np.dot(c, x_row)) for c in cached]
+        temp_quantiles = [fcst_high - eq for eq in error_quantiles]
+        inverted_taus = [1.0 - tau for tau in _QR_QUANTILES]
+        return bracket_probs_from_quantiles(
+            temp_quantiles, inverted_taus, running_max=running_max,
+        )
+
+    model_fn.__name__ = name
+    model_fn.__doc__ = "Phase 3 Multimodel QR: {}".format(name)
+    return model_fn
+
+
+# Pre-built Phase 3 multi-model QR instances
+wf_qr_multimodel = _make_multimodel_qr_model(
+    "wf_qr_multimodel", [0, 1, 2, 3, 4, 5, 6, 7],
+    secondary_models=['gfs', 'ecmwf'],
+)
+
+# v2: adds remaining_gap [8] + time_until_peak [9] for spread collapse
+wf_qr_multimodel_v2 = _make_multimodel_qr_model(
+    "wf_qr_multimodel_v2", [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    secondary_models=['gfs', 'ecmwf'],
+)
+
+
+# ---------------------------------------------------------------------------
 # Backtester
 # ---------------------------------------------------------------------------
 
@@ -2332,6 +2805,7 @@ class Backtester:
         run_hours: Optional[List[int]] = None,
         update_hours_et: Optional[List[int]] = None,
         model_name: str = 'hrrr',
+        latest_run: bool = False,
     ) -> BacktestResult:
         """Execute the backtest and return scored results.
 
@@ -2342,7 +2816,14 @@ class Backtester:
             When provided, each (date, run_hour) is evaluated at every
             update hour, with ref_time set to that ET hour converted to UTC.
             When None (default): Phase 1/2 behavior (ref_time = model_run + 2h).
+        latest_run : bool
+            When True, simulate production behavior: for each (date,
+            update_hour_et), use only the freshest HRRR run available
+            (accounting for ingestion lag). Requires update_hours_et.
         """
+        if latest_run and not update_hours_et:
+            raise ValueError("latest_run=True requires update_hours_et")
+
         if run_hours is None:
             run_hours = RUN_HOURS
 
@@ -2351,13 +2832,21 @@ class Backtester:
         try:
             settlement_dates = self._get_settlement_dates(con, start_date, end_date)
             n_updates = len(update_hours_et) if update_hours_et else 1
-            logger.info(
-                "Backtesting {} settlement dates, run hours: {}, "
-                "update hours: {}".format(
-                    len(settlement_dates), run_hours,
-                    update_hours_et or "default (model_run+2h)",
+            if latest_run:
+                logger.info(
+                    "Backtesting {} settlement dates, LATEST-RUN mode, "
+                    "update hours: {}".format(
+                        len(settlement_dates), update_hours_et,
+                    )
                 )
-            )
+            else:
+                logger.info(
+                    "Backtesting {} settlement dates, run hours: {}, "
+                    "update hours: {}".format(
+                        len(settlement_dates), run_hours,
+                        update_hours_et or "default (model_run+2h)",
+                    )
+                )
 
             results = []  # type: List[RunResult]
             skipped = 0
@@ -2370,6 +2859,100 @@ class Backtester:
                 if obs_date not in kalshi_cache:
                     kalshi_cache[obs_date] = self._get_kalshi_brackets(con, obs_date)
                 kalshi_brackets = kalshi_cache[obs_date]
+
+                # --- Latest-run mode: pick freshest run per update hour ---
+                if latest_run:
+                    # One query per date: which run_hours have data?
+                    avail_rows = con.execute("""
+                        SELECT DISTINCT EXTRACT(HOUR FROM model_run)::INTEGER as rh
+                        FROM forecasts
+                        WHERE model_name = ? AND station_id = ?
+                          AND model_run::DATE = ?
+                        ORDER BY rh
+                    """, [model_name, self.station_id, obs_date]).fetchall()
+                    available_hours = [int(r[0]) for r in avail_rows]
+
+                    for uhr in update_hours_et:
+                        ref_et = datetime(
+                            obs_date.year, obs_date.month, obs_date.day,
+                            uhr, 0, tzinfo=_ET,
+                        )
+                        ref_utc = ref_et.astimezone(timezone.utc)
+                        max_possible_utc = ref_utc - timedelta(
+                            hours=HRRR_AVAILABILITY_LAG_HOURS,
+                        )
+
+                        # What's the latest run_hour that could be ingested?
+                        if max_possible_utc.date() > obs_date:
+                            max_hour = 23
+                        elif max_possible_utc.date() == obs_date:
+                            max_hour = max_possible_utc.hour
+                        else:
+                            skipped += 1
+                            continue
+
+                        candidates = [h for h in available_hours if h <= max_hour]
+                        if not candidates:
+                            skipped += 1
+                            continue
+                        latest_rh = max(candidates)
+
+                        model_run_utc = datetime(
+                            obs_date.year, obs_date.month, obs_date.day,
+                            latest_rh, 0, tzinfo=timezone.utc,
+                        )
+
+                        provider = BacktestDataProvider(
+                            db_path=self.db_path,
+                            station_id=self.station_id,
+                            model_run=model_run_utc,
+                            ref_time=ref_utc,
+                            connection=con,
+                            model_name=model_name,
+                        )
+
+                        bracket_probs = model_fn(provider, ref_utc)
+                        if bracket_probs is None:
+                            skipped += 1
+                            continue
+
+                        if kalshi_brackets:
+                            mapped = map_probs_to_kalshi_brackets(
+                                bracket_probs, kalshi_brackets,
+                            )
+                            brier = compute_brier_score(mapped, kalshi_brackets)
+                            used_kalshi = True
+                            n_brackets = len(kalshi_brackets)
+                            kalshi_scored += 1
+                        else:
+                            brier = compute_brier_score_1f(bracket_probs, actual_high)
+                            used_kalshi = False
+                            n_brackets = len(bracket_probs)
+                            fallback_scored += 1
+
+                        predicted_bracket = max(bracket_probs, key=bracket_probs.get)
+                        hit = predicted_bracket == round(actual_high)
+                        fcst_high = provider.get_forecast_high(self.station_id)
+
+                        results.append(RunResult(
+                            settlement_date=obs_date,
+                            run_hour=latest_rh,
+                            station_id=self.station_id,
+                            forecast_high=fcst_high,
+                            actual_high=actual_high,
+                            brier_score=brier,
+                            predicted_bracket=predicted_bracket,
+                            hit=hit,
+                            used_kalshi_brackets=used_kalshi,
+                            n_brackets=n_brackets,
+                            update_hour_et=uhr,
+                        ))
+
+                    if (i + 1) % 200 == 0:
+                        logger.info(
+                            f"  Processed {i + 1}/{len(settlement_dates)} days..."
+                        )
+                    continue  # skip normal run_hours loop
 
                 for hour in run_hours:
                     model_run_utc = datetime(
