@@ -2249,10 +2249,11 @@ from services.quantile_model import (
 
 # QR features: indices into the feature vector built in _make_qr_model
 # [0] update_hour_et, [1] fcst_high, [2] sin_month, [3] cos_month,
-# [4] running_max_divergence, [5] slope_divergence
+# [4] running_max_divergence, [5] slope_divergence, [6] cumulative_divergence
 _QR_FEATURE_SETS = {
     "qr_base": [0, 1, 2, 3],              # update_hour + fcst_high + sin/cos month
-    "qr_full": [0, 1, 2, 3, 4, 5],        # all 6 features
+    "qr_full": [0, 1, 2, 3, 4, 5],        # + divergence (6 features)
+    "qr_full_v3": [0, 1, 2, 3, 4, 5, 6],  # + cumulative_divergence (7 features)
 }
 
 # Rolling window: use at most this many days for QR training.
@@ -2316,6 +2317,7 @@ def _make_qr_model(name, feature_indices, model_name='hrrr'):
                     float(uh), float(train_fh),
                     sin_m, cos_m,
                     div_feats[2], div_feats[3],
+                    div_feats[1],                    # [6] cumulative_divergence
                 ]))
 
         # Sort by date for bisect windowing
@@ -2434,6 +2436,8 @@ def _make_qr_model(name, feature_indices, model_name='hrrr'):
 # Pre-built Phase 3 QR model variants
 wf_qr_base = _make_qr_model("wf_qr_base", _QR_FEATURE_SETS["qr_base"])
 wf_qr_full = _make_qr_model("wf_qr_full", _QR_FEATURE_SETS["qr_full"])
+# v3: adds cumulative_divergence [6] — mean(obs - forecast) across verified hours
+wf_qr_full_v3 = _make_qr_model("wf_qr_full_v3", _QR_FEATURE_SETS["qr_full_v3"])
 
 
 # ---------------------------------------------------------------------------
@@ -2444,7 +2448,7 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
     # type: (str, list, Optional[List[str]]) -> ModelFn
     """Factory: QR with multi-model forecast highs as additional features.
 
-    Feature vector layout (10 features):
+    Feature vector layout (11 features):
       [0] update_hour_et
       [1] hrrr_fcst_high
       [2] sin_month
@@ -2455,6 +2459,7 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
       [7] ecmwf_fcst_high (latest run, imputed with HRRR if missing)
       [8] remaining_gap: max(fcst_high - running_max, 0) — post-peak spread signal
       [9] time_until_peak: max(peak_hour_et - update_hour_et, 0) — pre-peak spread signal
+      [10] cumulative_divergence: mean(obs - forecast) across verified hours
 
     Uses same cross-hour training approach as _make_qr_model but adds
     secondary model forecast highs to the feature vector.
@@ -2549,6 +2554,7 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
                     float(gfs_fh), float(ecmwf_fh),
                     remaining_gap,
                     time_until_peak,
+                    div_feats[1],                    # [10] cumulative_divergence
                 ]))
 
         rows.sort(key=lambda r: r[0])
@@ -2706,6 +2712,12 @@ wf_qr_multimodel = _make_multimodel_qr_model(
 # v2: adds remaining_gap [8] + time_until_peak [9] for spread collapse
 wf_qr_multimodel_v2 = _make_multimodel_qr_model(
     "wf_qr_multimodel_v2", [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    secondary_models=['gfs', 'ecmwf'],
+)
+
+# v3: adds cumulative_divergence [10] — mean(obs - forecast) bias signal
+wf_qr_multimodel_v3 = _make_multimodel_qr_model(
+    "wf_qr_multimodel_v3", [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     secondary_models=['gfs', 'ecmwf'],
 )
 

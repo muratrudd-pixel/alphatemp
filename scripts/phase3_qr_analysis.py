@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Phase 3: Quantile Regression — Ablation Analysis.
 
-Compares 3 QR variants against the Phase 2 champion (multimodel_full).
+Compares QR variants against the Phase 2 champion (multimodel_full).
 
 Variants:
   - multimodel_full: Phase 2 champion — multi-model OLS stacking (Brier 0.6511)
   - qr_base:         QR with update_hour + fcst_high + sin/cos month
   - qr_full:         QR with all 6 features (+ divergence)
+  - qr_full_v3:      QR with 7 features (+ cumulative_divergence)
   - qr_multimodel:   QR with 8 features (+ GFS/ECMWF highs)
+  - qr_multimodel_v2: QR with 10 features (+ remaining_gap, time_until_peak)
+  - qr_multimodel_v3: QR with 11 features (+ cumulative_divergence)
 
 Gate: >2% Brier improvement over multimodel_full AND P&L trajectory improvement.
 
@@ -29,8 +32,10 @@ from services.backtester import (
     wf_multimodel_full,
     wf_qr_base,
     wf_qr_full,
+    wf_qr_full_v3,
     wf_qr_multimodel,
     wf_qr_multimodel_v2,
+    wf_qr_multimodel_v3,
 )
 
 DB_PATH = "data/alphatemp.duckdb"
@@ -50,8 +55,10 @@ VARIANTS = [
     ("multimodel_full", wf_multimodel_full),
     ("qr_base", wf_qr_base),
     ("qr_full", wf_qr_full),
+    ("qr_full_v3", wf_qr_full_v3),
     ("qr_multimodel", wf_qr_multimodel),
     ("qr_multimodel_v2", wf_qr_multimodel_v2),
+    ("qr_multimodel_v3", wf_qr_multimodel_v3),
 ]
 
 
@@ -121,6 +128,21 @@ def main():
     all_results["qr_multimodel_latest"] = result_lr
     print("  Done: mean_brier={:.4f}  evals={}  ({:.0f}s)".format(
         result_lr.mean_brier, result_lr.total_evaluations, elapsed
+    ))
+    print()
+
+    print("[latest-run] Running qr_multimodel_v3 with latest_run=True...")
+    t0 = time.time()
+    result_lr_v3 = bt.run(
+        wf_qr_multimodel_v3,
+        update_hours_et=update_hours,
+        start_date=start_date,
+        latest_run=True,
+    )
+    elapsed = time.time() - t0
+    all_results["qr_mm_v3_latest"] = result_lr_v3
+    print("  Done: mean_brier={:.4f}  evals={}  ({:.0f}s)".format(
+        result_lr_v3.mean_brier, result_lr_v3.total_evaluations, elapsed
     ))
     print()
 
