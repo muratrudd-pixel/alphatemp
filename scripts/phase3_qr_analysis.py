@@ -11,6 +11,8 @@ Variants:
   - qr_multimodel:   QR with 8 features (+ GFS/ECMWF highs)
   - qr_multimodel_v2: QR with 10 features (+ remaining_gap, time_until_peak)
   - qr_multimodel_v3: QR with 11 features (+ cumulative_divergence)
+  - qr_multimodel_v4: QR with 13 features (+ mesonet running_max, 30min_trend)
+  - qr_multimodel_v4_no_gfs: v4 without GFS/ECMWF (interim while re-backfill runs)
 
 Gate: >2% Brier improvement over multimodel_full AND P&L trajectory improvement.
 
@@ -20,6 +22,8 @@ Usage:
 """
 
 import argparse
+import json
+import os
 import sys
 import time
 from datetime import date, timedelta
@@ -36,6 +40,8 @@ from services.backtester import (
     wf_qr_multimodel,
     wf_qr_multimodel_v2,
     wf_qr_multimodel_v3,
+    wf_qr_multimodel_v4,
+    wf_qr_multimodel_v4_no_gfs,
 )
 
 DB_PATH = "data/alphatemp.duckdb"
@@ -59,7 +65,32 @@ VARIANTS = [
     ("qr_multimodel", wf_qr_multimodel),
     ("qr_multimodel_v2", wf_qr_multimodel_v2),
     ("qr_multimodel_v3", wf_qr_multimodel_v3),
+    ("qr_multimodel_v4", wf_qr_multimodel_v4),
+    ("qr_multimodel_v4_no_gfs", wf_qr_multimodel_v4_no_gfs),
 ]
+
+
+RESULTS_DIR = "data/qr_results"
+
+
+def _save_result(vname, result, elapsed, results_dir):
+    """Save a single variant's result to JSON immediately after it finishes."""
+    entry = {
+        "variant": vname,
+        "mean_brier": result.mean_brier,
+        "top1_hit_rate": result.top1_hit_rate,
+        "total_evaluations": result.total_evaluations,
+        "total_days": result.total_days,
+        "skipped": result.skipped,
+        "elapsed_seconds": round(elapsed, 1),
+        "by_update_hour": getattr(result, 'by_update_hour', {}),
+        "by_run_hour": result.by_run_hour,
+        "timestamp": date.today().isoformat(),
+    }
+    path = os.path.join(results_dir, "{}.json".format(vname))
+    with open(path, "w") as f:
+        json.dump(entry, f, indent=2)
+    print("  Saved: {}".format(path))
 
 
 def main():
@@ -67,6 +98,12 @@ def main():
     parser.add_argument("--quick", action="store_true",
                         help="Quick mode: 6 sampled hours, last 2 years")
     args = parser.parse_args()
+
+    mode_suffix = "quick" if args.quick else "full"
+    results_dir = os.path.join(RESULTS_DIR, "{}_{}".format(
+        date.today().isoformat(), mode_suffix
+    ))
+    os.makedirs(results_dir, exist_ok=True)
 
     if args.quick:
         update_hours = UPDATE_HOURS_QUICK
@@ -113,6 +150,7 @@ def main():
         print("  Done: mean_brier={:.4f}  evals={}  ({:.0f}s)".format(
             result.mean_brier, result.total_evaluations, elapsed
         ))
+        _save_result(vname, result, elapsed, results_dir)
         print()
 
     # --- Latest-run mode: simulate production (freshest forecast only) ---
@@ -129,6 +167,7 @@ def main():
     print("  Done: mean_brier={:.4f}  evals={}  ({:.0f}s)".format(
         result_lr.mean_brier, result_lr.total_evaluations, elapsed
     ))
+    _save_result("qr_multimodel_latest", result_lr, elapsed, results_dir)
     print()
 
     print("[latest-run] Running qr_multimodel_v3 with latest_run=True...")
@@ -144,6 +183,7 @@ def main():
     print("  Done: mean_brier={:.4f}  evals={}  ({:.0f}s)".format(
         result_lr_v3.mean_brier, result_lr_v3.total_evaluations, elapsed
     ))
+    _save_result("qr_mm_v3_latest", result_lr_v3, elapsed, results_dir)
     print()
 
     total_elapsed = time.time() - total_start

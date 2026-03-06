@@ -1291,7 +1291,7 @@ def _ensure_level1(con, run_hour, station_id, model_name='hrrr'):
         obs_utc = observed_at.replace(tzinfo=timezone.utc) if hasattr(observed_at, 'replace') \
             else datetime.fromtimestamp(float(observed_at), tz=timezone.utc)
         et_date = obs_utc.astimezone(_ET).date()
-        ts = observed_at.timestamp() if hasattr(observed_at, 'timestamp') else float(observed_at)
+        ts = obs_utc.timestamp()
         if et_date not in obs_by_date:
             obs_by_date[et_date] = []
         obs_by_date[et_date].append((ts, temp_f))
@@ -1313,7 +1313,7 @@ def _ensure_level1(con, run_hour, station_id, model_name='hrrr'):
             obs_utc = observed_at.replace(tzinfo=timezone.utc) if hasattr(observed_at, 'replace') \
                 else datetime.fromtimestamp(float(observed_at), tz=timezone.utc)
             et_date = obs_utc.astimezone(_ET).date()
-            ts = observed_at.timestamp() if hasattr(observed_at, 'timestamp') else float(observed_at)
+            ts = obs_utc.timestamp()
             if et_date not in nbr_by_date:
                 nbr_by_date[et_date] = []
             nbr_by_date[et_date].append((ts, temp_f))
@@ -2450,7 +2450,7 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
     # type: (str, list, Optional[List[str]]) -> ModelFn
     """Factory: QR with multi-model forecast highs as additional features.
 
-    Feature vector layout (11 features):
+    Feature vector layout (13 features):
       [0] update_hour_et
       [1] hrrr_fcst_high
       [2] sin_month
@@ -2462,6 +2462,8 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
       [8] remaining_gap: max(fcst_high - running_max, 0) — post-peak spread signal
       [9] time_until_peak: max(peak_hour_et - update_hour_et, 0) — pre-peak spread signal
       [10] cumulative_divergence: mean(obs - forecast) across verified hours
+      [11] mesonet_running_max: avg running max from BKNYRD + QNASTO
+      [12] mesonet_30min_trend: avg 30-min temperature slope from both stations
 
     Uses same cross-hour training approach as _make_qr_model but adds
     secondary model forecast highs to the feature vector.
@@ -2474,6 +2476,7 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
 
     _data_cache = {}  # type: Dict[int, tuple]
     _qr_cache = {}  # type: Dict[tuple, Optional[list]]
+    _mesonet_cache = {}  # type: Dict[tuple, tuple]
 
     def _ensure_data(con, run_hour, station_id):
         # type: (...) -> tuple
@@ -2515,8 +2518,59 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
                     con, sec_model, station_id, run_hour, max_date + timedelta(days=1),
                 )
 
+        # Bulk fetch mesonet observations for running_max / trend features
+        MESONET_STATIONS = ['BKNYRD', 'QNASTO']
+        mesonet_obs = {}  # type: Dict[str, Dict[date, list]]
+        for meso_stn in MESONET_STATIONS:
+            rows_m = con.execute(
+                "SELECT observed_at, temp_f FROM mesonet_obs "
+                "WHERE station_id = ? AND temp_f IS NOT NULL "
+                "ORDER BY observed_at",
+                [meso_stn],
+            ).fetchall()
+            by_date = {}  # type: Dict[date, list]
+            for obs_at, temp in rows_m:
+                obs_utc = obs_at.replace(tzinfo=timezone.utc)
+                d = obs_utc.astimezone(_ET).date()
+                ts = obs_utc.timestamp()
+                by_date.setdefault(d, []).append((ts, temp))
+            mesonet_obs[meso_stn] = by_date
+
+        # Pre-compute mesonet features per (date, update_hour)
+        # [11] mesonet_running_max: avg running max from BKNYRD + QNASTO
+        # [12] mesonet_30min_trend: avg 30-min temperature slope
+        # Populates factory-level _mesonet_cache (shared with model_fn)
+        all_meso_dates = set()
+        for stn_data in mesonet_obs.values():
+            all_meso_dates.update(stn_data.keys())
+        for d in all_meso_dates:
+            for uh in range(0, 24):
+                ref_et = datetime(d.year, d.month, d.day, uh, 0, tzinfo=_ET)
+                cutoff_ts = ref_et.astimezone(timezone.utc).timestamp()
+                cutoff_30 = cutoff_ts - 1800.0  # 30 minutes before
+
+                rm_vals = []
+                trend_vals = []
+                for meso_stn in MESONET_STATIONS:
+                    obs_list = mesonet_obs[meso_stn].get(d, [])
+                    truncated = [(ts, temp) for ts, temp in obs_list if ts <= cutoff_ts]
+                    if len(truncated) >= 2:
+                        rm_vals.append(max(temp for _, temp in truncated))
+                        # 30-min trend: temps in [cutoff-30m, cutoff]
+                        window = [(ts, temp) for ts, temp in truncated if ts >= cutoff_30]
+                        if len(window) >= 2:
+                            dt_hrs = (window[-1][0] - window[0][0]) / 3600.0
+                            if dt_hrs > 0:
+                                trend_vals.append(
+                                    (window[-1][1] - window[0][1]) / dt_hrs
+                                )
+
+                meso_rm = sum(rm_vals) / len(rm_vals) if rm_vals else None
+                meso_trend = sum(trend_vals) / len(trend_vals) if trend_vals else 0.0
+                _mesonet_cache[(d, uh)] = (meso_rm, meso_trend)
+
         # Gather ALL cross-hour training rows (0-23 ET)
-        rows = []  # (obs_date, actual_error, [10 qr_feats])
+        rows = []  # (obs_date, actual_error, [13 qr_feats])
         for uh in range(0, 24):
             l2 = _ensure_level2(con, run_hour, station_id, uh, model_name='hrrr')
             for obs_date, residual, div_feats in l2:
@@ -2549,6 +2603,16 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
                 else:
                     time_until_peak = max(14.0 - float(uh), 0.0)
 
+                # [11] mesonet_running_max, [12] mesonet_30min_trend
+                meso_cached = _mesonet_cache.get((obs_date, uh))
+                if meso_cached is not None and meso_cached[0] is not None:
+                    mesonet_running_max = meso_cached[0]
+                    mesonet_30min_trend = meso_cached[1]
+                else:
+                    # Impute: use KNYC running_max, trend = 0
+                    mesonet_running_max = rm if rm is not None else train_fh
+                    mesonet_30min_trend = 0.0
+
                 rows.append((obs_date, actual_error, [
                     float(uh), float(train_fh),
                     sin_m, cos_m,
@@ -2557,6 +2621,8 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
                     remaining_gap,
                     time_until_peak,
                     div_feats[1],                    # [10] cumulative_divergence
+                    float(mesonet_running_max),       # [11] mesonet_running_max
+                    float(mesonet_30min_trend),       # [12] mesonet_30min_trend
                 ]))
 
         rows.sort(key=lambda r: r[0])
@@ -2658,7 +2724,18 @@ def _make_multimodel_qr_model(name, feature_indices, secondary_models=None):
             0.0,  # [8] remaining_gap — updated below
             0.0,  # [9] time_until_peak — updated below
             0.0,  # [10] cumulative_divergence — updated below
+            0.0,  # [11] mesonet_running_max — updated below
+            0.0,  # [12] mesonet_30min_trend — updated below
         ]
+
+        # Compute mesonet features for today
+        meso_today = _mesonet_cache.get((current_date, update_hour_et))
+        if meso_today is not None and meso_today[0] is not None:
+            today_full[11] = float(meso_today[0])
+            today_full[12] = float(meso_today[1])
+        else:
+            today_full[11] = float(fcst_high)  # impute with forecast high
+            today_full[12] = 0.0
 
         running_max = None
         if current_date in curves and len(curves[current_date]) >= 2:
@@ -2722,6 +2799,18 @@ wf_qr_multimodel_v2 = _make_multimodel_qr_model(
 # v3: adds cumulative_divergence [10] — mean(obs - forecast) bias signal
 wf_qr_multimodel_v3 = _make_multimodel_qr_model(
     "wf_qr_multimodel_v3", [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    secondary_models=['gfs', 'ecmwf'],
+)
+
+# v4: adds mesonet features [11, 12] — running max + 30-min trend
+wf_qr_multimodel_v4 = _make_multimodel_qr_model(
+    "wf_qr_multimodel_v4", [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    secondary_models=['gfs', 'ecmwf'],
+)
+
+# v4_no_gfs: drops GFS/ECMWF [6,7] for interim while re-backfill runs
+wf_qr_multimodel_v4_no_gfs = _make_multimodel_qr_model(
+    "wf_qr_multimodel_v4_no_gfs", [0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12],
     secondary_models=['gfs', 'ecmwf'],
 )
 
@@ -2928,7 +3017,7 @@ class Backtester:
                         )
 
                         bracket_probs = model_fn(provider, ref_utc)
-                        if bracket_probs is None:
+                        if not bracket_probs:
                             skipped += 1
                             continue
 
@@ -3017,7 +3106,7 @@ class Backtester:
                         )
 
                         bracket_probs = model_fn(provider, ref_time)
-                        if bracket_probs is None:
+                        if not bracket_probs:
                             skipped += 1
                             continue
 
