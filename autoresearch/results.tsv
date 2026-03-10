@@ -30,3 +30,4 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-10T21:43:09.756946	0.298460	0.6391	0.3910	-14432	1248	54.4	Add pressure + CAPE from ECMWF (14 features)
 2026-03-10T21:44:54.279087	0.305802	0.6349	0.3838	-15332	1248	83.0	Expand training window to 250 days (was 180)
 2026-03-10T22:53:13.798407	0.271537	0.6403	0.4127	-11732	1248	49.2	Add ECMWF precipitation (rain day indicator)
+2026-03-10T22:54:57.079017	0.268706	0.6408	0.4151	-11432	1248	52.8	Add ECMWF 2m humidity as 14th feature
