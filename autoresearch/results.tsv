@@ -31,3 +31,5 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-10T21:44:54.279087	0.305802	0.6349	0.3838	-15332	1248	83.0	Expand training window to 250 days (was 180)
 2026-03-10T22:53:13.798407	0.271537	0.6403	0.4127	-11732	1248	49.2	Add ECMWF precipitation (rain day indicator)
 2026-03-10T22:54:57.079017	0.268706	0.6408	0.4151	-11432	1248	52.8	Add ECMWF 2m humidity as 14th feature
+2026-03-10T22:56:19.653999	0.269260	0.6421	0.4151	-11432	1248	65.4	Expand to 9 quantiles for finer CDF resolution
+2026-03-10T22:58:02.864995	0.261159	0.6469	0.4231	-10432	1248	57.1	Add ECMWF wind gusts as 15th feature (convective indicator)

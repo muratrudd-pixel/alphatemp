@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Add ECMWF 2m humidity as 14th feature"
+DESCRIPTION = "Add ECMWF wind gusts as 15th feature (convective indicator)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -227,7 +227,8 @@ def get_training_data(con, run_hour, station_id, current_date):
                AVG(shortwave_rad) AS mean_rad,
                AVG(dewpoint_2m_f) AS mean_dewpoint,
                SUM(precipitation) AS total_precip,
-               AVG(humidity_2m) AS mean_humidity
+               AVG(humidity_2m) AS mean_humidity,
+               MAX(wind_gusts_10m) AS max_gusts
         FROM forecast_extended
         WHERE station_id = ?
             AND model_run::DATE >= ?
@@ -242,6 +243,7 @@ def get_training_data(con, run_hour, station_id, current_date):
     ecmwf_dp_lookup = {r[0]: r[2] for r in ecmwf_ext_raw if r[2] is not None}
     ecmwf_precip_lookup = {r[0]: r[3] for r in ecmwf_ext_raw if r[3] is not None}
     ecmwf_humidity_lookup = {r[0]: r[4] for r in ecmwf_ext_raw if r[4] is not None}
+    ecmwf_gusts_lookup = {r[0]: r[5] for r in ecmwf_ext_raw if r[5] is not None}
 
     # Query 5: GFS 00z forecast highs (only 00z is clean)
     gfs_highs_raw = con.execute("""
@@ -319,6 +321,8 @@ def get_training_data(con, run_hour, station_id, current_date):
         total_precip = ecmwf_precip_lookup.get(obs_date, 0.0)
         # ECMWF 2m humidity (moisture affects heating efficiency)
         humidity = ecmwf_humidity_lookup.get(obs_date, 50.0)
+        # ECMWF max wind gusts (convective mixing indicator)
+        max_gusts = ecmwf_gusts_lookup.get(obs_date, 0.0)
 
         obs_by_hour = obs_lookup.get(obs_date, {})
         rm_by_hour = obs_running_max.get(obs_date, {})
@@ -361,6 +365,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 dp_depression,
                 total_precip,
                 humidity,
+                max_gusts,
             ]
 
             X_rows.append(features)
@@ -446,10 +451,10 @@ def model_fn(provider, ref_time):
     gfs_high = gfs_row[0] if gfs_row and gfs_row[0] is not None else None
     gfs_spread = (gfs_high - fcst_high) if gfs_high is not None else 0.0
 
-    # ECMWF extended features for today (radiation + dewpoint + precip + humidity)
+    # ECMWF extended features for today (radiation + dewpoint + precip + humidity + gusts)
     ext_row = con.execute("""
         SELECT AVG(shortwave_rad), AVG(dewpoint_2m_f), SUM(precipitation),
-               AVG(humidity_2m)
+               AVG(humidity_2m), MAX(wind_gusts_10m)
         FROM forecast_extended
         WHERE station_id = ? AND model_run::DATE = ?
             AND EXTRACT(HOUR FROM model_run) = 0
@@ -462,6 +467,7 @@ def model_fn(provider, ref_time):
     dp_depression = (fcst_high - ecmwf_dp) if ecmwf_dp is not None else 0.0
     total_precip = ext_row[2] if ext_row and ext_row[2] is not None else 0.0
     humidity = ext_row[3] if ext_row and ext_row[3] is not None else 50.0
+    max_gusts = ext_row[4] if ext_row and ext_row[4] is not None else 0.0
 
     running_max_div = 0.0
     slope_div = 0.0
@@ -525,6 +531,7 @@ def model_fn(provider, ref_time):
         dp_depression,
         total_precip,
         humidity,
+        max_gusts,
     ])
 
     x_row = np.concatenate([[1.0], features_today])
