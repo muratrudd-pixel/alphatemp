@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Baseline: QR with 7 features, batch queries, coefficient caching"
+DESCRIPTION = "Add ECMWF 00z forecast high as 8th feature (multi-model consensus)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -205,6 +205,22 @@ def get_training_data(con, run_hour, station_id, current_date):
         ORDER BY valid_at
     """, [station_id, min_date, current_date, run_hour]).fetchall()
 
+    # Query 4: ECMWF 00z forecast highs (multi-model consensus)
+    ecmwf_highs_raw = con.execute("""
+        SELECT model_run::DATE AS fc_date, MAX(temp_f) AS ecmwf_high
+        FROM forecasts
+        WHERE station_id = ?
+            AND model_run::DATE >= ?
+            AND model_run::DATE < ?
+            AND EXTRACT(HOUR FROM model_run) = 0
+            AND model_name = 'ecmwf'
+            AND temp_f IS NOT NULL
+            AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+            AND (EXTRACT(HOUR FROM model_run) + fxx) < 29
+        GROUP BY 1
+    """, [station_id, min_date, current_date]).fetchall()
+    ecmwf_high_lookup = {r[0]: r[1] for r in ecmwf_highs_raw}
+
     # Build per-date lookups in Python
     obs_lookup = {}  # type: Dict[date, Dict[int, float]]
     obs_running_max = {}  # type: Dict[date, Dict[int, float]]
@@ -240,6 +256,10 @@ def get_training_data(con, run_hour, station_id, current_date):
         sin_m = math.sin(2.0 * math.pi * month / 12.0)
         cos_m = math.cos(2.0 * math.pi * month / 12.0)
 
+        # ECMWF-HRRR spread: how much ECMWF disagrees with HRRR
+        ecmwf_high = ecmwf_high_lookup.get(obs_date)
+        ecmwf_spread = (ecmwf_high - fcst_high) if ecmwf_high is not None else 0.0
+
         obs_by_hour = obs_lookup.get(obs_date, {})
         rm_by_hour = obs_running_max.get(obs_date, {})
         fc_by_hour = fc_lookup.get(obs_date, {})
@@ -274,6 +294,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 running_max_div,
                 slope_div,
                 cum_div,
+                ecmwf_spread,
             ]
 
             X_rows.append(features)
@@ -326,7 +347,7 @@ def model_fn(provider, ref_time):
     if coefficients is None:
         return None
 
-    # Build today's feature vector (fast — just 2 queries for current date)
+    # Build today's feature vector (fast — just 3 queries for current date)
     ref_utc = ref_time if ref_time.tzinfo else ref_time.replace(tzinfo=timezone.utc)
     update_hour_et = ref_utc.astimezone(_ET).hour
     cutoff_ts = ref_utc.timestamp()
@@ -334,6 +355,18 @@ def model_fn(provider, ref_time):
     month = float(current_date.month)
     sin_m = math.sin(2.0 * math.pi * month / 12.0)
     cos_m = math.cos(2.0 * math.pi * month / 12.0)
+
+    # ECMWF 00z forecast high for today
+    ecmwf_row = con.execute("""
+        SELECT MAX(temp_f) FROM forecasts
+        WHERE station_id = ? AND model_run::DATE = ?
+            AND EXTRACT(HOUR FROM model_run) = 0
+            AND model_name = 'ecmwf' AND temp_f IS NOT NULL
+            AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+            AND (EXTRACT(HOUR FROM model_run) + fxx) < 29
+    """, [station_id, current_date]).fetchone()
+    ecmwf_high = ecmwf_row[0] if ecmwf_row and ecmwf_row[0] is not None else None
+    ecmwf_spread = (ecmwf_high - fcst_high) if ecmwf_high is not None else 0.0
 
     running_max_div = 0.0
     slope_div = 0.0
@@ -386,6 +419,7 @@ def model_fn(provider, ref_time):
         running_max_div,
         slope_div,
         cum_div,
+        ecmwf_spread,
     ])
 
     x_row = np.concatenate([[1.0], features_today])
