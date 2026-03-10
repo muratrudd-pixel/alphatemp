@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Add ECMWF wind gusts as 15th feature (convective indicator)"
+DESCRIPTION = "Add yesterday's forecast error as 16th feature (error persistence)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -297,6 +297,9 @@ def get_training_data(con, run_hour, station_id, current_date):
         else:
             fc_range_lookup[d] = 0.0
 
+    # Build per-date error lookup for lagged feature
+    date_error_lookup = {r[0]: r[1] for r in daily_rows}
+
     # Build feature matrix
     X_rows = []
     y_rows = []
@@ -323,6 +326,9 @@ def get_training_data(con, run_hour, station_id, current_date):
         humidity = ecmwf_humidity_lookup.get(obs_date, 50.0)
         # ECMWF max wind gusts (convective mixing indicator)
         max_gusts = ecmwf_gusts_lookup.get(obs_date, 0.0)
+        # Yesterday's forecast error (error persistence)
+        yesterday = obs_date - timedelta(days=1)
+        lag_error = date_error_lookup.get(yesterday, 0.0)
 
         obs_by_hour = obs_lookup.get(obs_date, {})
         rm_by_hour = obs_running_max.get(obs_date, {})
@@ -366,6 +372,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 total_precip,
                 humidity,
                 max_gusts,
+                lag_error,
             ]
 
             X_rows.append(features)
@@ -469,6 +476,22 @@ def model_fn(provider, ref_time):
     humidity = ext_row[3] if ext_row and ext_row[3] is not None else 50.0
     max_gusts = ext_row[4] if ext_row and ext_row[4] is not None else 0.0
 
+    # Yesterday's forecast error (error persistence)
+    yesterday = current_date - timedelta(days=1)
+    lag_row = con.execute("""
+        SELECT MAX(f.temp_f) - ANY_VALUE(n.max_temp_f) AS error
+        FROM nws_daily n
+        JOIN forecasts f ON f.station_id = n.station_id
+            AND f.model_run::DATE = n.obs_date
+            AND EXTRACT(HOUR FROM f.model_run) = ?
+            AND f.model_name = 'hrrr'
+            AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) >= 5
+            AND (EXTRACT(HOUR FROM f.model_run) + f.fxx) < 29
+        WHERE n.station_id = ? AND n.obs_date = ?
+            AND n.max_temp_f IS NOT NULL
+    """, [run_hour, station_id, yesterday]).fetchone()
+    lag_error = lag_row[0] if lag_row and lag_row[0] is not None else 0.0
+
     running_max_div = 0.0
     slope_div = 0.0
     cum_div = 0.0
@@ -532,6 +555,7 @@ def model_fn(provider, ref_time):
         total_precip,
         humidity,
         max_gusts,
+        lag_error,
     ])
 
     x_row = np.concatenate([[1.0], features_today])

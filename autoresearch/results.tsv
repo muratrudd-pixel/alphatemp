@@ -33,3 +33,11 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-10T22:54:57.079017	0.268706	0.6408	0.4151	-11432	1248	52.8	Add ECMWF 2m humidity as 14th feature
 2026-03-10T22:56:19.653999	0.269260	0.6421	0.4151	-11432	1248	65.4	Expand to 9 quantiles for finer CDF resolution
 2026-03-10T22:58:02.864995	0.261159	0.6469	0.4231	-10432	1248	57.1	Add ECMWF wind gusts as 15th feature (convective indicator)
+2026-03-10T22:59:53.321504	0.292823	0.6473	0.3982	-13532	1248	58.8	Add ECMWF MSL pressure as 16th feature (synoptic regime)
+2026-03-10T23:01:35.622083	0.292823	0.6473	0.3982	-13532	1248	58.8	Add pressure anomaly (deviation from 1013.25) as 16th feature
+2026-03-10T23:03:30.318949	0.263257	0.6304	0.4159	-11332	1248	60.7	Add wind direction sin/cos (onshore vs offshore flow)
+2026-03-10T23:05:11.286588	0.265568	0.6263	0.4127	-11732	1248	85.3	Expand training window to 240 days (15 features need more data)
+2026-03-10T23:06:36.418035	0.261159	0.6469	0.4231	-10432	1248	56.6	Reduce MIN_SAMPLES from 90 to 60 (keep more early dates)
+2026-03-10T23:08:18.883598	0.268825	0.6506	0.4183	-11032	1248	59.8	Add 3-model stdev as 16th feature (overall disagreement level)
+2026-03-10T23:09:33.578251	0.261287	0.6472	0.4231	-10432	1248	57.5	Widen bracket radius from 15 to 20 (capture more tail probability)
+2026-03-10T23:11:26.618738	0.260452	0.6381	0.4207	-10732	1248	61.2	Add yesterday's forecast error as 16th feature (error persistence)
