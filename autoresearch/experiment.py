@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Tune upper tail: lambda_upper=0.3/spread (very heavy)"
+DESCRIPTION = "Tune upper tail: lambda_upper=0.2/spread"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -103,7 +103,7 @@ def build_bracket_probs(temp_quantiles, tau_values, running_max=None, radius=15)
 
     spread_upper = max(q95 - q50, 0.5)
     spread_lower = max(q50 - q05, 0.5)
-    lambda_upper = 0.3 / spread_upper  # very heavy upper tail (warm surprises)
+    lambda_upper = 0.2 / spread_upper
     lambda_lower = 1.0 / spread_lower  # thinner lower tail
 
     def cdf(t):
