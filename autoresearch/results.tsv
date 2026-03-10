@@ -63,3 +63,4 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-10T23:47:53.053568	0.429334	0.6347	0.4255	9108	1248	62.2	Soften lower tail to 0.7 with CAPE-enriched model
 2026-03-10T23:49:50.730053	0.511126	0.6391	0.3966	5624	1248	63.9	Add ECMWF mean wind speed as 18th feature (sustained mixing)
 2026-03-10T23:54:53.175384	0.406508	0.6282	0.4375	9896	1248	63.7	Add GFS-ECMWF dewpoint spread as 18th feature
+2026-03-10T23:56:44.082302	0.393590	0.6291	0.4407	10504	1248	65.7	Add GFS precipitation as 19th feature (multi-model rain signal)
