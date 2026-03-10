@@ -60,3 +60,6 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-10T23:41:17.745660	0.460570	0.6358	0.4143	7764	1248	62.6	Add uh*cum_div interaction (divergence weighted by time of day)
 2026-03-10T23:43:32.615991	0.447974	0.6364	0.4207	8312	1248	61.7	Lower MIN_BRACKET_PROB to 0.00001 (more tail brackets)
 2026-03-10T23:46:23.762603	0.429169	0.6344	0.4255	9108	1248	61.2	Add ECMWF CAPE as 17th feature (convective instability)
+2026-03-10T23:47:53.053568	0.429334	0.6347	0.4255	9108	1248	62.2	Soften lower tail to 0.7 with CAPE-enriched model
+2026-03-10T23:49:50.730053	0.511126	0.6391	0.3966	5624	1248	63.9	Add ECMWF mean wind speed as 18th feature (sustained mixing)
+2026-03-10T23:54:53.175384	0.406508	0.6282	0.4375	9896	1248	63.7	Add GFS-ECMWF dewpoint spread as 18th feature

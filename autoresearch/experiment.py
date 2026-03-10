@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Add ECMWF CAPE as 17th feature (convective instability)"
+DESCRIPTION = "Add GFS-ECMWF dewpoint spread as 18th feature"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -247,6 +247,22 @@ def get_training_data(con, run_hour, station_id, current_date):
     ecmwf_gusts_lookup = {r[0]: r[5] for r in ecmwf_ext_raw if r[5] is not None}
     ecmwf_cape_lookup = {r[0]: r[6] for r in ecmwf_ext_raw if r[6] is not None}
 
+    # Query 5c: GFS extended features (dewpoint for multi-model moisture comparison)
+    gfs_ext_raw = con.execute("""
+        SELECT model_run::DATE AS fc_date,
+               AVG(dewpoint_2m_f) AS mean_dewpoint
+        FROM forecast_extended
+        WHERE station_id = ?
+            AND model_run::DATE >= ?
+            AND model_run::DATE < ?
+            AND EXTRACT(HOUR FROM model_run) = 0
+            AND model_name = 'gfs'
+            AND EXTRACT(HOUR FROM valid_at) >= 10
+            AND EXTRACT(HOUR FROM valid_at) <= 22
+        GROUP BY 1
+    """, [station_id, min_date, current_date]).fetchall()
+    gfs_dp_lookup = {r[0]: r[1] for r in gfs_ext_raw if r[1] is not None}
+
     # Query 5: GFS 00z forecast highs (only 00z is clean)
     gfs_highs_raw = con.execute("""
         SELECT model_run::DATE AS fc_date, MAX(temp_f) AS gfs_high
@@ -330,6 +346,9 @@ def get_training_data(con, run_hour, station_id, current_date):
         max_gusts = ecmwf_gusts_lookup.get(obs_date, 0.0)
         # ECMWF CAPE (convective instability)
         cape = ecmwf_cape_lookup.get(obs_date, 0.0)
+        # GFS-ECMWF dewpoint spread (moisture model disagreement)
+        gfs_dp = gfs_dp_lookup.get(obs_date)
+        dp_spread = (gfs_dp - ecmwf_dp) if (gfs_dp is not None and ecmwf_dp is not None) else 0.0
         # Yesterday's forecast error (error persistence)
         yesterday = obs_date - timedelta(days=1)
         lag_error = date_error_lookup.get(yesterday, 0.0)
@@ -378,6 +397,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 max_gusts,
                 lag_error,
                 cape,
+                dp_spread,
             ]
 
             X_rows.append(features)
@@ -482,6 +502,18 @@ def model_fn(provider, ref_time):
     max_gusts = ext_row[4] if ext_row and ext_row[4] is not None else 0.0
     cape = ext_row[5] if ext_row and ext_row[5] is not None else 0.0
 
+    # GFS dewpoint for today
+    gfs_dp_row = con.execute("""
+        SELECT AVG(dewpoint_2m_f) FROM forecast_extended
+        WHERE station_id = ? AND model_run::DATE = ?
+            AND EXTRACT(HOUR FROM model_run) = 0
+            AND model_name = 'gfs'
+            AND EXTRACT(HOUR FROM valid_at) >= 10
+            AND EXTRACT(HOUR FROM valid_at) <= 22
+    """, [station_id, current_date]).fetchone()
+    gfs_dp = gfs_dp_row[0] if gfs_dp_row and gfs_dp_row[0] is not None else None
+    dp_spread = (gfs_dp - ecmwf_dp) if (gfs_dp is not None and ecmwf_dp is not None) else 0.0
+
     # Yesterday's forecast error (error persistence)
     yesterday = current_date - timedelta(days=1)
     lag_row = con.execute("""
@@ -563,6 +595,7 @@ def model_fn(provider, ref_time):
         max_gusts,
         lag_error,
         cape,
+        dp_spread,
     ])
 
     x_row = np.concatenate([[1.0], features_today])
