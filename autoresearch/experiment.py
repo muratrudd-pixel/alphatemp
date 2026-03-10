@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Add GFS 00z forecast spread as 10th feature (triple-model consensus)"
+DESCRIPTION = "Add ECMWF shortwave radiation as solar heating feature"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -221,6 +221,22 @@ def get_training_data(con, run_hour, station_id, current_date):
     """, [station_id, min_date, current_date]).fetchall()
     ecmwf_high_lookup = {r[0]: r[1] for r in ecmwf_highs_raw}
 
+    # Query 5b: ECMWF shortwave radiation during daylight (10-22 UTC ≈ 5am-5pm ET)
+    ecmwf_rad_raw = con.execute("""
+        SELECT model_run::DATE AS fc_date, AVG(shortwave_rad) AS mean_rad
+        FROM forecast_extended
+        WHERE station_id = ?
+            AND model_run::DATE >= ?
+            AND model_run::DATE < ?
+            AND EXTRACT(HOUR FROM model_run) = 0
+            AND model_name = 'ecmwf'
+            AND shortwave_rad IS NOT NULL
+            AND EXTRACT(HOUR FROM valid_at) >= 10
+            AND EXTRACT(HOUR FROM valid_at) <= 22
+        GROUP BY 1
+    """, [station_id, min_date, current_date]).fetchall()
+    ecmwf_rad_lookup = {r[0]: r[1] for r in ecmwf_rad_raw}
+
     # Query 5: GFS 00z forecast highs (only 00z is clean)
     gfs_highs_raw = con.execute("""
         SELECT model_run::DATE AS fc_date, MAX(temp_f) AS gfs_high
@@ -288,6 +304,8 @@ def get_training_data(con, run_hour, station_id, current_date):
         # GFS-HRRR spread
         gfs_high = gfs_high_lookup.get(obs_date)
         gfs_spread = (gfs_high - fcst_high) if gfs_high is not None else 0.0
+        # ECMWF shortwave radiation
+        solar_rad = ecmwf_rad_lookup.get(obs_date, 0.0)
 
         obs_by_hour = obs_lookup.get(obs_date, {})
         rm_by_hour = obs_running_max.get(obs_date, {})
@@ -326,6 +344,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 ecmwf_spread,
                 diurnal_range,
                 gfs_spread,
+                solar_rad,
             ]
 
             X_rows.append(features)
@@ -411,6 +430,17 @@ def model_fn(provider, ref_time):
     gfs_high = gfs_row[0] if gfs_row and gfs_row[0] is not None else None
     gfs_spread = (gfs_high - fcst_high) if gfs_high is not None else 0.0
 
+    # ECMWF shortwave radiation for today
+    rad_row = con.execute("""
+        SELECT AVG(shortwave_rad) FROM forecast_extended
+        WHERE station_id = ? AND model_run::DATE = ?
+            AND EXTRACT(HOUR FROM model_run) = 0
+            AND model_name = 'ecmwf' AND shortwave_rad IS NOT NULL
+            AND EXTRACT(HOUR FROM valid_at) >= 10
+            AND EXTRACT(HOUR FROM valid_at) <= 22
+    """, [station_id, current_date]).fetchone()
+    solar_rad = rad_row[0] if rad_row and rad_row[0] is not None else 0.0
+
     running_max_div = 0.0
     slope_div = 0.0
     cum_div = 0.0
@@ -469,6 +499,7 @@ def model_fn(provider, ref_time):
         ecmwf_spread,
         diurnal_range,
         gfs_spread,
+        solar_rad,
     ])
 
     x_row = np.concatenate([[1.0], features_today])
