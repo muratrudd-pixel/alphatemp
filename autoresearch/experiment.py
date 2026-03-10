@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Add HRRR diurnal range as 9th feature (uncertainty proxy)"
+DESCRIPTION = "Add GFS 00z forecast spread as 10th feature (triple-model consensus)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -221,6 +221,22 @@ def get_training_data(con, run_hour, station_id, current_date):
     """, [station_id, min_date, current_date]).fetchall()
     ecmwf_high_lookup = {r[0]: r[1] for r in ecmwf_highs_raw}
 
+    # Query 5: GFS 00z forecast highs (only 00z is clean)
+    gfs_highs_raw = con.execute("""
+        SELECT model_run::DATE AS fc_date, MAX(temp_f) AS gfs_high
+        FROM forecasts
+        WHERE station_id = ?
+            AND model_run::DATE >= ?
+            AND model_run::DATE < ?
+            AND EXTRACT(HOUR FROM model_run) = 0
+            AND model_name = 'gfs'
+            AND temp_f IS NOT NULL
+            AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+            AND (EXTRACT(HOUR FROM model_run) + fxx) < 29
+        GROUP BY 1
+    """, [station_id, min_date, current_date]).fetchall()
+    gfs_high_lookup = {r[0]: r[1] for r in gfs_highs_raw}
+
     # Build per-date lookups in Python
     obs_lookup = {}  # type: Dict[date, Dict[int, float]]
     obs_running_max = {}  # type: Dict[date, Dict[int, float]]
@@ -269,6 +285,9 @@ def get_training_data(con, run_hour, station_id, current_date):
         ecmwf_spread = (ecmwf_high - fcst_high) if ecmwf_high is not None else 0.0
         # HRRR diurnal range (uncertainty proxy)
         diurnal_range = fc_range_lookup.get(obs_date, 0.0)
+        # GFS-HRRR spread
+        gfs_high = gfs_high_lookup.get(obs_date)
+        gfs_spread = (gfs_high - fcst_high) if gfs_high is not None else 0.0
 
         obs_by_hour = obs_lookup.get(obs_date, {})
         rm_by_hour = obs_running_max.get(obs_date, {})
@@ -306,6 +325,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 cum_div,
                 ecmwf_spread,
                 diurnal_range,
+                gfs_spread,
             ]
 
             X_rows.append(features)
@@ -379,6 +399,18 @@ def model_fn(provider, ref_time):
     ecmwf_high = ecmwf_row[0] if ecmwf_row and ecmwf_row[0] is not None else None
     ecmwf_spread = (ecmwf_high - fcst_high) if ecmwf_high is not None else 0.0
 
+    # GFS 00z forecast high for today
+    gfs_row = con.execute("""
+        SELECT MAX(temp_f) FROM forecasts
+        WHERE station_id = ? AND model_run::DATE = ?
+            AND EXTRACT(HOUR FROM model_run) = 0
+            AND model_name = 'gfs' AND temp_f IS NOT NULL
+            AND (EXTRACT(HOUR FROM model_run) + fxx) >= 5
+            AND (EXTRACT(HOUR FROM model_run) + fxx) < 29
+    """, [station_id, current_date]).fetchone()
+    gfs_high = gfs_row[0] if gfs_row and gfs_row[0] is not None else None
+    gfs_spread = (gfs_high - fcst_high) if gfs_high is not None else 0.0
+
     running_max_div = 0.0
     slope_div = 0.0
     cum_div = 0.0
@@ -436,6 +468,7 @@ def model_fn(provider, ref_time):
         cum_div,
         ecmwf_spread,
         diurnal_range,
+        gfs_spread,
     ])
 
     x_row = np.concatenate([[1.0], features_today])
