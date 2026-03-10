@@ -20,12 +20,12 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Add ECMWF shortwave radiation as solar heating feature"
+DESCRIPTION = "Fewer train hours (4) + dewpoint depression (12 features)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
 TRAIN_WINDOW_DAYS = 180
-TRAIN_UPDATE_HOURS = [0, 4, 8, 12, 16, 20]
+TRAIN_UPDATE_HOURS = [0, 6, 12, 18]
 MIN_SAMPLES = 90
 MIN_BRACKET_PROB = 0.0001
 
@@ -221,21 +221,23 @@ def get_training_data(con, run_hour, station_id, current_date):
     """, [station_id, min_date, current_date]).fetchall()
     ecmwf_high_lookup = {r[0]: r[1] for r in ecmwf_highs_raw}
 
-    # Query 5b: ECMWF shortwave radiation during daylight (10-22 UTC ≈ 5am-5pm ET)
-    ecmwf_rad_raw = con.execute("""
-        SELECT model_run::DATE AS fc_date, AVG(shortwave_rad) AS mean_rad
+    # Query 5b: ECMWF extended features (radiation + dewpoint) in single query
+    ecmwf_ext_raw = con.execute("""
+        SELECT model_run::DATE AS fc_date,
+               AVG(shortwave_rad) AS mean_rad,
+               AVG(dewpoint_2m_f) AS mean_dewpoint
         FROM forecast_extended
         WHERE station_id = ?
             AND model_run::DATE >= ?
             AND model_run::DATE < ?
             AND EXTRACT(HOUR FROM model_run) = 0
             AND model_name = 'ecmwf'
-            AND shortwave_rad IS NOT NULL
             AND EXTRACT(HOUR FROM valid_at) >= 10
             AND EXTRACT(HOUR FROM valid_at) <= 22
         GROUP BY 1
     """, [station_id, min_date, current_date]).fetchall()
-    ecmwf_rad_lookup = {r[0]: r[1] for r in ecmwf_rad_raw}
+    ecmwf_rad_lookup = {r[0]: r[1] for r in ecmwf_ext_raw if r[1] is not None}
+    ecmwf_dp_lookup = {r[0]: r[2] for r in ecmwf_ext_raw if r[2] is not None}
 
     # Query 5: GFS 00z forecast highs (only 00z is clean)
     gfs_highs_raw = con.execute("""
@@ -306,6 +308,9 @@ def get_training_data(con, run_hour, station_id, current_date):
         gfs_spread = (gfs_high - fcst_high) if gfs_high is not None else 0.0
         # ECMWF shortwave radiation
         solar_rad = ecmwf_rad_lookup.get(obs_date, 0.0)
+        # Dewpoint depression (forecast high - dewpoint: dryness indicator)
+        ecmwf_dp = ecmwf_dp_lookup.get(obs_date)
+        dp_depression = (fcst_high - ecmwf_dp) if ecmwf_dp is not None else 0.0
 
         obs_by_hour = obs_lookup.get(obs_date, {})
         rm_by_hour = obs_running_max.get(obs_date, {})
@@ -345,6 +350,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 diurnal_range,
                 gfs_spread,
                 solar_rad,
+                dp_depression,
             ]
 
             X_rows.append(features)
@@ -430,16 +436,18 @@ def model_fn(provider, ref_time):
     gfs_high = gfs_row[0] if gfs_row and gfs_row[0] is not None else None
     gfs_spread = (gfs_high - fcst_high) if gfs_high is not None else 0.0
 
-    # ECMWF shortwave radiation for today
-    rad_row = con.execute("""
-        SELECT AVG(shortwave_rad) FROM forecast_extended
+    # ECMWF extended features for today (radiation + dewpoint in one query)
+    ext_row = con.execute("""
+        SELECT AVG(shortwave_rad), AVG(dewpoint_2m_f) FROM forecast_extended
         WHERE station_id = ? AND model_run::DATE = ?
             AND EXTRACT(HOUR FROM model_run) = 0
-            AND model_name = 'ecmwf' AND shortwave_rad IS NOT NULL
+            AND model_name = 'ecmwf'
             AND EXTRACT(HOUR FROM valid_at) >= 10
             AND EXTRACT(HOUR FROM valid_at) <= 22
     """, [station_id, current_date]).fetchone()
-    solar_rad = rad_row[0] if rad_row and rad_row[0] is not None else 0.0
+    solar_rad = ext_row[0] if ext_row and ext_row[0] is not None else 0.0
+    ecmwf_dp = ext_row[1] if ext_row and ext_row[1] is not None else None
+    dp_depression = (fcst_high - ecmwf_dp) if ecmwf_dp is not None else 0.0
 
     running_max_div = 0.0
     slope_div = 0.0
@@ -500,6 +508,7 @@ def model_fn(provider, ref_time):
         diurnal_range,
         gfs_spread,
         solar_rad,
+        dp_depression,
     ])
 
     x_row = np.concatenate([[1.0], features_today])
