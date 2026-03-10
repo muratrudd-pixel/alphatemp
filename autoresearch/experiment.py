@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Add ECMWF 00z forecast high as 8th feature (multi-model consensus)"
+DESCRIPTION = "Add HRRR diurnal range as 9th feature (uncertainty proxy)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -242,12 +242,20 @@ def get_training_data(con, run_hour, station_id, current_date):
             obs_running_max[obs_date][h] = cur_max
 
     fc_lookup = {}  # type: Dict[date, Dict[int, float]]
+    fc_range_lookup = {}  # type: Dict[date, float]
     for fc_date, valid_at, temp in all_fc:
         if fc_date not in fc_lookup:
             fc_lookup[fc_date] = {}
         utc_dt = valid_at.replace(tzinfo=timezone.utc)
         et_hour = utc_dt.astimezone(_ET).hour
         fc_lookup[fc_date][et_hour] = temp
+    # Build diurnal range per date from forecast temps
+    for d, hourly in fc_lookup.items():
+        temps_list = list(hourly.values())
+        if temps_list:
+            fc_range_lookup[d] = max(temps_list) - min(temps_list)
+        else:
+            fc_range_lookup[d] = 0.0
 
     # Build feature matrix
     X_rows = []
@@ -259,6 +267,8 @@ def get_training_data(con, run_hour, station_id, current_date):
         # ECMWF-HRRR spread: how much ECMWF disagrees with HRRR
         ecmwf_high = ecmwf_high_lookup.get(obs_date)
         ecmwf_spread = (ecmwf_high - fcst_high) if ecmwf_high is not None else 0.0
+        # HRRR diurnal range (uncertainty proxy)
+        diurnal_range = fc_range_lookup.get(obs_date, 0.0)
 
         obs_by_hour = obs_lookup.get(obs_date, {})
         rm_by_hour = obs_running_max.get(obs_date, {})
@@ -295,6 +305,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 slope_div,
                 cum_div,
                 ecmwf_spread,
+                diurnal_range,
             ]
 
             X_rows.append(features)
@@ -387,6 +398,10 @@ def model_fn(provider, ref_time):
         ORDER BY valid_at
     """, [station_id, current_date, run_hour]).fetchall()
 
+    # HRRR diurnal range for today
+    fc_temps_today = [r[1] for r in fc_today if r[1] is not None]
+    diurnal_range = (max(fc_temps_today) - min(fc_temps_today)) if fc_temps_today else 0.0
+
     obs_truncated = [(o[0], o[1]) for o in obs_today
                      if o[0].replace(tzinfo=timezone.utc).timestamp() <= cutoff_ts]
 
@@ -420,6 +435,7 @@ def model_fn(provider, ref_time):
         slope_div,
         cum_div,
         ecmwf_spread,
+        diurnal_range,
     ])
 
     x_row = np.concatenate([[1.0], features_today])
