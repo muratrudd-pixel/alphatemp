@@ -47,4 +47,16 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-10T23:16:51.269722	0.260196	0.6375	0.4207	-10732	1248	61.1	Asymmetric tails: heavier lower (cold surprise) vs thinner upper
 2026-03-10T23:18:12.972935	0.259983	0.6370	0.4207	-10732	1248	61.3	Tune upper tail: lambda_upper=0.5/spread (even heavier)
 2026-03-10T23:19:28.533118	0.259769	0.6365	0.4207	-10732	1248	62.0	Tune upper tail: lambda_upper=0.3/spread (very heavy)
-2026-03-10T23:20:42.717891	0.259727	0.6364	0.4207	-10732	1248	61.8	Tune upper tail: lambda_upper=0.2/spread
+2026-03-10T23:24:10.260621	0.447974	0.6364	0.4207	8312	1248	61.2	Tune upper tail: lambda_upper=0.2/spread
+2026-03-10T23:26:02.528462	0.447974	0.6364	0.4207	8312	1248	63.4	Tune upper tail: lambda_upper=0.2/spread
+2026-03-10T23:27:16.785705	0.451518	0.6364	0.4191	8160	1248	62.4	Symmetric heavy tails: both lambdas at 0.2/spread
+2026-03-10T23:29:08.010664	0.510737	0.6446	0.3910	5852	1248	63.3	Add ECMWF cloud cover as 17th feature (re-test with richer model)
+2026-03-10T23:31:49.055472	0.475896	0.6550	0.4030	7664	1248	29.6	Reduce to 2 update hours [0, 12] (cleaner signal, faster LP)
+2026-03-10T23:33:35.747868	0.470848	0.6421	0.4119	7464	1248	63.6	Add ECMWF dewpoint range as 17th feature (moisture variability)
+2026-03-10T23:34:59.659900	0.448165	0.6364	0.4199	8312	1248	61.9	Heavier lower tail too: lambda_lower=0.5/spread
+2026-03-10T23:36:32.142301	0.447974	0.6364	0.4207	8312	1248	62.8	Add ECMWF forecast high as direct feature (not just spread)
+2026-03-10T23:38:03.070910	0.447974	0.6364	0.4207	8312	1248	62.4	Add ECMWF-GFS spread as 17th feature (global model disagreement)
+2026-03-10T23:39:32.481042	0.464683	0.6462	0.4095	7896	1248	64.0	Add squared ECMWF spread as 17th feature (uncertainty magnitude)
+2026-03-10T23:41:17.745660	0.460570	0.6358	0.4143	7764	1248	62.6	Add uh*cum_div interaction (divergence weighted by time of day)
+2026-03-10T23:43:32.615991	0.447974	0.6364	0.4207	8312	1248	61.7	Lower MIN_BRACKET_PROB to 0.00001 (more tail brackets)
+2026-03-10T23:46:23.762603	0.429169	0.6344	0.4255	9108	1248	61.2	Add ECMWF CAPE as 17th feature (convective instability)

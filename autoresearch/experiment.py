@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Tune upper tail: lambda_upper=0.2/spread"
+DESCRIPTION = "Add ECMWF CAPE as 17th feature (convective instability)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -228,7 +228,8 @@ def get_training_data(con, run_hour, station_id, current_date):
                AVG(dewpoint_2m_f) AS mean_dewpoint,
                SUM(precipitation) AS total_precip,
                AVG(humidity_2m) AS mean_humidity,
-               MAX(wind_gusts_10m) AS max_gusts
+               MAX(wind_gusts_10m) AS max_gusts,
+               AVG(cape) AS mean_cape
         FROM forecast_extended
         WHERE station_id = ?
             AND model_run::DATE >= ?
@@ -244,6 +245,7 @@ def get_training_data(con, run_hour, station_id, current_date):
     ecmwf_precip_lookup = {r[0]: r[3] for r in ecmwf_ext_raw if r[3] is not None}
     ecmwf_humidity_lookup = {r[0]: r[4] for r in ecmwf_ext_raw if r[4] is not None}
     ecmwf_gusts_lookup = {r[0]: r[5] for r in ecmwf_ext_raw if r[5] is not None}
+    ecmwf_cape_lookup = {r[0]: r[6] for r in ecmwf_ext_raw if r[6] is not None}
 
     # Query 5: GFS 00z forecast highs (only 00z is clean)
     gfs_highs_raw = con.execute("""
@@ -326,6 +328,8 @@ def get_training_data(con, run_hour, station_id, current_date):
         humidity = ecmwf_humidity_lookup.get(obs_date, 50.0)
         # ECMWF max wind gusts (convective mixing indicator)
         max_gusts = ecmwf_gusts_lookup.get(obs_date, 0.0)
+        # ECMWF CAPE (convective instability)
+        cape = ecmwf_cape_lookup.get(obs_date, 0.0)
         # Yesterday's forecast error (error persistence)
         yesterday = obs_date - timedelta(days=1)
         lag_error = date_error_lookup.get(yesterday, 0.0)
@@ -373,6 +377,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 humidity,
                 max_gusts,
                 lag_error,
+                cape,
             ]
 
             X_rows.append(features)
@@ -461,7 +466,7 @@ def model_fn(provider, ref_time):
     # ECMWF extended features for today (radiation + dewpoint + precip + humidity + gusts)
     ext_row = con.execute("""
         SELECT AVG(shortwave_rad), AVG(dewpoint_2m_f), SUM(precipitation),
-               AVG(humidity_2m), MAX(wind_gusts_10m)
+               AVG(humidity_2m), MAX(wind_gusts_10m), AVG(cape)
         FROM forecast_extended
         WHERE station_id = ? AND model_run::DATE = ?
             AND EXTRACT(HOUR FROM model_run) = 0
@@ -475,6 +480,7 @@ def model_fn(provider, ref_time):
     total_precip = ext_row[2] if ext_row and ext_row[2] is not None else 0.0
     humidity = ext_row[3] if ext_row and ext_row[3] is not None else 50.0
     max_gusts = ext_row[4] if ext_row and ext_row[4] is not None else 0.0
+    cape = ext_row[5] if ext_row and ext_row[5] is not None else 0.0
 
     # Yesterday's forecast error (error persistence)
     yesterday = current_date - timedelta(days=1)
@@ -556,6 +562,7 @@ def model_fn(provider, ref_time):
         humidity,
         max_gusts,
         lag_error,
+        cape,
     ])
 
     x_row = np.concatenate([[1.0], features_today])
