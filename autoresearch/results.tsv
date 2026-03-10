@@ -41,3 +41,7 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-10T23:08:18.883598	0.268825	0.6506	0.4183	-11032	1248	59.8	Add 3-model stdev as 16th feature (overall disagreement level)
 2026-03-10T23:09:33.578251	0.261287	0.6472	0.4231	-10432	1248	57.5	Widen bracket radius from 15 to 20 (capture more tail probability)
 2026-03-10T23:11:26.618738	0.260452	0.6381	0.4207	-10732	1248	61.2	Add yesterday's forecast error as 16th feature (error persistence)
+2026-03-10T23:13:06.067124	0.285660	0.6424	0.4022	-13032	1248	64.9	Add 3-day trailing avg error as 17th feature (smooth persistence)
+2026-03-10T23:14:27.027429	0.272765	0.6408	0.4119	-11832	1248	59.1	Drop slope_div feature (reduce noise, 16→15 features)
+2026-03-10T23:15:43.741565	0.261424	0.6380	0.4199	-10832	1248	60.9	Asymmetric tails: heavier lower (cold surprise) vs thinner upper
+2026-03-10T23:16:51.269722	0.260196	0.6375	0.4207	-10732	1248	61.1	Asymmetric tails: heavier lower (cold surprise) vs thinner upper
