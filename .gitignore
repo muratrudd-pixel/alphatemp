@@ -9,3 +9,6 @@ data/
 .worktrees/
 .DS_Store
 logs/
+autoresearch/results.tsv
+autoresearch/best_score.txt
+autoresearch/baseline.json
