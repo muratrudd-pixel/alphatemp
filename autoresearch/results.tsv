@@ -45,3 +45,4 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-10T23:14:27.027429	0.272765	0.6408	0.4119	-11832	1248	59.1	Drop slope_div feature (reduce noise, 16→15 features)
 2026-03-10T23:15:43.741565	0.261424	0.6380	0.4199	-10832	1248	60.9	Asymmetric tails: heavier lower (cold surprise) vs thinner upper
 2026-03-10T23:16:51.269722	0.260196	0.6375	0.4207	-10732	1248	61.1	Asymmetric tails: heavier lower (cold surprise) vs thinner upper
+2026-03-10T23:18:12.972935	0.259983	0.6370	0.4207	-10732	1248	61.3	Tune upper tail: lambda_upper=0.5/spread (even heavier)
