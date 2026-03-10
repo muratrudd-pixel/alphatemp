@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Fewer train hours (4) + dewpoint depression (12 features)"
+DESCRIPTION = "Add ECMWF precipitation (rain day indicator)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -225,7 +225,8 @@ def get_training_data(con, run_hour, station_id, current_date):
     ecmwf_ext_raw = con.execute("""
         SELECT model_run::DATE AS fc_date,
                AVG(shortwave_rad) AS mean_rad,
-               AVG(dewpoint_2m_f) AS mean_dewpoint
+               AVG(dewpoint_2m_f) AS mean_dewpoint,
+               SUM(precipitation) AS total_precip
         FROM forecast_extended
         WHERE station_id = ?
             AND model_run::DATE >= ?
@@ -238,6 +239,7 @@ def get_training_data(con, run_hour, station_id, current_date):
     """, [station_id, min_date, current_date]).fetchall()
     ecmwf_rad_lookup = {r[0]: r[1] for r in ecmwf_ext_raw if r[1] is not None}
     ecmwf_dp_lookup = {r[0]: r[2] for r in ecmwf_ext_raw if r[2] is not None}
+    ecmwf_precip_lookup = {r[0]: r[3] for r in ecmwf_ext_raw if r[3] is not None}
 
     # Query 5: GFS 00z forecast highs (only 00z is clean)
     gfs_highs_raw = con.execute("""
@@ -311,6 +313,8 @@ def get_training_data(con, run_hour, station_id, current_date):
         # Dewpoint depression (forecast high - dewpoint: dryness indicator)
         ecmwf_dp = ecmwf_dp_lookup.get(obs_date)
         dp_depression = (fcst_high - ecmwf_dp) if ecmwf_dp is not None else 0.0
+        # ECMWF total precipitation (rain caps high temps)
+        total_precip = ecmwf_precip_lookup.get(obs_date, 0.0)
 
         obs_by_hour = obs_lookup.get(obs_date, {})
         rm_by_hour = obs_running_max.get(obs_date, {})
@@ -351,6 +355,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 gfs_spread,
                 solar_rad,
                 dp_depression,
+                total_precip,
             ]
 
             X_rows.append(features)
@@ -436,9 +441,10 @@ def model_fn(provider, ref_time):
     gfs_high = gfs_row[0] if gfs_row and gfs_row[0] is not None else None
     gfs_spread = (gfs_high - fcst_high) if gfs_high is not None else 0.0
 
-    # ECMWF extended features for today (radiation + dewpoint in one query)
+    # ECMWF extended features for today (radiation + dewpoint + precip in one query)
     ext_row = con.execute("""
-        SELECT AVG(shortwave_rad), AVG(dewpoint_2m_f) FROM forecast_extended
+        SELECT AVG(shortwave_rad), AVG(dewpoint_2m_f), SUM(precipitation)
+        FROM forecast_extended
         WHERE station_id = ? AND model_run::DATE = ?
             AND EXTRACT(HOUR FROM model_run) = 0
             AND model_name = 'ecmwf'
@@ -448,6 +454,7 @@ def model_fn(provider, ref_time):
     solar_rad = ext_row[0] if ext_row and ext_row[0] is not None else 0.0
     ecmwf_dp = ext_row[1] if ext_row and ext_row[1] is not None else None
     dp_depression = (fcst_high - ecmwf_dp) if ecmwf_dp is not None else 0.0
+    total_precip = ext_row[2] if ext_row and ext_row[2] is not None else 0.0
 
     running_max_div = 0.0
     slope_div = 0.0
@@ -509,6 +516,7 @@ def model_fn(provider, ref_time):
         gfs_spread,
         solar_rad,
         dp_depression,
+        total_precip,
     ])
 
     x_row = np.concatenate([[1.0], features_today])

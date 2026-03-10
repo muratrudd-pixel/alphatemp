@@ -1,0 +1,32 @@
+timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
+2026-03-10T04:13:39.198844	0.518187	0.8209	0.2785	-28428	1246	66.3	Baseline: QR with 7 features, batch queries, coefficient caching
+2026-03-10T04:14:54.547791	0.518187	0.8209	0.2785	-28428	1246	66.7	Baseline: QR with 7 features, batch queries, coefficient caching
+2026-03-10T04:15:57.346886	0.555040	0.8385	0.2556	-31332	1248	35.5	Test: TRAIN_WINDOW_DAYS=120 (was 180)
+2026-03-10T04:35:16.262662	0.539342	0.8231	0.2628	-30432	1248	72.2	Add trailing 21-day HRRR bias as 8th feature
+2026-03-10T04:38:33.480184	0.531396	0.8138	0.2657	-30028	1246	69.0	Redistribute quantiles: evenly-spaced 7-point (was tail-clustered)
+2026-03-10T12:53:42.172663	0.425356	0.7272	0.3205	-23232	1248	68.0	Add ECMWF 00z forecast high as 8th feature (multi-model consensus)
+2026-03-10T12:55:38.086997	0.422866	0.7285	0.3229	-22932	1248	73.1	Add HRRR diurnal range as 9th feature (uncertainty proxy)
+2026-03-10T12:57:37.380628	0.432067	0.7477	0.3221	-23032	1248	79.1	Add ECMWF cloud cover as 10th feature (warm bias indicator)
+2026-03-10T12:59:46.845044	0.429150	0.7361	0.3205	-23232	1248	80.5	Add ECMWF mean wind speed as 10th feature
+2026-03-10T13:01:28.082756	0.424895	0.7285	0.3213	-23132	1248	75.4	Softer CDF tails: multiply spread by 2.0 for slower decay
+2026-03-10T13:02:59.434776	0.424853	0.7284	0.3213	-23132	1248	75.8	Softer CDF tails: multiply spread by 1.5 for slower decay
+2026-03-10T13:05:02.758583	0.319573	0.6553	0.3798	-15832	1248	80.2	Add GFS 00z forecast spread as 10th feature (triple-model consensus)
+2026-03-10T13:07:29.307578	0.319573	0.6553	0.3798	-15832	1248	83.8	Feature standardization for LP conditioning (10 features)
+2026-03-10T13:09:32.738192	0.319701	0.6556	0.3798	-15832	1248	81.3	Increase MIN_BRACKET_PROB 0.0001->0.001 (trim tails)
+2026-03-10T13:11:45.679892	0.319573	0.6553	0.3798	-15832	1248	83.2	Use 3-model consensus as prediction anchor (was HRRR-only)
+2026-03-10T13:13:50.871994	0.323752	0.6532	0.3758	-16332	1248	88.3	Add interaction features: uh*running_max_div, uh*cum_div
+2026-03-10T13:15:37.127917	0.335152	0.6609	0.3694	-17132	1248	74.4	Drop slope_div and diurnal_range (8 features, less noise)
+2026-03-10T13:21:15.022213	0.424281	0.7104	0.3157	-23832	1248	38.0	Gradient descent QR + 365-day window (LP was too slow)
+2026-03-10T13:22:26.494540	0.362397	0.6772	0.3534	-19132	1248	52.2	Gradient descent QR + 365-day window (LP was too slow)
+2026-03-10T13:24:51.369200	0.324169	0.6637	0.3790	-15932	1248	83.1	Ensemble QR(80%) + climatology(20%) for better calibration
+2026-03-10T13:27:01.234366	0.416815	0.6710	0.3030	-24488	1198	82.6	Gaussian CDF from QR quantiles (replace piecewise-linear)
+2026-03-10T21:29:23.999613	0.544113	0.8373	0.2684	-30532	1248	83.5	Mesonet-enhanced running max (5-min from 4 NYC stations)
+2026-03-10T21:31:33.449063	0.342315	0.6658	0.3654	-17632	1248	84.4	Day-of-year seasonality instead of month (finer resolution)
+2026-03-10T21:33:10.003648	0.368053	0.6523	0.3405	-20732	1248	54.6	IRLS quantile regression + 250-day window (faster, more data)
+2026-03-10T21:33:53.473419	0.368053	0.6523	0.3405	-20732	1248	15.8	IRLS quantile regression + 250-day window (faster, more data)
+2026-03-10T21:34:25.293481	0.368095	0.6524	0.3405	-20732	1248	16.2	IRLS quantile regression + 250-day window (faster, more data)
+2026-03-10T21:37:02.559803	0.290538	0.6467	0.3998	-13332	1248	88.2	Add ECMWF shortwave radiation as solar heating feature
+2026-03-10T21:41:25.843429	0.281251	0.6392	0.4046	-12732	1248	51.5	Fewer train hours (4) + dewpoint depression (12 features)
+2026-03-10T21:43:09.756946	0.298460	0.6391	0.3910	-14432	1248	54.4	Add pressure + CAPE from ECMWF (14 features)
+2026-03-10T21:44:54.279087	0.305802	0.6349	0.3838	-15332	1248	83.0	Expand training window to 250 days (was 180)
+2026-03-10T22:53:13.798407	0.271537	0.6403	0.4127	-11732	1248	49.2	Add ECMWF precipitation (rain day indicator)
