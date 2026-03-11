@@ -108,3 +108,6 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-11T01:20:11.344072	0.437886	0.6671	0.4046	9792	1248	42.8	Shorter training window 120 days (more recent data focus)
 2026-03-11T01:23:50.771054	0.317796	0.6504	0.4583	14508	1248	71.5	Heavier lower tail lambda_lower=0.5/spread (cold front surprises)
 2026-03-11T01:25:21.254461	0.311508	0.6517	0.4615	14808	1248	71.7	Even heavier lower tail lambda_lower=0.3/spread
+2026-03-11T01:26:57.290131	0.314222	0.6527	0.4615	14704	1248	71.9	Lower tail lambda_lower=0.2/spread (matching upper tail weight)
+2026-03-11T01:28:19.065657	0.313947	0.6522	0.4615	14704	1248	71.4	Lower tail lambda_lower=0.25/spread (between 0.2 and 0.3)
+2026-03-11T01:29:40.083296	0.311288	0.6513	0.4615	14808	1248	71.8	Lower tail lambda_lower=0.35/spread (between 0.3 and 0.5)
