@@ -107,3 +107,4 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-11T01:18:54.762922	0.353748	0.6463	0.4471	12800	1248	72.7	Add warm_bias indicator as 24th feature (yesterday overforecast)
 2026-03-11T01:20:11.344072	0.437886	0.6671	0.4046	9792	1248	42.8	Shorter training window 120 days (more recent data focus)
 2026-03-11T01:23:50.771054	0.317796	0.6504	0.4583	14508	1248	71.5	Heavier lower tail lambda_lower=0.5/spread (cold front surprises)
+2026-03-11T01:25:21.254461	0.311508	0.6517	0.4615	14808	1248	71.7	Even heavier lower tail lambda_lower=0.3/spread

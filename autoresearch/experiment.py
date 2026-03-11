@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Heavier lower tail lambda_lower=0.5/spread (cold front surprises)"
+DESCRIPTION = "Even heavier lower tail lambda_lower=0.3/spread"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -104,7 +104,7 @@ def build_bracket_probs(temp_quantiles, tau_values, running_max=None, radius=15)
     spread_upper = max(q95 - q50, 0.5)
     spread_lower = max(q50 - q05, 0.5)
     lambda_upper = 0.17 / spread_upper
-    lambda_lower = 0.5 / spread_lower  # heavier lower tail for cold fronts
+    lambda_lower = 0.3 / spread_lower  # even heavier lower tail
 
     def cdf(t):
         # type: (float) -> float
