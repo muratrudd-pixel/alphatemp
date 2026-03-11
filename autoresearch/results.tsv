@@ -114,3 +114,5 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-11T01:31:08.329292	0.311398	0.6515	0.4615	14808	1248	72.8	Lower tail lambda_lower=0.33/spread (fine-tune between 0.3-0.35)
 2026-03-11T01:32:31.801682	0.315775	0.6512	0.4599	14608	1248	71.8	Lower tail lambda_lower=0.37/spread (above 0.35)
 2026-03-11T01:33:56.295250	0.311288	0.6513	0.4615	14808	1248	72.1	Lower tail lambda_lower=0.36/spread
+2026-03-11T01:35:45.659176	0.311398	0.6515	0.4615	14808	1248	72.8	Re-tune upper tail lambda_upper=0.15 with new lower tail
+2026-03-11T01:37:08.146024	0.311178	0.6511	0.4615	14808	1248	72.5	Upper tail lambda_upper=0.19 with new lower tail
