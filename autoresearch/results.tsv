@@ -125,3 +125,7 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-11T01:47:45.526313	0.311233	0.6512	0.4615	14808	1248	71.9	Reduce bracket radius from 15 to 12
 2026-03-11T01:49:15.145639	0.311398	0.6515	0.4615	14808	1248	72.1	Reduce bracket radius from 15 to 10
 2026-03-11T01:50:38.895476	0.311068	0.6509	0.4615	14808	1248	72.3	Expand bracket radius from 15 to 18
+2026-03-11T01:52:25.938647	0.331969	0.6483	0.4551	13808	1248	71.0	Drop CAPE feature (storm indicator, not temp predictor)
+2026-03-11T01:53:58.342074	0.311288	0.6513	0.4615	14808	1248	72.9	Increase MIN_BRACKET_PROB to 0.001 (prune tiny brackets)
+2026-03-11T01:55:20.250392	0.312186	0.6549	0.4615	14860	1248	73.1	MIN_BRACKET_PROB=0.005 (aggressive pruning)
+2026-03-11T01:56:59.354729	0.311068	0.6509	0.4615	14808	1248	73.3	MIN_SAMPLES=60 (more permissive fitting)

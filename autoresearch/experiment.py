@@ -20,13 +20,13 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Expand bracket radius from 15 to 18"
+DESCRIPTION = "MIN_SAMPLES=60 (more permissive fitting)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
 TRAIN_WINDOW_DAYS = 180
 TRAIN_UPDATE_HOURS = [0, 6, 12, 18]
-MIN_SAMPLES = 90
+MIN_SAMPLES = 60
 MIN_BRACKET_PROB = 0.0001
 
 # Timezone for ET conversion
