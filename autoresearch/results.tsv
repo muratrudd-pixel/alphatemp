@@ -74,3 +74,5 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-11T00:16:12.167830	0.393590	0.6291	0.4407	10504	1248	65.7	Heavier upper tail: lambda_upper=0.17/spread
 2026-03-11T00:17:47.436676	0.395806	0.6290	0.4399	10404	1248	65.2	Combined: upper=0.17 + lower=1.5/spread (both tails tuned)
 2026-03-11T00:19:34.783529	0.375069	0.6351	0.4439	11516	1248	65.3	Add binary rain indicator as 20th feature (rain regime switch)
+2026-03-11T00:21:24.039382	0.375069	0.6351	0.4439	11516	1248	67.8	Add binary convective indicator as 21st feature (CAPE>500 regime)
+2026-03-11T00:23:13.399087	0.357985	0.6417	0.4519	12420	1248	68.1	Add precip model agreement as 21st feature (rain consensus)

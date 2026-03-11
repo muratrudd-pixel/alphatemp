@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Add binary rain indicator as 20th feature (rain regime switch)"
+DESCRIPTION = "Add precip model agreement as 21st feature (rain consensus)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -355,6 +355,10 @@ def get_training_data(con, run_hour, station_id, current_date):
         gfs_precip = gfs_precip_lookup.get(obs_date, 0.0)
         # Binary rain indicator (any model forecasts rain)
         rain_day = 1.0 if (total_precip > 0.1 or gfs_precip > 0.1) else 0.0
+        # Precip model agreement (1=agree, 0=disagree on rain)
+        ecmwf_rain = total_precip > 0.1
+        gfs_rain = gfs_precip > 0.1
+        precip_agree = 1.0 if (ecmwf_rain == gfs_rain) else 0.0
         # Yesterday's forecast error (error persistence)
         yesterday = obs_date - timedelta(days=1)
         lag_error = date_error_lookup.get(yesterday, 0.0)
@@ -406,6 +410,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 dp_spread,
                 gfs_precip,
                 rain_day,
+                precip_agree,
             ]
 
             X_rows.append(features)
@@ -523,6 +528,9 @@ def model_fn(provider, ref_time):
     dp_spread = (gfs_dp - ecmwf_dp) if (gfs_dp is not None and ecmwf_dp is not None) else 0.0
     gfs_precip = gfs_ext_row[1] if gfs_ext_row and gfs_ext_row[1] is not None else 0.0
     rain_day = 1.0 if (total_precip > 0.1 or gfs_precip > 0.1) else 0.0
+    ecmwf_rain = total_precip > 0.1
+    gfs_rain = gfs_precip > 0.1
+    precip_agree = 1.0 if (ecmwf_rain == gfs_rain) else 0.0
 
     # Yesterday's forecast error (error persistence)
     yesterday = current_date - timedelta(days=1)
@@ -608,6 +616,7 @@ def model_fn(provider, ref_time):
         dp_spread,
         gfs_precip,
         rain_day,
+        precip_agree,
     ])
 
     x_row = np.concatenate([[1.0], features_today])
