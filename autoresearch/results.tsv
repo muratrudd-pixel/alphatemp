@@ -118,3 +118,4 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-11T01:37:08.146024	0.311178	0.6511	0.4615	14808	1248	72.5	Upper tail lambda_upper=0.19 with new lower tail
 2026-03-11T01:38:36.193137	0.311123	0.6510	0.4615	14808	1248	72.9	Upper tail lambda_upper=0.21
 2026-03-11T01:40:03.241477	0.311123	0.6510	0.4615	14808	1248	72.6	Upper tail lambda_upper=0.23
+2026-03-11T01:41:38.548832	0.311068	0.6509	0.4615	14808	1248	73.1	Upper tail lambda_upper=0.27
