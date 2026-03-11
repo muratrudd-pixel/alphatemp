@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Upper tail lambda_upper=0.29"
+DESCRIPTION = "Expand bracket radius from 15 to 18"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -82,7 +82,7 @@ def fit_quantile_regression(X, y, tau):
 
 # ── CDF Construction ────────────────────────────────────────────────────────
 
-def build_bracket_probs(temp_quantiles, tau_values, running_max=None, radius=15):
+def build_bracket_probs(temp_quantiles, tau_values, running_max=None, radius=18):
     # type: (List[float], List[float], Optional[float], int) -> Dict[int, float]
     """Build 1°F bracket probabilities from predicted temperature quantiles.
 
