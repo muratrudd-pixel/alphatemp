@@ -72,3 +72,5 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-11T00:13:16.710251	0.395806	0.6290	0.4399	10404	1248	65.5	Thinner lower tail: lambda_lower=1.3/spread (less cold-side mass)
 2026-03-11T00:14:52.830768	0.393645	0.6292	0.4407	10504	1248	65.2	Heavier upper tail: lambda_upper=0.15/spread (even more warm-side mass)
 2026-03-11T00:16:12.167830	0.393590	0.6291	0.4407	10504	1248	65.7	Heavier upper tail: lambda_upper=0.17/spread
+2026-03-11T00:17:47.436676	0.395806	0.6290	0.4399	10404	1248	65.2	Combined: upper=0.17 + lower=1.5/spread (both tails tuned)
+2026-03-11T00:19:34.783529	0.375069	0.6351	0.4439	11516	1248	65.3	Add binary rain indicator as 20th feature (rain regime switch)
