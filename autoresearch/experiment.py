@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Add precip model agreement as 21st feature (rain consensus)"
+DESCRIPTION = "Add GFS-ECMWF solar spread as 22nd feature (radiation disagreement)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -251,7 +251,8 @@ def get_training_data(con, run_hour, station_id, current_date):
     gfs_ext_raw = con.execute("""
         SELECT model_run::DATE AS fc_date,
                AVG(dewpoint_2m_f) AS mean_dewpoint,
-               SUM(precipitation) AS total_precip
+               SUM(precipitation) AS total_precip,
+               AVG(shortwave_rad) AS mean_rad
         FROM forecast_extended
         WHERE station_id = ?
             AND model_run::DATE >= ?
@@ -264,6 +265,7 @@ def get_training_data(con, run_hour, station_id, current_date):
     """, [station_id, min_date, current_date]).fetchall()
     gfs_dp_lookup = {r[0]: r[1] for r in gfs_ext_raw if r[1] is not None}
     gfs_precip_lookup = {r[0]: r[2] for r in gfs_ext_raw if r[2] is not None}
+    gfs_rad_lookup = {r[0]: r[3] for r in gfs_ext_raw if r[3] is not None}
 
     # Query 5: GFS 00z forecast highs (only 00z is clean)
     gfs_highs_raw = con.execute("""
@@ -353,6 +355,9 @@ def get_training_data(con, run_hour, station_id, current_date):
         dp_spread = (gfs_dp - ecmwf_dp) if (gfs_dp is not None and ecmwf_dp is not None) else 0.0
         # GFS precipitation (multi-model rain consensus)
         gfs_precip = gfs_precip_lookup.get(obs_date, 0.0)
+        # GFS-ECMWF solar radiation spread (cloud/radiation disagreement)
+        gfs_rad = gfs_rad_lookup.get(obs_date)
+        solar_spread = (gfs_rad - solar_rad) if gfs_rad is not None else 0.0
         # Binary rain indicator (any model forecasts rain)
         rain_day = 1.0 if (total_precip > 0.1 or gfs_precip > 0.1) else 0.0
         # Precip model agreement (1=agree, 0=disagree on rain)
@@ -411,6 +416,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 gfs_precip,
                 rain_day,
                 precip_agree,
+                solar_spread,
             ]
 
             X_rows.append(features)
@@ -517,7 +523,7 @@ def model_fn(provider, ref_time):
 
     # GFS extended features for today
     gfs_ext_row = con.execute("""
-        SELECT AVG(dewpoint_2m_f), SUM(precipitation) FROM forecast_extended
+        SELECT AVG(dewpoint_2m_f), SUM(precipitation), AVG(shortwave_rad) FROM forecast_extended
         WHERE station_id = ? AND model_run::DATE = ?
             AND EXTRACT(HOUR FROM model_run) = 0
             AND model_name = 'gfs'
@@ -527,6 +533,8 @@ def model_fn(provider, ref_time):
     gfs_dp = gfs_ext_row[0] if gfs_ext_row and gfs_ext_row[0] is not None else None
     dp_spread = (gfs_dp - ecmwf_dp) if (gfs_dp is not None and ecmwf_dp is not None) else 0.0
     gfs_precip = gfs_ext_row[1] if gfs_ext_row and gfs_ext_row[1] is not None else 0.0
+    gfs_rad = gfs_ext_row[2] if gfs_ext_row and gfs_ext_row[2] is not None else None
+    solar_spread = (gfs_rad - solar_rad) if gfs_rad is not None else 0.0
     rain_day = 1.0 if (total_precip > 0.1 or gfs_precip > 0.1) else 0.0
     ecmwf_rain = total_precip > 0.1
     gfs_rain = gfs_precip > 0.1
@@ -617,6 +625,7 @@ def model_fn(provider, ref_time):
         gfs_precip,
         rain_day,
         precip_agree,
+        solar_spread,
     ])
 
     x_row = np.concatenate([[1.0], features_today])

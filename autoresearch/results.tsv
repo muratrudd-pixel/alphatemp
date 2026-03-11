@@ -76,3 +76,9 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-11T00:19:34.783529	0.375069	0.6351	0.4439	11516	1248	65.3	Add binary rain indicator as 20th feature (rain regime switch)
 2026-03-11T00:21:24.039382	0.375069	0.6351	0.4439	11516	1248	67.8	Add binary convective indicator as 21st feature (CAPE>500 regime)
 2026-03-11T00:23:13.399087	0.357985	0.6417	0.4519	12420	1248	68.1	Add precip model agreement as 21st feature (rain consensus)
+2026-03-11T00:24:48.655526	0.430053	0.6463	0.4255	9380	1248	69.2	Add |ecmwf_spread| as 22nd feature (disagreement magnitude)
+2026-03-11T00:26:30.446702	0.386556	0.6375	0.4407	11064	1248	67.8	Add binary large-error indicator as 22nd feature (|lag_error|>3)
+2026-03-11T00:28:17.700017	0.442242	0.6556	0.4199	9104	1248	68.9	Add triple-model temp agreement as 22nd feature (all within 2F)
+2026-03-11T00:30:33.175086	0.399216	0.6472	0.4407	10712	1248	68.2	Add binary overcast indicator as 22nd feature (cloud>80%)
+2026-03-11T00:31:58.538703	0.371985	0.6440	0.4463	11872	1248	67.7	Wider quantile tails: [0.03, 0.10, 0.25, 0.50, 0.75, 0.90, 0.97]
+2026-03-11T00:33:59.295745	0.349706	0.6407	0.4543	12764	1248	70.1	Add GFS-ECMWF solar spread as 22nd feature (radiation disagreement)
