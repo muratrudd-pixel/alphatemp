@@ -82,3 +82,11 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-11T00:30:33.175086	0.399216	0.6472	0.4407	10712	1248	68.2	Add binary overcast indicator as 22nd feature (cloud>80%)
 2026-03-11T00:31:58.538703	0.371985	0.6440	0.4463	11872	1248	67.7	Wider quantile tails: [0.03, 0.10, 0.25, 0.50, 0.75, 0.90, 0.97]
 2026-03-11T00:33:59.295745	0.349706	0.6407	0.4543	12764	1248	70.1	Add GFS-ECMWF solar spread as 22nd feature (radiation disagreement)
+2026-03-11T00:36:03.913142	0.379473	0.6254	0.4439	11048	1248	72.5	Add GFS-ECMWF wind gust spread as 23rd feature (mixing disagreement)
+2026-03-11T00:38:24.664462	0.363417	0.6388	0.4479	12128	1248	72.8	Add GFS-ECMWF cloud spread as 23rd feature (cloudiness disagreement)
+2026-03-11T00:40:20.229405	0.397603	0.6564	0.4327	11124	1248	71.9	Add min model high as 23rd feature (conservative floor estimate)
+2026-03-11T00:42:11.760003	0.384196	0.6600	0.4351	11836	1248	73.2	Add 3-model range as 23rd feature (max-min of model highs)
+2026-03-11T00:43:46.569585	0.366951	0.6401	0.4511	11956	1248	70.8	Drop slope_div feature (reduce noise, 22->21 features)
+2026-03-11T00:45:13.093571	0.358587	0.6426	0.4511	12424	1248	69.1	Drop diurnal_range feature (reduce noise, 22->21 features)
+2026-03-11T00:47:26.707922	0.349706	0.6407	0.4543	12764	1248	77.8	Feature standardization (z-score normalize before LP, 22 features)
+2026-03-11T00:49:07.165476	0.317944	0.6487	0.4583	14456	1248	72.1	Add |lag_error| as 23rd feature (error magnitude regardless of sign)

@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Add GFS-ECMWF solar spread as 22nd feature (radiation disagreement)"
+DESCRIPTION = "Add |lag_error| as 23rd feature (error magnitude regardless of sign)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -417,6 +417,7 @@ def get_training_data(con, run_hour, station_id, current_date):
                 rain_day,
                 precip_agree,
                 solar_spread,
+                abs(lag_error),
             ]
 
             X_rows.append(features)
@@ -626,6 +627,7 @@ def model_fn(provider, ref_time):
         rain_day,
         precip_agree,
         solar_spread,
+        abs(lag_error),
     ])
 
     x_row = np.concatenate([[1.0], features_today])
