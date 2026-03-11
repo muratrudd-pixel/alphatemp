@@ -64,3 +64,11 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-10T23:49:50.730053	0.511126	0.6391	0.3966	5624	1248	63.9	Add ECMWF mean wind speed as 18th feature (sustained mixing)
 2026-03-10T23:54:53.175384	0.406508	0.6282	0.4375	9896	1248	63.7	Add GFS-ECMWF dewpoint spread as 18th feature
 2026-03-10T23:56:44.082302	0.393590	0.6291	0.4407	10504	1248	65.7	Add GFS precipitation as 19th feature (multi-model rain signal)
+2026-03-11T00:00:21.399502	0.404992	0.6310	0.4367	10052	1248	66.1	Add GFS CAPE as 20th feature (multi-model convective signal)
+2026-03-11T00:02:13.185910	0.437416	0.6409	0.4223	8920	1248	66.9	Add fcst_high^2 as 20th feature (quadratic temperature response)
+2026-03-11T00:08:19.443660	0.415883	0.6342	0.4263	9732	1248	67.3	Add GFS humidity as 20th feature (multi-model moisture consensus)
+2026-03-11T00:10:29.816885	0.441113	0.6404	0.4231	8720	1248	76.0	Extend training window to 200 days (more data for 19 features)
+2026-03-11T00:12:00.142239	0.395751	0.6289	0.4399	10404	1248	65.0	Thinner lower tail: lambda_lower=1.5/spread (less cold-side mass)
+2026-03-11T00:13:16.710251	0.395806	0.6290	0.4399	10404	1248	65.5	Thinner lower tail: lambda_lower=1.3/spread (less cold-side mass)
+2026-03-11T00:14:52.830768	0.393645	0.6292	0.4407	10504	1248	65.2	Heavier upper tail: lambda_upper=0.15/spread (even more warm-side mass)
+2026-03-11T00:16:12.167830	0.393590	0.6291	0.4407	10504	1248	65.7	Heavier upper tail: lambda_upper=0.17/spread

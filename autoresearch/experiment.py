@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "Add GFS precipitation as 19th feature (multi-model rain signal)"
+DESCRIPTION = "Heavier upper tail: lambda_upper=0.17/spread"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -103,8 +103,8 @@ def build_bracket_probs(temp_quantiles, tau_values, running_max=None, radius=15)
 
     spread_upper = max(q95 - q50, 0.5)
     spread_lower = max(q50 - q05, 0.5)
-    lambda_upper = 0.2 / spread_upper
-    lambda_lower = 1.0 / spread_lower  # thinner lower tail
+    lambda_upper = 0.17 / spread_upper
+    lambda_lower = 1.0 / spread_lower  # standard lower tail
 
     def cdf(t):
         # type: (float) -> float
