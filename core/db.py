@@ -221,6 +221,18 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     """)
 
     con.execute("""
+        CREATE TABLE IF NOT EXISTS model_state (
+            city         VARCHAR NOT NULL,
+            target_date  DATE NOT NULL,
+            update_hour  INTEGER,
+            bracket_probs VARCHAR,
+            fcst_high    DOUBLE,
+            updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (city, target_date)
+        )
+    """)
+
+    con.execute("""
         CREATE TABLE IF NOT EXISTS paper_positions (
             id INTEGER,
             city VARCHAR,
@@ -451,6 +463,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         "CREATE INDEX IF NOT EXISTS idx_bronze_grib ON bronze_grib_meta (model_name, model_run)",
         "CREATE INDEX IF NOT EXISTS idx_fcst_model_station_run ON forecasts (model_name, station_id, model_run)",
         "CREATE INDEX IF NOT EXISTS idx_mesonet_station_time ON mesonet_obs (station_id, observed_at)",
+        "CREATE INDEX IF NOT EXISTS idx_model_state_city_date ON model_state (city, target_date)",
     ]:
         con.execute(stmt)
 

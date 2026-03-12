@@ -21,10 +21,7 @@ def setup_test_db():
 
     with patch("ui.web_dashboard.get_connection", lambda: get_connection(TEST_DB)), \
          patch("ui.web_dashboard.init_db", lambda: None):
-        from ui.web_dashboard import app, engine
-        engine.provider.db_path = TEST_DB
-        engine.provider._bias_cache = {}
-        engine.provider._cache_loaded_at = datetime.now(timezone.utc)
+        from ui.web_dashboard import app
         yield app
     if os.path.exists(TEST_DB):
         os.remove(TEST_DB)

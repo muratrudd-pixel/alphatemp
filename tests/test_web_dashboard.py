@@ -19,13 +19,10 @@ def setup_test_db():
         os.remove(TEST_DB)
     init_db(TEST_DB)
 
-    # Patch get_connection and engine before importing app
+    # Patch get_connection before importing app
     with patch("ui.web_dashboard.get_connection", lambda: get_connection(TEST_DB)), \
          patch("ui.web_dashboard.init_db", lambda: None):
-        from ui.web_dashboard import app, engine
-        engine.provider.db_path = TEST_DB
-        engine.provider._bias_cache = {}
-        engine.provider._cache_loaded_at = datetime.now(timezone.utc)
+        from ui.web_dashboard import app
         yield app
     if os.path.exists(TEST_DB):
         os.remove(TEST_DB)
@@ -258,14 +255,12 @@ def test_observations_settlement_only(client):
 # --- Ribbon collapse ---
 
 
-def test_ribbon_collapses_for_past_timestamps(client):
-    """Confidence ribbon should have near-zero std for past forecast timestamps."""
+def test_forecast_curve_no_ribbon(client):
+    """Forecast curve should not include ribbon data (CI removed, replaced by QR model)."""
     now = datetime.now(timezone.utc)
     model_run = now - timedelta(hours=6)
 
-    # Past timestamp (3 hours ago)
     past_valid = now - timedelta(hours=3)
-    # Future timestamp (3 hours ahead)
     future_valid = now + timedelta(hours=3)
 
     _insert_forecast(TEST_DB, "KNYC", model_run, past_valid, 32.0)
@@ -275,15 +270,10 @@ def test_ribbon_collapses_for_past_timestamps(client):
     assert resp.status_code == 200
     data = resp.json()
 
-    assert len(data["ribbon"]) == 2
-
-    past_ribbon = data["ribbon"][0]
-    future_ribbon = data["ribbon"][1]
-
-    # Past should have near-zero std (0.01)
-    assert past_ribbon["std"] == 0.01
-    # Future should have std >= 0.3 (the floor)
-    assert future_ribbon["std"] >= 0.3
+    # Ribbon key should not be in response
+    assert "ribbon" not in data
+    # Forecasts should still be present
+    assert len(data["forecasts"]) == 2
 
 
 # --- now_utc in forecast_curve ---

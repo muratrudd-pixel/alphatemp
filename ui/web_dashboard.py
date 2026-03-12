@@ -12,10 +12,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
+import json as _json
+from typing import Dict, Optional, Tuple
+
 from core.constants import CITIES, STATION_COORDS
 from core.db import get_connection, init_db
 from core.timezone import et_day_bounds_utc, get_today_et
-from services.probability import ProbabilityEngine
 
 app = FastAPI(title="AlphaTemp Command Center")
 
@@ -27,18 +29,64 @@ if os.path.isdir(_static_dir):
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# Single engine instance — reused across requests
-engine = ProbabilityEngine()
-
 
 @app.on_event("startup")
 async def startup():
-    """Ensure DB tables exist and load bias cache."""
+    """Ensure DB tables exist."""
     init_db()
+
+
+# ---------------------------------------------------------------------------
+# Helpers — QR model state from DB
+# ---------------------------------------------------------------------------
+
+
+def _get_model_state(con, city, target_date):
+    # type: (...) -> Optional[Tuple[Dict[str, float], float, int]]
+    """Read latest bracket_probs from model_state table.
+
+    Returns (bracket_probs_dict, fcst_high, update_hour) or None.
+    """
+    row = con.execute(
+        """SELECT bracket_probs, fcst_high, update_hour FROM model_state
+           WHERE city = ? AND target_date = ?""",
+        [city, target_date],
+    ).fetchone()
+    if not row or not row[0]:
+        return None
     try:
-        engine.load_bias_cache()
+        probs = _json.loads(row[0])  # type: Dict[str, float]
+        # Keys are stringified ints — convert back
+        probs_int = {int(k): float(v) for k, v in probs.items()}
+        return probs_int, float(row[1]) if row[1] else None, row[2]
     except Exception:
-        pass
+        return None
+
+
+def _model_expected_value(bracket_probs):
+    # type: (Dict[int, float]) -> Optional[float]
+    """Compute expected value (weighted sum of bracket centers * probabilities)."""
+    if not bracket_probs:
+        return None
+    ev = sum((floor + 1) * prob for floor, prob in bracket_probs.items())
+    return round(ev, 1)
+
+
+def _get_bias_from_db(con, station_id):
+    # type: (...) -> Tuple[float, float]
+    """Get latest mean_bias and std_error from station_bias table.
+
+    Returns (mean_bias, std_error) or (0.0, 2.0) if no data.
+    """
+    row = con.execute(
+        """SELECT mean_bias, std_error FROM station_bias
+           WHERE station_id = ?
+           ORDER BY calculated_at DESC LIMIT 1""",
+        [station_id],
+    ).fetchone()
+    if row:
+        return (row[0] or 0.0, row[1] or 2.0)
+    return (0.0, 2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -234,19 +282,16 @@ async def kpi_summary(city: str = "nyc"):
             "amber" if health_data.get("obs_stale") or health_data.get("fcst_stale") else "green"
         )
 
-        # Model high from probability engine (disabled while engine is pinned for rework)
-        from core.constants import PROBABILITY_ENGINE_ENABLED
-        if PROBABILITY_ENGINE_ENABLED:
-            try:
-                forecast = engine.calculate_city(city_upper, None)
-                model_high = forecast.center if forecast else None
-            except Exception:
-                model_high = None
+        # Model high from QR model (via model_state table)
+        today_et = get_today_et()
+        model_state = _get_model_state(con, city_upper, today_et)
+        if model_state:
+            bracket_probs, fcst_high, _ = model_state
+            model_high = _model_expected_value(bracket_probs)
         else:
             model_high = None
 
         # Settlement status from nws_daily
-        today_et = get_today_et()
         row = con.execute("""
             SELECT max_temp_f, source FROM nws_daily
             WHERE station_id = 'KNYC' AND obs_date = ?
@@ -581,42 +626,15 @@ async def forecast_curve(city: str, date: str = None):
                         running_high_f = temp_f
         con.close()
         return {"city": city, "forecasts": [], "observations": obs_points,
-                "ribbon": [], "prior_runs": [],
+                "prior_runs": [],
                 "running_high": running_high_f,
                 "settlement_marker": settlement_marker}
 
-    # Build ribbon bounds using the engine's uncertainty model
-    bias = engine.provider.get_bias_stats(station_id)
-    historical_std = bias.std_error if bias else 2.0
+    # Build forecast points (ribbon removed — old CI engine replaced by QR model)
+    bias_val_raw, _ = _get_bias_from_db(con, station_id)
 
-    drift_scores = engine.provider.get_recent_drift_scores(city)
-    stability = engine._compute_stability_from_scores(drift_scores)
-    recent_highs = engine.provider.get_recent_forecast_highs(station_id)
-    convergence = engine._compute_convergence_from_highs(recent_highs)
-
-    ribbon = []
     forecast_points = []
-    now = datetime.now(timezone.utc)
     for valid_at, temp_f, model_run_ts, ingested_ts in forecasts:
-        if valid_at.tzinfo is None:
-            ref = valid_at.replace(tzinfo=timezone.utc)
-        else:
-            ref = valid_at
-        hours_ahead = (ref - now).total_seconds() / 3600
-        if hours_ahead <= 0:
-            std_at_hour = 0.01  # near-zero — ribbon collapses for past timestamps
-        else:
-            lead_factor = min(1.0, (hours_ahead / 18.0) ** 0.5)
-            std_at_hour = max(0.3, historical_std * lead_factor * stability * convergence)
-        upper = round(temp_f + 1.645 * std_at_hour, 1)
-        lower = round(temp_f - 1.645 * std_at_hour, 1)
-
-        ribbon.append({
-            "valid_at": valid_at.isoformat(),
-            "upper_90": upper,
-            "lower_90": lower,
-            "std": round(std_at_hour, 2),
-        })
         forecast_points.append({
             "valid_at": valid_at.isoformat(),
             "temp_f": round(temp_f, 1),
@@ -796,9 +814,9 @@ async def forecast_curve(city: str, date: str = None):
     drift = round(drift_row[0], 2) if drift_row else 0.0
 
     # Historical bias for this station
-    bias_val = round(bias.mean_bias, 2) if bias else 0.0
+    bias_val = round(bias_val_raw, 2)
 
-    # Bias adjustment (same formula as ProbabilityEngine line 212)
+    # Drift-adjusted forecast: -bias + drift
     adjustment = round(-bias_val + drift, 2)
     bias_adjusted_points = [
         {"valid_at": p["valid_at"], "temp_f": round(p["temp_f"] + adjustment, 1)}
@@ -806,13 +824,13 @@ async def forecast_curve(city: str, date: str = None):
     ]
 
     con.close()
+    now = datetime.now(timezone.utc)
     return {
         "city": city,
         "model_run": latest_mr.isoformat() if latest_mr else None,
         "forecasts": forecast_points,
         "observations": obs_points,
         "six_hr_maxes": six_hr_maxes,
-        "ribbon": ribbon,
         "prior_runs": prior_runs,
         "bias_adjusted_forecasts": bias_adjusted_points,
         "adjustment": adjustment,
@@ -824,66 +842,6 @@ async def forecast_curve(city: str, date: str = None):
         "settlement_source": settlement_source,
         "neighbor_obs": neighbor_obs,
     }
-
-
-@app.get("/api/probability/{city}")
-async def probability(city: str):
-    """Return CityForecast distribution for a single city."""
-    city = city.upper()
-    if city not in CITIES:
-        return {"error": f"Unknown city: {city}"}
-
-    forecast = engine.calculate_city(city)
-    if not forecast:
-        return {"city": city, "available": False}
-
-    return {
-        "city": forecast.city,
-        "center": forecast.center,
-        "std": forecast.std,
-        "interval_90": list(forecast.interval_90),
-        "bracket_probs": forecast.bracket_probs,
-    }
-
-
-@app.get("/api/cities")
-async def cities_summary():
-    """Return summary stats for all 5 cities."""
-    summaries = []
-    con = get_connection()
-
-    for city in CITIES:
-        forecast = engine.calculate_city(city)
-
-        # Get latest drift
-        drift_row = con.execute(
-            """SELECT drift_score FROM drift_signals
-               WHERE city = ? ORDER BY calculated_at DESC LIMIT 1""",
-            [city],
-        ).fetchone()
-        drift = drift_row[0] if drift_row else 0.0
-
-        if forecast:
-            summaries.append({
-                "city": city,
-                "center": forecast.center,
-                "std": forecast.std,
-                "drift": round(drift, 2),
-                "confidence": round(max(0.0, min(1.0, 1.0 - forecast.std / 3.0)), 2),
-                "interval_90": list(forecast.interval_90),
-            })
-        else:
-            summaries.append({
-                "city": city,
-                "center": None,
-                "std": None,
-                "drift": round(drift, 2),
-                "confidence": None,
-                "interval_90": None,
-            })
-
-    con.close()
-    return {"cities": summaries}
 
 
 @app.get("/api/market/{city}")
@@ -930,29 +888,31 @@ async def market_comparison(city: str, date: str = None):
         con.close()
         return {"city": city, "available": False, "message": "Market data pending"}
 
-    # Get model probabilities
-    forecast = engine.calculate_city(city)
-    if not forecast:
+    # Get model probabilities from QR model state
+    target_date_str = target.strftime("%Y-%m-%d")
+    model_result = _get_model_state(con, city, target_date_str)
+    if not model_result:
         con.close()
-        return {"city": city, "available": False, "message": "No forecast available"}
+        return {"city": city, "available": False, "message": "No model forecast available"}
+    bracket_probs, _, _ = model_result
 
     comparisons = []
     for market_id, yes_bid, yes_ask, last_trade, floor_strike, cap_strike in ticks:
         # Kalshi bracket interpretation:
-        #   Bottom tail (floor=None, cap=X): resolves YES if high < X → covers ≤(X-1)
-        #   Range (floor=X, cap=Y): resolves YES if X ≤ high ≤ Y
-        #   Top tail (cap=None, floor=X): resolves YES if high > X → covers ≥(X+1)
+        #   Bottom tail (floor=None, cap=X): resolves YES if high < X -> covers <=(X-1)
+        #   Range (floor=X, cap=Y): resolves YES if X <= high <= Y
+        #   Top tail (cap=None, floor=X): resolves YES if high > X -> covers >=(X+1)
         if floor_strike is None and cap_strike is not None:
             label_bound = int(cap_strike) - 1
-            bracket_label = f"≤{label_bound}"
-            model_prob = sum(p for k, p in forecast.bracket_probs.items() if k <= label_bound)
+            bracket_label = f"<={label_bound}"
+            model_prob = sum(p for k, p in bracket_probs.items() if k <= label_bound)
         elif cap_strike is None and floor_strike is not None:
             label_bound = int(floor_strike) + 1
-            bracket_label = f"≥{label_bound}"
-            model_prob = sum(p for k, p in forecast.bracket_probs.items() if k >= label_bound)
+            bracket_label = f">={label_bound}"
+            model_prob = sum(p for k, p in bracket_probs.items() if k >= label_bound)
         elif floor_strike is not None and cap_strike is not None:
-            bracket_label = f"{int(floor_strike)}–{int(cap_strike)}"
-            model_prob = sum(p for k, p in forecast.bracket_probs.items()
+            bracket_label = "{}-{}".format(int(floor_strike), int(cap_strike))
+            model_prob = sum(p for k, p in bracket_probs.items()
                             if floor_strike <= k <= cap_strike)
         else:
             continue
@@ -993,30 +953,7 @@ async def bracket_spread(city: str, date: str = None):
     if city not in CITIES:
         return {"error": f"Unknown city: {city}"}
 
-    # 1. Get model probabilities (disabled while engine is pinned for rework)
-    from core.constants import PROBABILITY_ENGINE_ENABLED
-    model_center = None
-    model_std = None
-    model_2f = {}  # type: Dict[tuple, float]
-
-    if PROBABILITY_ENGINE_ENABLED:
-        try:
-            forecast = engine.calculate_city(city)
-        except Exception:
-            forecast = None
-
-        model_center = forecast.center if forecast else None
-        model_std = forecast.std if forecast else None
-
-        # Map 1°F model probs to Kalshi brackets
-        if forecast and forecast.bracket_probs:
-            for temp_f, prob in forecast.bracket_probs.items():
-                floor = (temp_f // 2) * 2
-                cap = floor + 2
-                key = (floor, cap)
-                model_2f[key] = model_2f.get(key, 0.0) + prob
-
-    # 2. Get latest Kalshi market ticks for this city + date
+    # 1. Get model probabilities from QR model state
     from core.timezone import ET as _ET
     if date:
         try:
@@ -1030,6 +967,23 @@ async def bracket_spread(city: str, date: str = None):
     target_date_str = target.strftime("%Y-%m-%d")
 
     con = get_connection()
+
+    model_center = None
+    model_2f = {}  # type: Dict[tuple, float]
+
+    model_result = _get_model_state(con, city, target_date_str)
+    if model_result:
+        bracket_probs, fcst_high, _ = model_result
+        model_center = _model_expected_value(bracket_probs)
+
+        # Map 1degF model probs to 2degF Kalshi brackets
+        for temp_f, prob in bracket_probs.items():
+            floor = (temp_f // 2) * 2
+            cap = floor + 2
+            key = (floor, cap)
+            model_2f[key] = model_2f.get(key, 0.0) + prob
+
+    # 2. Get latest Kalshi market ticks for this city + date
     ticks = con.execute(
         """SELECT market_id, yes_bid, yes_ask, last_trade, floor_strike,
                   cap_strike, volume
@@ -1117,7 +1071,6 @@ async def bracket_spread(city: str, date: str = None):
         "brackets": brackets,
         "liquidity": {"total_volume": total_volume, "avg_spread": avg_spread},
         "model_center": model_center,
-        "model_std": model_std,
     }
 
 
@@ -1895,21 +1848,19 @@ async def blotter_data(city: str, date: str = None):
     con = get_connection()
     try:
         # --- Countdown ---
-        from core.constants import PROBABILITY_ENGINE_ENABLED
         model_high = None
         model_bracket = None
         model_bracket_prob = None
-        if PROBABILITY_ENGINE_ENABLED:
-            try:
-                forecast = engine.calculate_city(city_upper, None)
-            except Exception:
-                forecast = None
-            model_high = forecast.center if forecast else None
-            if forecast and forecast.bracket_probs and model_high is not None:
+        model_result = _get_model_state(con, city_upper, target_date)
+        if model_result:
+            bracket_probs, fcst_high, _ = model_result
+            model_high = _model_expected_value(bracket_probs)
+            if model_high is not None:
                 floor_2f = int((model_high // 2) * 2)
+                # Sum probabilities for the 2degF bracket containing the EV
                 model_bracket_prob = round(
-                    forecast.bracket_probs.get(floor_2f, 0)
-                    + forecast.bracket_probs.get(floor_2f + 1, 0), 3
+                    sum(p for k, p in bracket_probs.items()
+                        if floor_2f <= k < floor_2f + 2), 3
                 )
                 model_bracket = "{}-{}".format(floor_2f, floor_2f + 2)
 

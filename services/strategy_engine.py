@@ -17,6 +17,7 @@ Python 3.9 compatible (no subscripted builtins).
 
 import asyncio
 import hashlib
+import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -133,6 +134,15 @@ class StrategyEngine:
             "Predicted {} brackets, center ~{}°F",
             len(bracket_probs),
             round(fcst_high),
+        )
+
+        # 5b. Persist model state for dashboard consumption
+        self._persist_model_state(
+            city="NYC",
+            target_date=target_date,
+            update_hour=update_hour,
+            bracket_probs=bracket_probs,
+            fcst_high=fcst_high,
         )
 
         # 6. Get market prices
@@ -317,6 +327,32 @@ class StrategyEngine:
     # ------------------------------------------------------------------
     # DB query methods
     # ------------------------------------------------------------------
+
+    def _persist_model_state(self, city, target_date, update_hour, bracket_probs, fcst_high):
+        # type: (str, date, int, Dict[int, float], float) -> None
+        """Write latest bracket probabilities to model_state for dashboard."""
+        probs_json = json.dumps(
+            {str(k): round(v, 6) for k, v in bracket_probs.items()}
+        )
+        con = duckdb.connect(self.db_path)
+        try:
+            con.execute("""
+                INSERT INTO model_state (city, target_date, update_hour, bracket_probs, fcst_high, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (city, target_date) DO UPDATE SET
+                    update_hour = EXCLUDED.update_hour,
+                    bracket_probs = EXCLUDED.bracket_probs,
+                    fcst_high = EXCLUDED.fcst_high,
+                    updated_at = CURRENT_TIMESTAMP
+            """, [city, target_date.isoformat(), update_hour, probs_json, fcst_high])
+            logger.debug(
+                "Persisted model_state: city={}, date={}, hour={}, brackets={}",
+                city, target_date, update_hour, len(bracket_probs),
+            )
+        except Exception as e:
+            logger.warning("Failed to persist model_state: {}", e)
+        finally:
+            con.close()
 
     def _load_config(self):
         # type: () -> None
