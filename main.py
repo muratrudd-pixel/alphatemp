@@ -18,6 +18,7 @@ from services.iem_ingestor import IEMIngestor
 from services.paper_trader import PaperTrader
 from services.strategy_engine import StrategyEngine
 from services.settlement import SettlementService
+from services.multi_model_fetcher import MultiModelFetcher
 
 
 async def main():
@@ -32,6 +33,7 @@ async def main():
     paper_trader = PaperTrader()
     strategy = StrategyEngine(db_path=DEFAULT_DB_PATH, paper_trader=paper_trader)
     settlement = SettlementService(db_path=DEFAULT_DB_PATH, paper_trader=paper_trader)
+    multi_model = MultiModelFetcher(db_path=DEFAULT_DB_PATH)
 
     tasks = [
         iem.run(),         # IEM — 5 settlement stations (low-latency SPECI)
@@ -39,6 +41,7 @@ async def main():
         engine.run(),
         market.run(),
         nws.run(),
+        multi_model.run(),   # GFS + ECMWF daily forecasts (Open-Meteo)
         paper_trader.run(),  # Paper trading (placeholder strategy)
         strategy.run(),      # QR model evaluation + trade signals
         settlement.run(),    # Settlement resolution + P&L
