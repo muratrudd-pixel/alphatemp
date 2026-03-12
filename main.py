@@ -22,14 +22,8 @@ from services.settlement import SettlementService
 
 async def main():
     load_dotenv()
-    token = os.getenv("SYNOPTIC_TOKEN")
-    if not token:
-        logger.error("SYNOPTIC_TOKEN not found in environment")
-        return
-
     init_db()
 
-    ingestor = SynopticIngestor(token=token)
     iem = IEMIngestor()
     fetcher = HRRRFetcher()
     engine = BiasEngine()
@@ -40,7 +34,6 @@ async def main():
     settlement = SettlementService(db_path=DEFAULT_DB_PATH, paper_trader=paper_trader)
 
     tasks = [
-        ingestor.run(),    # Synoptic — 11 stations (broad coverage)
         iem.run(),         # IEM — 5 settlement stations (low-latency SPECI)
         fetcher.run(),
         engine.run(),
@@ -50,6 +43,15 @@ async def main():
         strategy.run(),      # QR model evaluation + trade signals
         settlement.run(),    # Settlement resolution + P&L
     ]
+
+    # Synoptic is optional — trial may be expired
+    token = os.getenv("SYNOPTIC_TOKEN")
+    if token:
+        ingestor = SynopticIngestor(token=token)
+        tasks.append(ingestor.run())
+        logger.info("Synoptic ingestor enabled (11 stations)")
+    else:
+        logger.warning("SYNOPTIC_TOKEN not set — Synoptic ingestor disabled (AWC/IEM only)")
 
     if "--dashboard" in sys.argv:
         import uvicorn
