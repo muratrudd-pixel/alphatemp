@@ -15,7 +15,7 @@ class CircuitBreakers:
 
     def _get_config(self) -> Dict[str, str]:
         """Load all paper_config key-value pairs."""
-        con = duckdb.connect(self.db_path, read_only=True)
+        con = duckdb.connect(self.db_path)
         rows = con.execute("SELECT key, value FROM paper_config").fetchall()
         con.close()
         return {k: v for k, v in rows}
@@ -48,7 +48,7 @@ class CircuitBreakers:
         if edge_pct < min_edge:
             return (False, "edge: %.1f%% < min %.1f%%" % (edge_pct, min_edge))
 
-        con = duckdb.connect(self.db_path, read_only=True)
+        con = duckdb.connect(self.db_path)
         try:
             # 3. Max daily loss
             max_loss = float(cfg.get("max_daily_loss_cents", "-1000"))

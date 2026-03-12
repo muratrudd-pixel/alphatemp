@@ -60,7 +60,7 @@ class SettlementService:
     def _get_unsettled_dates(self):
         # type: () -> List[str]
         """Return distinct event_dates that have open positions."""
-        con = duckdb.connect(self.db_path, read_only=True)
+        con = duckdb.connect(self.db_path)
         try:
             rows = con.execute("""
                 SELECT DISTINCT event_date

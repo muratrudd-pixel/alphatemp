@@ -322,7 +322,7 @@ class StrategyEngine:
         # type: () -> None
         """Load min_edge_pct from paper_config table."""
         try:
-            con = duckdb.connect(self.db_path, read_only=True)
+            con = duckdb.connect(self.db_path)
             row = con.execute(
                 "SELECT value FROM paper_config WHERE key = 'min_edge_pct'"
             ).fetchone()
@@ -344,7 +344,7 @@ class StrategyEngine:
         dict
             {bracket_floor_int: {yes_bid, yes_ask, no_bid, no_ask}} in cents.
         """
-        con = duckdb.connect(self.db_path, read_only=True)
+        con = duckdb.connect(self.db_path)
         try:
             # Get the latest tick per bracket for the target date's markets
             # market_ticks uses floor_strike/cap_strike as DOUBLEs
@@ -384,7 +384,7 @@ class StrategyEngine:
     def _get_open_positions(self, target_date):
         # type: (date) -> List[Dict[str, Any]]
         """Get open positions for the target date."""
-        con = duckdb.connect(self.db_path, read_only=True)
+        con = duckdb.connect(self.db_path)
         try:
             rows = con.execute("""
                 SELECT id, bracket_floor, bracket_cap, direction, entry_price
@@ -413,7 +413,7 @@ class StrategyEngine:
 
         Returns a hash string. If same as last cycle, we skip processing.
         """
-        con = duckdb.connect(self.db_path, read_only=True)
+        con = duckdb.connect(self.db_path)
         try:
             parts = []  # type: List[str]
 

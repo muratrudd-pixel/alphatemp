@@ -124,7 +124,7 @@ class FeatureBuilder:
             dates: list of dates for each row
             Returns None if insufficient data (< MIN_SAMPLES daily rows).
         """
-        con = duckdb.connect(self.db_path, read_only=True)
+        con = duckdb.connect(self.db_path)
         try:
             return self._get_training_data_impl(con, target_date, window_days)
         finally:
@@ -150,7 +150,7 @@ class FeatureBuilder:
             fcst_high: float — HRRR forecast high temperature
             Returns None if HRRR data missing for the date.
         """
-        con = duckdb.connect(self.db_path, read_only=True)
+        con = duckdb.connect(self.db_path)
         try:
             return self._build_features_impl(con, target_date, update_hour)
         finally:
