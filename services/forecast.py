@@ -23,8 +23,9 @@ from core.heartbeat import record_heartbeat
 # Poll every 2 minutes — frequent short checks to catch new runs ASAP
 FETCH_INTERVAL_SECONDS = 120
 
-# How many hours back to look on cold start (empty DB)
-COLD_START_LOOKBACK_HOURS = 6
+# How many hours back to look on cold start — 24h ensures today's 00z
+# is always captured even if the system starts late in the day
+COLD_START_LOOKBACK_HOURS = 24
 
 
 class HRRRFetcher:
