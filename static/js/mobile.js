@@ -233,7 +233,7 @@ function refreshMobile() {
 // -----------------------------------------------------------------------
 
 async function refreshMobileBlotter() {
-    var date = getTargetDate(window.selectedDate || 'today');
+    var date = window.selectedDate || getTargetDate('today');
     var data = await fetchAPI('/api/blotter/nyc?date=' + date);
     if (!data) return;
     var el = document.getElementById('mobile-blotter');

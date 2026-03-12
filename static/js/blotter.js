@@ -128,7 +128,7 @@ function renderSummary(summary) {
 }
 
 async function refreshBlotter() {
-    var date = getTargetDate(window.selectedDate || 'today');
+    var date = window.selectedDate || getTargetDate('today');
     var data = await fetchAPI('/api/blotter/nyc?date=' + date);
     if (!data) return;
 
