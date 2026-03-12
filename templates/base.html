@@ -34,7 +34,7 @@
       </div>
       <div class="flex items-center justify-between px-4 py-1 border-t border-slate-800">
         <nav class="flex gap-1">
-          {% for tab, label in [('operations', 'Operations'), ('blotter', 'Blotter'), ('health', 'Health'), ('performance', 'Performance'), ('review', 'Review')] %}
+          {% for tab, label in [('operations', 'Operations'), ('blotter', 'Blotter'), ('trading', 'Trading'), ('health', 'Health'), ('performance', 'Performance'), ('review', 'Review')] %}
           <a href="/{{ tab }}"
              class="px-3 py-1 rounded text-xs {% if active_tab == tab %}bg-slate-700 text-white{% else %}text-slate-500 hover:text-slate-300{% endif %}">
             {{ label }}

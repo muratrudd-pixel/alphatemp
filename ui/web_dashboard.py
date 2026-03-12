@@ -4,6 +4,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -1992,5 +1994,212 @@ async def blotter_data(city: str, date: str = None):
                 "day_pnl": round(day_pnl, 2),
             },
         }
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Trading Tab — page + API endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/trading")
+async def trading_page(request: Request):
+    """Serve the Trading tab."""
+    return templates.TemplateResponse("trading.html", {"request": request, "active_tab": "trading"})
+
+
+@app.get("/api/trading/positions")
+async def trading_positions(city: str = "nyc"):
+    """Open positions with unrealized P&L and current market prices."""
+    city_upper = city.upper()
+    con = get_connection()
+    try:
+        rows = con.execute("""
+            SELECT
+                pp.id,
+                pp.bracket_floor,
+                pp.bracket_cap,
+                pp.direction,
+                pp.contracts,
+                pp.entry_price,
+                pp.edge,
+                pp.unrealized_pnl,
+                pp.entry_time,
+                mt.yes_bid,
+                mt.yes_ask
+            FROM paper_positions pp
+            LEFT JOIN (
+                SELECT floor_strike, cap_strike, yes_bid, yes_ask,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY floor_strike, cap_strike
+                           ORDER BY captured_at DESC
+                       ) AS rn
+                FROM market_ticks
+                WHERE city = ?
+            ) mt ON mt.floor_strike = pp.bracket_floor
+                AND mt.cap_strike = pp.bracket_cap
+                AND mt.rn = 1
+            WHERE pp.city = ? AND pp.status = 'open'
+            ORDER BY pp.bracket_floor
+        """, [city_upper, city_upper]).fetchall()
+
+        now = datetime.now(timezone.utc)
+        positions = []
+        for r in rows:
+            pos_id, floor_s, cap_s, direction, qty, entry, edge, unreal, entry_time, bid, ask = r
+            # Calculate time held
+            time_held = ""
+            if entry_time is not None:
+                if entry_time.tzinfo is None:
+                    entry_time = entry_time.replace(tzinfo=timezone.utc)
+                delta = now - entry_time
+                total_mins = int(delta.total_seconds() / 60)
+                hours = total_mins // 60
+                mins = total_mins % 60
+                time_held = "{}h {}m".format(hours, mins)
+
+            positions.append({
+                "id": pos_id,
+                "bracket": "{}-{}".format(int(floor_s), int(cap_s)),
+                "direction": direction,
+                "qty": qty or 1,
+                "entry": entry,
+                "current_bid": bid,
+                "current_ask": ask,
+                "edge": round(edge, 4) if edge is not None else None,
+                "unrealized": round(unreal, 2) if unreal is not None else 0.0,
+                "time_held": time_held,
+            })
+
+        return {"positions": positions}
+    finally:
+        con.close()
+
+
+@app.get("/api/trading/pnl")
+async def trading_pnl(city: str = "nyc"):
+    """P&L summary — realized, unrealized, total, and daily breakdown."""
+    city_upper = city.upper()
+    con = get_connection()
+    try:
+        # Realized: sum of net_pnl for closed/settled positions
+        realized_row = con.execute("""
+            SELECT COALESCE(SUM(net_pnl), 0)
+            FROM paper_positions
+            WHERE city = ? AND status != 'open'
+        """, [city_upper]).fetchone()
+        realized = round(realized_row[0], 2)
+
+        # Unrealized: sum of unrealized_pnl for open positions
+        unrealized_row = con.execute("""
+            SELECT COALESCE(SUM(unrealized_pnl), 0)
+            FROM paper_positions
+            WHERE city = ? AND status = 'open'
+        """, [city_upper]).fetchone()
+        unrealized = round(unrealized_row[0], 2)
+
+        total = round(realized + unrealized, 2)
+
+        # Daily breakdown
+        daily_rows = con.execute("""
+            SELECT
+                event_date,
+                COALESCE(SUM(CASE WHEN status != 'open' THEN net_pnl ELSE 0 END), 0) AS day_realized,
+                COALESCE(SUM(CASE WHEN status = 'open' THEN unrealized_pnl ELSE 0 END), 0) AS day_unrealized,
+                COUNT(*) AS trades,
+                COALESCE(SUM(CASE WHEN net_pnl > 0 AND status != 'open' THEN 1 ELSE 0 END), 0) AS wins
+            FROM paper_positions
+            WHERE city = ?
+            GROUP BY event_date
+            ORDER BY event_date DESC
+        """, [city_upper]).fetchall()
+
+        daily = []
+        for row in daily_rows:
+            daily.append({
+                "date": str(row[0]),
+                "realized": round(row[1], 2),
+                "unrealized": round(row[2], 2),
+                "trades": row[3],
+                "wins": row[4],
+            })
+
+        return {
+            "realized": realized,
+            "unrealized": unrealized,
+            "total": total,
+            "daily": daily,
+        }
+    finally:
+        con.close()
+
+
+@app.get("/api/trading/breakers")
+async def trading_breakers():
+    """Circuit breaker status — thresholds, current values, kill switch."""
+    con = get_connection()
+    try:
+        # Read config values
+        config_rows = con.execute(
+            "SELECT key, value FROM paper_config"
+        ).fetchall()
+        config = {k: v for k, v in config_rows}
+
+        kill_switch = config.get("kill_switch", "False").lower() in ("true", "1", "yes")
+        max_daily_loss = int(config.get("max_daily_loss_cents", "-1000"))
+        max_open = int(config.get("max_open_positions", "5"))
+        min_edge_pct = float(config.get("min_edge_pct", "5.0"))
+        cooldown_minutes = int(float(config.get("cooldown_minutes", "30")))
+
+        # Current open position count
+        open_count = con.execute(
+            "SELECT COUNT(*) FROM paper_positions WHERE status = 'open'"
+        ).fetchone()[0]
+
+        # Today's realized P&L
+        from core.timezone import get_today_et
+        today_et = get_today_et()
+        today_pnl_row = con.execute("""
+            SELECT COALESCE(SUM(net_pnl), 0)
+            FROM paper_positions
+            WHERE event_date = ? AND status != 'open'
+        """, [today_et]).fetchone()
+        today_pnl = round(today_pnl_row[0], 2)
+
+        return {
+            "breakers": {
+                "kill_switch": kill_switch,
+                "max_daily_loss": {
+                    "threshold": max_daily_loss,
+                    "current": today_pnl,
+                },
+                "max_open": {
+                    "threshold": max_open,
+                    "current": open_count,
+                },
+                "min_edge_pct": min_edge_pct,
+                "cooldown_minutes": cooldown_minutes,
+            }
+        }
+    finally:
+        con.close()
+
+
+class KillSwitchRequest(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/trading/kill-switch")
+async def trading_kill_switch(body: KillSwitchRequest):
+    """Toggle the kill switch on/off."""
+    con = get_connection()
+    try:
+        new_val = "True" if body.enabled else "False"
+        con.execute(
+            "UPDATE paper_config SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = 'kill_switch'",
+            [new_val],
+        )
+        return {"kill_switch": body.enabled}
     finally:
         con.close()
