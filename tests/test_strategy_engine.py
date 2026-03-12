@@ -258,6 +258,33 @@ class TestCheckEdgeReversals:
             2, 86, "edge_reversal"
         )
 
+    def test_zero_edge_exits_position(self, engine):
+        """When edge is exactly zero, should exit (no expected value)."""
+        engine.paper_trader.exit_position = AsyncMock()
+        open_positions = [
+            {
+                "id": 1,
+                "bracket_floor": 72,
+                "bracket_cap": 74,
+                "direction": "YES",
+                "entry_price": 12,
+            }
+        ]
+        # Model says 12% = market ask 12c -> edge exactly 0%
+        bracket_probs = {72: 0.12}
+        market_prices = {
+            72: {"yes_bid": 10, "yes_ask": 12, "no_bid": 86, "no_ask": 88},
+        }
+        asyncio.get_event_loop().run_until_complete(
+            engine._check_edge_reversals(
+                bracket_probs, market_prices, open_positions
+            )
+        )
+        # Edge = (12 - 12) * 100 = 0% -> should exit (no EV, fees make it negative)
+        engine.paper_trader.exit_position.assert_called_once_with(
+            1, 10, "edge_reversal"
+        )
+
     def test_bracket_missing_from_model_skips(self, engine):
         """Position on a bracket the model didn't predict -> skip, don't exit."""
         engine.paper_trader.exit_position = AsyncMock()

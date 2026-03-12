@@ -342,7 +342,7 @@ class StrategyEngine:
                 edge = self._compute_edge(no_prob, prices["no_ask"])
                 exit_price = prices["no_bid"]
 
-            if edge < 0:
+            if edge <= 0:
                 logger.info(
                     "Edge reversal: pos {} [{}–{}) {} edge={:.1f}%",
                     pos["id"], bracket_floor, pos["bracket_cap"],
