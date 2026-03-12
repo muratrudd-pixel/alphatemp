@@ -257,6 +257,27 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         except Exception:
             pass  # Column already exists
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS paper_config (
+            key VARCHAR PRIMARY KEY,
+            value VARCHAR,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # Seed paper_config with defaults if empty
+    row_count = con.execute("SELECT COUNT(*) FROM paper_config").fetchone()[0]
+    if row_count == 0:
+        con.execute("""
+            INSERT INTO paper_config (key, value) VALUES
+            ('max_daily_loss_cents', '-1000'),
+            ('max_open_positions', '5'),
+            ('max_per_bracket', '2'),
+            ('min_edge_pct', '5.0'),
+            ('cooldown_minutes', '30'),
+            ('kill_switch', 'False')
+        """)
+        logger.info("Seeded paper_config with default circuit breaker thresholds")
+
     # ---- Bronze layer: raw metadata for provenance ----
     con.execute("""
         CREATE TABLE IF NOT EXISTS bronze_grib_meta (
