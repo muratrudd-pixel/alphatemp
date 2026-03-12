@@ -75,7 +75,7 @@ class StrategyEngine:
         # type: () -> None
         """Single evaluation cycle."""
         now_et = datetime.now(_ET)
-        target_date = (now_et + timedelta(days=1)).date()
+        target_date = now_et.date()  # Today's date — markets for today are live
         update_hour = now_et.hour
         date_key = target_date.isoformat()
 

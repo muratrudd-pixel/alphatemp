@@ -328,7 +328,7 @@ async def kpi_summary(city: str = "nyc"):
         """, [city_upper]).fetchone()
         market_consensus = "{}-{}F".format(
             int(bracket_row[0]), int(bracket_row[1])
-        ) if bracket_row else None
+        ) if bracket_row and bracket_row[0] is not None and bracket_row[1] is not None else None
 
         return {
             "system_status": system_status,
