@@ -349,3 +349,120 @@ class TestPlaceholderStrategy:
     async def test_check_exits_is_noop(self, trader):
         """Placeholder exit logic should not modify anything."""
         await trader._check_exits()
+
+
+class TestEntryExitMethods:
+    @pytest.mark.asyncio
+    async def test_enter_position_records_trade(self, trader, test_db):
+        """enter_position() should insert an open position."""
+        await trader.enter_position(
+            city="nyc", event_date="2026-03-01",
+            bracket_floor=50, bracket_cap=52,
+            direction="YES", model_prob=0.65,
+            market_price=55, edge=0.10,
+        )
+        con = duckdb.connect(test_db, read_only=True)
+        try:
+            row = con.execute(
+                "SELECT id, city, direction, status, entry_price, contracts "
+                "FROM paper_positions"
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None
+        assert row[0] == 1       # id
+        assert row[1] == "nyc"   # city
+        assert row[2] == "YES"   # direction
+        assert row[3] == "open"  # status
+        assert row[4] == 55      # entry_price = market_price (paper trade at ask)
+        assert row[5] == 1       # contracts
+
+    @pytest.mark.asyncio
+    async def test_exit_position_closes_trade(self, trader, test_db):
+        """exit_position() should mark position as closed with reason and P&L."""
+        # Enter a position first
+        await trader.enter_position(
+            city="nyc", event_date="2026-03-01",
+            bracket_floor=50, bracket_cap=52,
+            direction="YES", model_prob=0.65,
+            market_price=55, edge=0.10,
+        )
+
+        # Exit at a higher price (profit)
+        await trader.exit_position(position_id=1, exit_price=70, reason="edge_reversal")
+
+        con = duckdb.connect(test_db, read_only=True)
+        try:
+            row = con.execute(
+                "SELECT status, exit_price, exit_reason, gross_pnl, net_pnl, exit_time "
+                "FROM paper_positions WHERE id = 1"
+            ).fetchone()
+        finally:
+            con.close()
+        assert row[0] == "closed"
+        assert row[1] == 70              # exit_price
+        assert row[2] == "edge_reversal" # exit_reason
+        assert row[5] is not None        # exit_time set
+
+    @pytest.mark.asyncio
+    async def test_exit_position_pnl_calculation(self, trader, test_db):
+        """Exit P&L should be (exit - entry) * contracts / 100 - fees."""
+        # Buy YES at 40c
+        await trader.enter_position(
+            city="nyc", event_date="2026-03-01",
+            bracket_floor=50, bracket_cap=52,
+            direction="YES", model_prob=0.65,
+            market_price=40, edge=0.25,
+        )
+
+        # Sell at 60c — gross = (60 - 40) * 1 / 100 = 0.20
+        await trader.exit_position(position_id=1, exit_price=60, reason="take_profit")
+
+        con = duckdb.connect(test_db, read_only=True)
+        try:
+            row = con.execute(
+                "SELECT gross_pnl, fees, net_pnl FROM paper_positions WHERE id = 1"
+            ).fetchone()
+        finally:
+            con.close()
+        gross_pnl, fees, net_pnl = row
+        # Gross = (60 - 40) * 1 / 100 = 0.20
+        assert abs(gross_pnl - 0.20) < 0.001
+        # Fees = entry fee + exit fee
+        entry_fee = trader._compute_fee(40, 1)
+        exit_fee = trader._compute_fee(60, 1)
+        expected_fees = round(entry_fee + exit_fee, 2)
+        assert abs(fees - expected_fees) < 0.001
+        # Net = gross - total fees
+        expected_net = round(0.20 - expected_fees, 2)
+        assert abs(net_pnl - expected_net) < 0.001
+
+    @pytest.mark.asyncio
+    async def test_exit_position_no_direction_loss(self, trader, test_db):
+        """NO direction exit: bought NO at 70c, NO price drops to 50c = loss."""
+        # Buy NO at 70c (YES price was 30c)
+        await trader.enter_position(
+            city="nyc", event_date="2026-03-01",
+            bracket_floor=50, bracket_cap=52,
+            direction="NO", model_prob=0.70,
+            market_price=70, edge=0.05,
+        )
+
+        # Sell NO at 50c — gross = (50 - 70) * 1 / 100 = -0.20 (loss)
+        await trader.exit_position(position_id=1, exit_price=50, reason="stop_loss")
+
+        con = duckdb.connect(test_db, read_only=True)
+        try:
+            row = con.execute(
+                "SELECT gross_pnl, net_pnl FROM paper_positions WHERE id = 1"
+            ).fetchone()
+        finally:
+            con.close()
+        assert row[0] < 0   # gross loss
+        assert row[1] < row[0]  # net even worse after fees
+
+    @pytest.mark.asyncio
+    async def test_exit_nonexistent_position_raises(self, trader, test_db):
+        """exit_position() on non-existent ID should raise ValueError."""
+        with pytest.raises(ValueError, match="Position 999 not found"):
+            await trader.exit_position(position_id=999, exit_price=50, reason="test")

@@ -83,6 +83,95 @@ class PaperTrader:
         finally:
             con.close()
 
+    async def enter_position(
+        self,
+        city,           # type: str
+        event_date,     # type: str
+        bracket_floor,  # type: int
+        bracket_cap,    # type: int
+        direction,      # type: str
+        model_prob,     # type: float
+        market_price,   # type: float
+        edge,           # type: float
+    ):
+        # type: (...) -> None
+        """Public entry point called by StrategyEngine.
+
+        Delegates to existing _record_entry() method. Paper trades at the
+        ask price (market_price), always 1 contract.
+        """
+        self._record_entry(
+            city=city,
+            event_date=event_date,
+            bracket_floor=bracket_floor,
+            bracket_cap=bracket_cap,
+            direction=direction,
+            model_prob=model_prob,
+            market_price=market_price,
+            entry_price=market_price,  # paper trade at ask
+            contracts=1,
+        )
+
+    async def exit_position(
+        self,
+        position_id,  # type: int
+        exit_price,    # type: float
+        reason,        # type: str
+    ):
+        # type: (...) -> None
+        """Close a position early (edge reversal, kill switch, etc.).
+
+        Computes P&L net of fees (entry + exit) and updates the DB.
+        Both YES and NO use the same formula: gross = (exit - entry) * contracts / 100.
+        You bought at entry_price, you sell at exit_price — direction is already
+        baked into the price you paid.
+        """
+        con = duckdb.connect(self.db_path)
+        try:
+            row = con.execute(
+                "SELECT entry_price, contracts, direction, fees "
+                "FROM paper_positions WHERE id = ? AND status = 'open'",
+                [position_id],
+            ).fetchone()
+
+            if row is None:
+                raise ValueError(
+                    "Position {} not found or already closed".format(position_id)
+                )
+
+            entry_price, contracts, direction, entry_fee = row
+
+            # Gross P&L: bought at entry, selling at exit (in cents, convert to dollars)
+            gross = (exit_price - entry_price) * contracts / 100.0
+
+            # Exit fee on the sell side
+            exit_fee = self._compute_fee(int(exit_price), contracts)
+            total_fees = round(entry_fee + exit_fee, 2)
+
+            net = round(gross - total_fees, 2)
+
+            con.execute("""
+                UPDATE paper_positions
+                SET status = 'closed',
+                    exit_price = ?,
+                    exit_time = ?,
+                    exit_reason = ?,
+                    gross_pnl = ?,
+                    fees = ?,
+                    net_pnl = ?
+                WHERE id = ?
+            """, [
+                exit_price,
+                datetime.now(timezone.utc),
+                reason,
+                round(gross, 2),
+                total_fees,
+                net,
+                position_id,
+            ])
+        finally:
+            con.close()
+
     async def _check_entries(self):
         """Evaluate brackets for tradeable edge. PLACEHOLDER STRATEGY.
 
