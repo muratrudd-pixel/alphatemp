@@ -4,7 +4,8 @@ Tests the pure logic methods: edge computation, signal generation, and
 edge reversal detection. Does NOT test the async run loop or DB queries.
 """
 
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -57,6 +58,34 @@ class TestComputeEdge:
         """Model 80%, market 60c -> +20% edge."""
         edge = engine._compute_edge(0.80, 60)
         assert abs(edge - 20.0) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# _aggregate_to_kalshi_brackets
+# ---------------------------------------------------------------------------
+
+class TestAggregateToKalshiBrackets:
+    def test_sums_adjacent_1f_probs(self, engine):
+        """Two 1°F probs should sum to one 2°F Kalshi bracket prob."""
+        bracket_probs = {72: 0.08, 73: 0.07, 74: 0.06, 75: 0.05}
+        market_prices = {
+            72: {"yes_bid": 10, "yes_ask": 12, "no_bid": 86, "no_ask": 88},
+            74: {"yes_bid": 8, "yes_ask": 10, "no_bid": 88, "no_ask": 90},
+        }
+        result = engine._aggregate_to_kalshi_brackets(bracket_probs, market_prices)
+        # [72,74) = probs[72] + probs[73] = 0.08 + 0.07 = 0.15
+        assert abs(result[72] - 0.15) < 0.001
+        # [74,76) = probs[74] + probs[75] = 0.06 + 0.05 = 0.11
+        assert abs(result[74] - 0.11) < 0.001
+
+    def test_missing_adjacent_uses_zero(self, engine):
+        """If model only has one of the two 1°F components, other defaults to 0."""
+        bracket_probs = {72: 0.10}  # no key 73
+        market_prices = {
+            72: {"yes_bid": 10, "yes_ask": 12, "no_bid": 86, "no_ask": 88},
+        }
+        result = engine._aggregate_to_kalshi_brackets(bracket_probs, market_prices)
+        assert abs(result[72] - 0.10) < 0.001
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +182,7 @@ class TestGenerateSignals:
 class TestCheckEdgeReversals:
     def test_edge_reversal_exits_position(self, engine):
         """When edge flips negative, call paper_trader.exit_position."""
-        # Open position: bracket 72, direction YES, entry at 12c
+        engine.paper_trader.exit_position = AsyncMock()
         open_positions = [
             {
                 "id": 1,
@@ -169,8 +198,10 @@ class TestCheckEdgeReversals:
         market_prices = {
             72: {"yes_bid": 10, "yes_ask": 12, "no_bid": 86, "no_ask": 88},
         }
-        engine._check_edge_reversals(
-            bracket_probs, market_prices, open_positions
+        asyncio.get_event_loop().run_until_complete(
+            engine._check_edge_reversals(
+                bracket_probs, market_prices, open_positions
+            )
         )
         # Edge = (8 - 12) * 100 = -4% -> reversed, should exit
         engine.paper_trader.exit_position.assert_called_once_with(
@@ -179,6 +210,7 @@ class TestCheckEdgeReversals:
 
     def test_no_exit_when_edge_still_positive(self, engine):
         """When edge is still positive, don't exit."""
+        engine.paper_trader.exit_position = AsyncMock()
         open_positions = [
             {
                 "id": 1,
@@ -192,13 +224,16 @@ class TestCheckEdgeReversals:
         market_prices = {
             72: {"yes_bid": 10, "yes_ask": 12, "no_bid": 86, "no_ask": 88},
         }
-        engine._check_edge_reversals(
-            bracket_probs, market_prices, open_positions
+        asyncio.get_event_loop().run_until_complete(
+            engine._check_edge_reversals(
+                bracket_probs, market_prices, open_positions
+            )
         )
         engine.paper_trader.exit_position.assert_not_called()
 
     def test_no_side_edge_reversal(self, engine):
         """NO position: edge reversal when (1 - model_prob) < no_ask/100."""
+        engine.paper_trader.exit_position = AsyncMock()
         open_positions = [
             {
                 "id": 2,
@@ -213,8 +248,10 @@ class TestCheckEdgeReversals:
         market_prices = {
             72: {"yes_bid": 10, "yes_ask": 12, "no_bid": 86, "no_ask": 88},
         }
-        engine._check_edge_reversals(
-            bracket_probs, market_prices, open_positions
+        asyncio.get_event_loop().run_until_complete(
+            engine._check_edge_reversals(
+                bracket_probs, market_prices, open_positions
+            )
         )
         # NO edge = ((1 - 0.25) - 88/100) * 100 = (0.75 - 0.88)*100 = -13% -> exit
         engine.paper_trader.exit_position.assert_called_once_with(
@@ -223,6 +260,7 @@ class TestCheckEdgeReversals:
 
     def test_bracket_missing_from_model_skips(self, engine):
         """Position on a bracket the model didn't predict -> skip, don't exit."""
+        engine.paper_trader.exit_position = AsyncMock()
         open_positions = [
             {
                 "id": 1,
@@ -236,7 +274,9 @@ class TestCheckEdgeReversals:
         market_prices = {
             72: {"yes_bid": 10, "yes_ask": 12, "no_bid": 86, "no_ask": 88},
         }
-        engine._check_edge_reversals(
-            bracket_probs, market_prices, open_positions
+        asyncio.get_event_loop().run_until_complete(
+            engine._check_edge_reversals(
+                bracket_probs, market_prices, open_positions
+            )
         )
         engine.paper_trader.exit_position.assert_not_called()

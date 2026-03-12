@@ -104,7 +104,7 @@ class TestFeeComputation:
 class TestPositionLifecycle:
     def test_record_entry(self, trader, test_db):
         trader._record_entry(
-            city="nyc", event_date="2026-02-28",
+            city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="YES", model_prob=0.62,
             market_price=58, entry_price=57, contracts=2,
@@ -115,7 +115,7 @@ class TestPositionLifecycle:
         assert row is not None
         # Verify key fields (column order matches schema)
         assert row[0] == 1       # id (auto-generated)
-        assert row[1] == "nyc"   # city
+        assert row[1] == "NYC"   # city
         assert row[5] == "YES"   # direction
         assert row[17] == "open" # status
         assert row[19] == 2      # contracts
@@ -123,13 +123,13 @@ class TestPositionLifecycle:
     def test_record_entry_increments_id(self, trader, test_db):
         """Second entry should get id=2."""
         trader._record_entry(
-            city="nyc", event_date="2026-02-28",
+            city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="YES", model_prob=0.62,
             market_price=58, entry_price=57,
         )
         trader._record_entry(
-            city="nyc", event_date="2026-02-28",
+            city="NYC", event_date="2026-02-28",
             bracket_floor=48, bracket_cap=50,
             direction="NO", model_prob=0.38,
             market_price=42, entry_price=58,
@@ -142,7 +142,7 @@ class TestPositionLifecycle:
     def test_edge_computation(self, trader, test_db):
         """Edge = model_prob - (market_price / 100)."""
         trader._record_entry(
-            city="nyc", event_date="2026-02-28",
+            city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="YES", model_prob=0.62,
             market_price=58, entry_price=57,
@@ -156,7 +156,7 @@ class TestPositionLifecycle:
     async def test_settle_position_yes_wins(self, trader, test_db):
         """YES position wins when actual high falls in bracket."""
         trader._record_entry(
-            city="nyc", event_date="2026-02-28",
+            city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="YES", model_prob=0.62,
             market_price=58, entry_price=57, contracts=1,
@@ -187,7 +187,7 @@ class TestPositionLifecycle:
     async def test_settle_position_yes_loses(self, trader, test_db):
         """YES position loses when actual high falls outside bracket."""
         trader._record_entry(
-            city="nyc", event_date="2026-02-28",
+            city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="YES", model_prob=0.62,
             market_price=58, entry_price=57, contracts=1,
@@ -216,7 +216,7 @@ class TestPositionLifecycle:
     async def test_settle_position_no_wins(self, trader, test_db):
         """NO position wins when actual high falls outside bracket."""
         trader._record_entry(
-            city="nyc", event_date="2026-02-28",
+            city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="NO", model_prob=0.38,
             market_price=42, entry_price=58, contracts=1,
@@ -246,7 +246,7 @@ class TestPositionLifecycle:
     async def test_settle_ignores_non_cli(self, trader, test_db):
         """Settlement only uses NWS_CLI source, not ACIS or other sources."""
         trader._record_entry(
-            city="nyc", event_date="2026-02-28",
+            city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="YES", model_prob=0.62,
             market_price=58, entry_price=57, contracts=1,
@@ -269,7 +269,7 @@ class TestPositionLifecycle:
     async def test_settle_bracket_boundary_exclusive_cap(self, trader, test_db):
         """Bracket is [floor, cap) — cap value itself is NOT in the bracket."""
         trader._record_entry(
-            city="nyc", event_date="2026-02-28",
+            city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="YES", model_prob=0.62,
             market_price=58, entry_price=57, contracts=1,
@@ -298,7 +298,7 @@ class TestUnrealizedPnL:
     async def test_update_unrealized_yes(self, trader, test_db):
         """Unrealized P&L for YES: (market_mid - entry_price) * contracts / 100."""
         trader._record_entry(
-            city="nyc", event_date="2026-02-28",
+            city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="YES", model_prob=0.62,
             market_price=58, entry_price=57, contracts=1,
@@ -308,7 +308,7 @@ class TestUnrealizedPnL:
         con.execute("""
             INSERT INTO market_ticks
             (market_id, city, captured_at, yes_bid, yes_ask, floor_strike, cap_strike)
-            VALUES ('MKT1', 'nyc', '2026-02-28 12:00:00', 60, 64, 46, 48)
+            VALUES ('MKT1', 'NYC', '2026-02-28 12:00:00', 60, 64, 46, 48)
         """)
         con.close()
 
@@ -324,7 +324,7 @@ class TestUnrealizedPnL:
     async def test_update_unrealized_no_tick(self, trader, test_db):
         """No market tick available — unrealized should stay at default (0.0)."""
         trader._record_entry(
-            city="nyc", event_date="2026-02-28",
+            city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="YES", model_prob=0.62,
             market_price=58, entry_price=57, contracts=1,
@@ -356,7 +356,7 @@ class TestEntryExitMethods:
     async def test_enter_position_records_trade(self, trader, test_db):
         """enter_position() should insert an open position."""
         await trader.enter_position(
-            city="nyc", event_date="2026-03-01",
+            city="NYC", event_date="2026-03-01",
             bracket_floor=50, bracket_cap=52,
             direction="YES", model_prob=0.65,
             market_price=55, edge=0.10,
@@ -371,7 +371,7 @@ class TestEntryExitMethods:
             con.close()
         assert row is not None
         assert row[0] == 1       # id
-        assert row[1] == "nyc"   # city
+        assert row[1] == "NYC"   # city
         assert row[2] == "YES"   # direction
         assert row[3] == "open"  # status
         assert row[4] == 55      # entry_price = market_price (paper trade at ask)
@@ -382,7 +382,7 @@ class TestEntryExitMethods:
         """exit_position() should mark position as closed with reason and P&L."""
         # Enter a position first
         await trader.enter_position(
-            city="nyc", event_date="2026-03-01",
+            city="NYC", event_date="2026-03-01",
             bracket_floor=50, bracket_cap=52,
             direction="YES", model_prob=0.65,
             market_price=55, edge=0.10,
@@ -409,7 +409,7 @@ class TestEntryExitMethods:
         """Exit P&L should be (exit - entry) * contracts / 100 - fees."""
         # Buy YES at 40c
         await trader.enter_position(
-            city="nyc", event_date="2026-03-01",
+            city="NYC", event_date="2026-03-01",
             bracket_floor=50, bracket_cap=52,
             direction="YES", model_prob=0.65,
             market_price=40, edge=0.25,
@@ -442,7 +442,7 @@ class TestEntryExitMethods:
         """NO direction exit: bought NO at 70c, NO price drops to 50c = loss."""
         # Buy NO at 70c (YES price was 30c)
         await trader.enter_position(
-            city="nyc", event_date="2026-03-01",
+            city="NYC", event_date="2026-03-01",
             bracket_floor=50, bracket_cap=52,
             direction="NO", model_prob=0.70,
             market_price=70, edge=0.05,

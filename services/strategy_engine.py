@@ -158,7 +158,7 @@ class StrategyEngine:
         # 8. Check edge reversals for open positions
         open_positions = self._get_open_positions(target_date)
         if open_positions:
-            self._check_edge_reversals(
+            await self._check_edge_reversals(
                 bracket_probs, market_prices, open_positions
             )
 
@@ -182,15 +182,15 @@ class StrategyEngine:
                     sig["edge_pct"], sig["model_prob"] * 100,
                     sig["market_price"],
                 )
-                self.paper_trader.enter_position(
-                    city="nyc",
+                await self.paper_trader.enter_position(
+                    city="NYC",
                     event_date=market_date_str,
                     bracket_floor=bracket_floor,
                     bracket_cap=bracket_cap,
                     direction=sig["direction"],
                     model_prob=sig["model_prob"],
                     market_price=sig["market_price"],
-                    entry_price=sig["market_price"],
+                    edge=sig["edge_pct"],
                 )
             else:
                 logger.debug(
@@ -221,13 +221,37 @@ class StrategyEngine:
         """
         return (model_prob - market_ask_cents / 100.0) * 100.0
 
+    @staticmethod
+    def _aggregate_to_kalshi_brackets(bracket_probs, market_prices):
+        # type: (Dict[int, float], Dict[int, Dict[str, int]]) -> Dict[int, float]
+        """Aggregate 1-degree model probabilities into 2-degree Kalshi brackets.
+
+        The model produces 1°F bracket probs (e.g., {72: 0.08, 73: 0.07, ...}).
+        Kalshi brackets are 2°F wide (e.g., [72, 74) covers temps 72 and 73).
+        For each Kalshi bracket floor, sum the model probs for floor and floor+1.
+
+        Returns
+        -------
+        dict
+            {kalshi_bracket_floor: aggregated_model_prob}
+        """
+        aggregated = {}  # type: Dict[int, float]
+        for kalshi_floor in market_prices:
+            # Sum 1°F probs that fall within [floor, floor + BRACKET_WIDTH)
+            total = 0.0
+            for offset in range(BRACKET_WIDTH):
+                total += bracket_probs.get(kalshi_floor + offset, 0.0)
+            aggregated[kalshi_floor] = total
+        return aggregated
+
     def _generate_signals(self, bracket_probs, market_prices):
         # type: (Dict[int, float], Dict[int, Dict[str, int]]) -> List[Dict[str, Any]]
         """Generate trade signals by comparing model probs to market prices.
 
-        For each bracket:
-        - Check YES edge: model_prob vs yes_ask
-        - Check NO edge: (1 - model_prob) vs no_ask
+        For each Kalshi bracket:
+        - Aggregate 1°F model probs into 2°F Kalshi brackets
+        - Check YES edge: aggregated model_prob vs yes_ask
+        - Check NO edge: (1 - aggregated model_prob) vs no_ask
         - Only include signals where edge >= min_edge_pct
         - Don't signal both YES and NO on same bracket (prefer YES)
 
@@ -243,12 +267,13 @@ class StrategyEngine:
         list of dicts
             Each: {bracket_floor, direction, model_prob, market_price, edge_pct}.
         """
+        # Aggregate 1°F model probs to match 2°F Kalshi brackets
+        kalshi_probs = self._aggregate_to_kalshi_brackets(bracket_probs, market_prices)
+
         signals = []  # type: List[Dict[str, Any]]
 
-        for bracket_floor, model_prob in bracket_probs.items():
-            prices = market_prices.get(bracket_floor)
-            if prices is None:
-                continue
+        for bracket_floor, model_prob in kalshi_probs.items():
+            prices = market_prices[bracket_floor]
 
             yes_ask = prices["yes_ask"]
             no_ask = prices["no_ask"]
@@ -279,7 +304,7 @@ class StrategyEngine:
 
         return signals
 
-    def _check_edge_reversals(self, bracket_probs, market_prices, open_positions):
+    async def _check_edge_reversals(self, bracket_probs, market_prices, open_positions):
         # type: (Dict[int, float], Dict[int, Dict[str, int]], List[Dict[str, Any]]) -> None
         """Check open positions for edge reversals and exit if flipped.
 
@@ -295,9 +320,12 @@ class StrategyEngine:
         open_positions : list of dicts
             Each: {id, bracket_floor, bracket_cap, direction, entry_price}.
         """
+        # Aggregate 1°F model probs to 2°F Kalshi brackets for edge check
+        kalshi_probs = self._aggregate_to_kalshi_brackets(bracket_probs, market_prices)
+
         for pos in open_positions:
             bracket_floor = pos["bracket_floor"]
-            model_prob = bracket_probs.get(bracket_floor)
+            model_prob = kalshi_probs.get(bracket_floor)
             prices = market_prices.get(bracket_floor)
 
             if model_prob is None or prices is None:
@@ -320,7 +348,7 @@ class StrategyEngine:
                     pos["id"], bracket_floor, pos["bracket_cap"],
                     pos["direction"], edge,
                 )
-                self.paper_trader.exit_position(
+                await self.paper_trader.exit_position(
                     pos["id"], exit_price, "edge_reversal"
                 )
 
@@ -359,12 +387,14 @@ class StrategyEngine:
         """Load min_edge_pct from paper_config table."""
         try:
             con = duckdb.connect(self.db_path)
-            row = con.execute(
-                "SELECT value FROM paper_config WHERE key = 'min_edge_pct'"
-            ).fetchone()
-            con.close()
-            if row:
-                self.min_edge_pct = float(row[0])
+            try:
+                row = con.execute(
+                    "SELECT value FROM paper_config WHERE key = 'min_edge_pct'"
+                ).fetchone()
+                if row:
+                    self.min_edge_pct = float(row[0])
+            finally:
+                con.close()
         except Exception:
             pass  # keep current value
 
@@ -382,8 +412,9 @@ class StrategyEngine:
         """
         con = duckdb.connect(self.db_path)
         try:
-            # Get the latest tick per bracket for the target date's markets
-            # market_ticks uses floor_strike/cap_strike as DOUBLEs
+            # Get the latest tick per bracket for the target date's markets.
+            # Filter to captures within last 24h to avoid stale prices from
+            # expired markets with the same brackets.
             rows = con.execute("""
                 WITH latest AS (
                     SELECT floor_strike, cap_strike,
@@ -393,7 +424,8 @@ class StrategyEngine:
                                ORDER BY captured_at DESC
                            ) AS rn
                     FROM market_ticks
-                    WHERE city = 'nyc'
+                    WHERE city = 'NYC'
+                      AND captured_at > CURRENT_TIMESTAMP - INTERVAL '24' HOUR
                 )
                 SELECT floor_strike, cap_strike,
                        yes_bid, yes_ask, no_bid, no_ask
@@ -426,7 +458,7 @@ class StrategyEngine:
                 SELECT id, bracket_floor, bracket_cap, direction, entry_price
                 FROM paper_positions
                 WHERE status = 'open'
-                  AND city = 'nyc'
+                  AND city = 'NYC'
                   AND event_date = ?
             """, [target_date.isoformat()]).fetchall()
         finally:

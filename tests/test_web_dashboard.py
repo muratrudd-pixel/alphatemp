@@ -301,18 +301,21 @@ def test_forecast_curve_includes_now_utc(client):
 
 def test_forecast_curve_obs_settlement_only(client):
     """forecast_curve observations should only include the settlement station."""
-    now = datetime.now(timezone.utc)
-    model_run = now - timedelta(hours=2)
-    valid = now + timedelta(hours=1)
+    from core.timezone import get_today_et, et_day_bounds_utc
+
+    today = get_today_et()
+    day_start, _ = et_day_bounds_utc(today)
+    # Place data well inside the ET day to avoid UTC/ET date mismatch
+    model_run = day_start + timedelta(hours=2)
+    valid = day_start + timedelta(hours=6)
 
     _insert_forecast(TEST_DB, "KNYC", model_run, valid, 33.0)
 
-    base = now - timedelta(hours=1)
+    base = day_start + timedelta(hours=3)
     _insert_obs(TEST_DB, "KNYC", base, 30.0)
     _insert_obs(TEST_DB, "KLGA", base + timedelta(minutes=1), 31.0)
     _insert_obs(TEST_DB, "KEWR", base + timedelta(minutes=2), 29.5)
 
-    today = now.strftime("%Y-%m-%d")
     resp = client.get(f"/api/forecast-curve/NYC?date={today}")
     data = resp.json()
 
@@ -337,15 +340,17 @@ def _insert_nws_daily(db_path, station_id, obs_date, max_temp_f, min_temp_f):
 
 def test_forecast_curve_prefers_nws_over_obs(client):
     """When NWS daily data exists, it should be used over running obs max."""
-    now = datetime.now(timezone.utc)
-    model_run = now - timedelta(hours=2)
-    valid = now + timedelta(hours=1)
-    today = now.strftime("%Y-%m-%d")
+    from core.timezone import get_today_et, et_day_bounds_utc
+
+    today = get_today_et()
+    day_start, _ = et_day_bounds_utc(today)
+    model_run = day_start + timedelta(hours=2)
+    valid = day_start + timedelta(hours=6)
 
     _insert_forecast(TEST_DB, "KNYC", model_run, valid, 40.0)
 
     # Obs running high = 38°F
-    base = now - timedelta(hours=1)
+    base = day_start + timedelta(hours=3)
     _insert_obs(TEST_DB, "KNYC", base, 38.0)
 
     # NWS daily high = 42°F (should win)
@@ -360,15 +365,17 @@ def test_forecast_curve_prefers_nws_over_obs(client):
 
 def test_forecast_curve_falls_back_to_obs(client):
     """When no NWS data exists, fall back to running obs max."""
-    now = datetime.now(timezone.utc)
-    model_run = now - timedelta(hours=2)
-    valid = now + timedelta(hours=1)
-    today = now.strftime("%Y-%m-%d")
+    from core.timezone import get_today_et, et_day_bounds_utc
+
+    today = get_today_et()
+    day_start, _ = et_day_bounds_utc(today)
+    model_run = day_start + timedelta(hours=2)
+    valid = day_start + timedelta(hours=6)
 
     _insert_forecast(TEST_DB, "KNYC", model_run, valid, 40.0)
 
     # Only obs data, no NWS
-    base = now - timedelta(hours=1)
+    base = day_start + timedelta(hours=3)
     _insert_obs(TEST_DB, "KNYC", base, 38.0)
 
     resp = client.get(f"/api/forecast-curve/NYC?date={today}")
@@ -646,10 +653,10 @@ def test_brier_comparison_endpoint(client):
     resp = client.get("/api/brier-comparison?range=30d")
     assert resp.status_code == 200
     data = resp.json()
-    assert "by_hour" in data
+    assert "by_date" in data
     assert "note" in data
     assert data["range"] == "30d"
-    assert isinstance(data["by_hour"], list)
+    assert isinstance(data["by_date"], list)
 
 
 # --- Edge heatmap endpoint ---

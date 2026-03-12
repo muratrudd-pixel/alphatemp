@@ -16,9 +16,11 @@ class CircuitBreakers:
     def _get_config(self) -> Dict[str, str]:
         """Load all paper_config key-value pairs."""
         con = duckdb.connect(self.db_path)
-        rows = con.execute("SELECT key, value FROM paper_config").fetchall()
-        con.close()
-        return {k: v for k, v in rows}
+        try:
+            rows = con.execute("SELECT key, value FROM paper_config").fetchall()
+            return {k: v for k, v in rows}
+        finally:
+            con.close()
 
     def check(
         self,
@@ -50,15 +52,16 @@ class CircuitBreakers:
 
         con = duckdb.connect(self.db_path)
         try:
-            # 3. Max daily loss
-            max_loss = float(cfg.get("max_daily_loss_cents", "-1000"))
+            # 3. Max daily loss — config is in cents, net_pnl is in dollars
+            max_loss_cents = float(cfg.get("max_daily_loss_cents", "-1000"))
+            max_loss_dollars = max_loss_cents / 100.0  # -1000 cents = -$10
             daily_pnl = con.execute(
                 "SELECT COALESCE(SUM(net_pnl), 0) FROM paper_positions "
                 "WHERE status = 'closed' AND event_date = ?",
                 [market_date],
             ).fetchone()[0]
-            if daily_pnl <= max_loss:
-                return (False, "daily_loss: %d cents (<= %d limit)" % (int(daily_pnl), int(max_loss)))
+            if daily_pnl <= max_loss_dollars:
+                return (False, "daily_loss: $%.2f (<= $%.2f limit)" % (daily_pnl, max_loss_dollars))
 
             # 4. Max open positions
             max_open = int(cfg.get("max_open_positions", "5"))

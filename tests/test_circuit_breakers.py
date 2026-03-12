@@ -118,10 +118,10 @@ class TestMaxDailyLoss:
              entry_price, entry_time, exit_price, exit_time,
              net_pnl, status, exit_reason, contracts)
             VALUES
-            (1, 'nyc', '2026-03-10', 40, 42, 'YES',
+            (1, 'NYC', '2026-03-10', 40, 42, 'YES',
              50, '2026-03-10 10:00:00', 0, '2026-03-10 12:00:00',
              -600, 'closed', 'settlement', 1),
-            (2, 'nyc', '2026-03-10', 42, 44, 'YES',
+            (2, 'NYC', '2026-03-10', 42, 44, 'YES',
              50, '2026-03-10 10:00:00', 0, '2026-03-10 13:00:00',
              -500, 'closed', 'settlement', 1)
         """)
@@ -145,7 +145,7 @@ class TestMaxOpenPositions:
                 INSERT INTO paper_positions
                 (id, city, event_date, bracket_floor, bracket_cap, direction,
                  entry_price, entry_time, status, contracts)
-                VALUES (?, 'nyc', '2026-03-10', ?, ?, 'YES',
+                VALUES (?, 'NYC', '2026-03-10', ?, ?, 'YES',
                         50, '2026-03-10 10:00:00', 'open', 1)
             """, [i + 1, 40 + i * 2, 42 + i * 2])
         con.close()
@@ -168,7 +168,7 @@ class TestMaxPerBracket:
             (id, city, event_date, bracket_floor, bracket_cap, direction,
              entry_price, entry_time, status, contracts)
             VALUES
-            (1, 'nyc', '2026-03-10', 46, 48, 'YES',
+            (1, 'NYC', '2026-03-10', 46, 48, 'YES',
              50, '2026-03-10 10:00:00', 'open', 2)
         """)
         con.close()
@@ -195,8 +195,8 @@ class TestCooldown:
              entry_price, entry_time, exit_price, exit_time,
              net_pnl, status, exit_reason, contracts)
             VALUES
-            (1, 'nyc', '2026-03-10', 46, 48, 'YES',
-             50, '2026-03-10 10:00:00', 40, ?, -10, 'closed', 'stop_loss', 1)
+            (1, 'NYC', '2026-03-10', 46, 48, 'YES',
+             50, '2026-03-10 10:00:00', 40, ?, -0.50, 'closed', 'stop_loss', 1)
         """, [exit_time])
         con.close()
 
@@ -220,8 +220,8 @@ class TestCooldown:
              entry_price, entry_time, exit_price, exit_time,
              net_pnl, status, exit_reason, contracts)
             VALUES
-            (1, 'nyc', '2026-03-10', 46, 48, 'YES',
-             50, '2026-03-10 10:00:00', 40, ?, -10, 'closed', 'stop_loss', 1)
+            (1, 'NYC', '2026-03-10', 46, 48, 'YES',
+             50, '2026-03-10 10:00:00', 40, ?, -0.50, 'closed', 'stop_loss', 1)
         """, [exit_time])
         con.close()
 
@@ -245,7 +245,7 @@ class TestCooldown:
              entry_price, entry_time, exit_price, exit_time,
              net_pnl, status, exit_reason, contracts)
             VALUES
-            (1, 'nyc', '2026-03-10', 46, 48, 'YES',
+            (1, 'NYC', '2026-03-10', 46, 48, 'YES',
              50, '2026-03-10 10:00:00', 100, ?, 50, 'closed', 'settlement', 1)
         """, [exit_time])
         con.close()

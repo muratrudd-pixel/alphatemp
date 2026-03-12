@@ -42,12 +42,15 @@ class SettlementService:
         - Otherwise: every 3600s (60 min)
         """
         try:
-            import pytz
-            et = datetime.now(pytz.timezone("US/Eastern"))
+            from zoneinfo import ZoneInfo
+            et = datetime.now(ZoneInfo("America/New_York"))
         except ImportError:
-            # Fallback: UTC-5 approximation (close enough for polling intervals)
-            from datetime import timedelta
-            et = datetime.now(timezone.utc) - timedelta(hours=5)
+            try:
+                import pytz
+                et = datetime.now(pytz.timezone("US/Eastern"))
+            except ImportError:
+                from datetime import timedelta
+                et = datetime.now(timezone.utc) - timedelta(hours=5)
         hour = et.hour
 
         if 16 <= hour < 18:
@@ -66,7 +69,7 @@ class SettlementService:
                 SELECT DISTINCT event_date
                 FROM paper_positions
                 WHERE status = 'open'
-                  AND city = 'nyc'
+                  AND city = 'NYC'
                 ORDER BY event_date
             """).fetchall()
             return [str(row[0]) for row in rows]
@@ -108,7 +111,7 @@ class SettlementService:
                        bracket_floor, bracket_cap, fees
                 FROM paper_positions
                 WHERE status = 'open'
-                  AND city = 'nyc'
+                  AND city = 'NYC'
                   AND event_date = CAST(? AS DATE)
             """, [market_date]).fetchall()
 

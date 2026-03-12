@@ -67,7 +67,7 @@ def _insert_position(db_path, pos_id, event_date, bracket_floor, bracket_cap,
             (id, city, event_date, bracket_floor, bracket_cap, direction,
              model_prob, market_price, edge, entry_price, entry_time,
              fees, status, contracts)
-            VALUES (?, 'nyc', ?, ?, ?, ?, 0.30, 40.0, 0.10, ?, ?, ?, 'open', ?)
+            VALUES (?, 'NYC', ?, ?, ?, ?, 0.30, 40.0, 0.10, ?, ?, ?, 'open', ?)
         """, [
             pos_id, event_date, bracket_floor, bracket_cap, direction,
             entry_price, datetime.now(timezone.utc), fees, contracts,

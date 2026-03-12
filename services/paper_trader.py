@@ -211,7 +211,7 @@ class PaperTrader:
                     AND n.station_id = 'KNYC'
                     AND n.source = 'NWS_CLI'
                 WHERE p.status = 'open'
-                  AND p.city = 'nyc'
+                  AND p.city = 'NYC'
             """).fetchall()
 
             for row in rows:
@@ -262,9 +262,10 @@ class PaperTrader:
 
             for row in rows:
                 pos_id, direction, entry_price, contracts, floor_val, cap_val, city = row
-                # Cast bracket ints to double for market_ticks join
+                # Get latest tick for this bracket — need both YES and NO mid
                 tick = con.execute("""
-                    SELECT (yes_bid + yes_ask) / 2.0 AS mid
+                    SELECT (yes_bid + yes_ask) / 2.0 AS yes_mid,
+                           (no_bid + no_ask) / 2.0 AS no_mid
                     FROM market_ticks
                     WHERE city = ?
                       AND floor_strike = CAST(? AS DOUBLE)
@@ -273,11 +274,13 @@ class PaperTrader:
                 """, [city, floor_val, cap_val]).fetchone()
 
                 if tick:
-                    market_mid = tick[0]
+                    yes_mid, no_mid = tick
                     if direction == "YES":
-                        unrealized = (market_mid - entry_price) * contracts / 100.0
+                        # Bought YES at entry_price, current value is yes_mid
+                        unrealized = (yes_mid - entry_price) * contracts / 100.0
                     else:
-                        unrealized = (entry_price - market_mid) * contracts / 100.0
+                        # Bought NO at entry_price, current value is no_mid
+                        unrealized = (no_mid - entry_price) * contracts / 100.0
                     con.execute(
                         "UPDATE paper_positions SET unrealized_pnl = ? WHERE id = ?",
                         [round(unrealized, 2), pos_id],
