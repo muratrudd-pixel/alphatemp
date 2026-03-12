@@ -8,7 +8,7 @@ import sys
 from dotenv import load_dotenv
 from loguru import logger
 
-from core.db import init_db
+from core.db import init_db, DEFAULT_DB_PATH
 from services.ingestor import SynopticIngestor
 from services.forecast import HRRRFetcher
 from services.bias import BiasEngine
@@ -16,6 +16,8 @@ from services.market_fetcher import MarketFetcher
 from services.nws_fetcher import NWSFetcher
 from services.iem_ingestor import IEMIngestor
 from services.paper_trader import PaperTrader
+from services.strategy_engine import StrategyEngine
+from services.settlement import SettlementService
 
 
 async def main():
@@ -34,6 +36,8 @@ async def main():
     market = MarketFetcher()
     nws = NWSFetcher()
     paper_trader = PaperTrader()
+    strategy = StrategyEngine(db_path=DEFAULT_DB_PATH, paper_trader=paper_trader)
+    settlement = SettlementService(db_path=DEFAULT_DB_PATH, paper_trader=paper_trader)
 
     tasks = [
         ingestor.run(),    # Synoptic — 11 stations (broad coverage)
@@ -43,6 +47,8 @@ async def main():
         market.run(),
         nws.run(),
         paper_trader.run(),  # Paper trading (placeholder strategy)
+        strategy.run(),      # QR model evaluation + trade signals
+        settlement.run(),    # Settlement resolution + P&L
     ]
 
     if "--dashboard" in sys.argv:
