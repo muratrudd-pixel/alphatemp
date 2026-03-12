@@ -110,6 +110,11 @@ function formatCents(val) {
   return sign + (val / 100).toFixed(2);
 }
 
+function formatDollars(val) {
+  const sign = val >= 0 ? '+' : '';
+  return sign + val.toFixed(2);
+}
+
 async function refreshTrading() {
   try {
     const [posResp, pnlResp, brkResp] = await Promise.all([
@@ -125,11 +130,11 @@ async function refreshTrading() {
     const rEl = document.getElementById('pnl-realized');
     const uEl = document.getElementById('pnl-unrealized');
     const tEl = document.getElementById('pnl-total');
-    rEl.textContent = formatCents(pnlData.realized);
+    rEl.textContent = formatDollars(pnlData.realized);
     rEl.className = 'text-2xl font-bold ' + pnlColor(pnlData.realized);
-    uEl.textContent = formatCents(pnlData.unrealized);
+    uEl.textContent = formatDollars(pnlData.unrealized);
     uEl.className = 'text-2xl font-bold ' + pnlColor(pnlData.unrealized);
-    tEl.textContent = formatCents(pnlData.total);
+    tEl.textContent = formatDollars(pnlData.total);
     tEl.className = 'text-2xl font-bold ' + pnlColor(pnlData.total);
 
     // Positions table
@@ -152,7 +157,7 @@ async function refreshTrading() {
           <td class="py-2 text-right">${p.current_bid ?? '--'}</td>
           <td class="py-2 text-right">${p.current_ask ?? '--'}</td>
           <td class="py-2 text-right">${p.edge != null ? (p.edge * 100).toFixed(1) + '%' : '--'}</td>
-          <td class="py-2 text-right ${color}">${formatCents(p.unrealized)}</td>
+          <td class="py-2 text-right ${color}">${formatDollars(p.unrealized)}</td>
           <td class="py-2 text-right text-slate-500">${p.time_held}</td>
         `;
         tbody.appendChild(row);
@@ -170,8 +175,8 @@ async function refreshTrading() {
       ksBtn.textContent = 'KILL SWITCH: OFF';
       ksBtn.className = 'px-3 py-1 rounded text-xs font-bold bg-slate-700 text-slate-400';
     }
-    document.getElementById('breaker-loss-current').textContent = formatCents(brk.max_daily_loss.current);
-    document.getElementById('breaker-loss-threshold').textContent = '/ ' + formatCents(brk.max_daily_loss.threshold);
+    document.getElementById('breaker-loss-current').textContent = formatDollars(brk.max_daily_loss.current);
+    document.getElementById('breaker-loss-threshold').textContent = '/ ' + formatDollars(brk.max_daily_loss.threshold);
     document.getElementById('breaker-open-current').textContent = brk.max_open.current;
     document.getElementById('breaker-open-threshold').textContent = '/ ' + brk.max_open.threshold;
     document.getElementById('breaker-edge').textContent = brk.min_edge_pct;
@@ -185,8 +190,8 @@ async function refreshTrading() {
       row.className = 'border-b border-slate-800';
       row.innerHTML = `
         <td class="py-2 text-left text-slate-300">${d.date}</td>
-        <td class="py-2 text-right ${pnlColor(d.realized)}">${formatCents(d.realized)}</td>
-        <td class="py-2 text-right ${pnlColor(d.unrealized)}">${formatCents(d.unrealized)}</td>
+        <td class="py-2 text-right ${pnlColor(d.realized)}">${formatDollars(d.realized)}</td>
+        <td class="py-2 text-right ${pnlColor(d.unrealized)}">${formatDollars(d.unrealized)}</td>
         <td class="py-2 text-right text-slate-300">${d.trades}</td>
         <td class="py-2 text-right text-slate-300">${d.wins}</td>
       `;

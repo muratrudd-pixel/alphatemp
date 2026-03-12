@@ -554,7 +554,7 @@ async def forecast_point_feed(city: str, date: str = None):
 
 @app.get("/api/forecast-curve/{city}")
 async def forecast_curve(city: str, date: str = None):
-    """Return HRRR forecast curve + observations + confidence ribbon bounds.
+    """Return HRRR forecast curve + observations + bias-adjusted forecast.
 
     Optional date param (YYYY-MM-DD) scopes to a specific day (midnight–midnight ET).
     When date is set: uses the latest model run *for that day*, returns prior runs,
@@ -1148,7 +1148,12 @@ async def get_positions(city: str, date: str = None):
         threshold = 0.10
         for b in brackets_data.get("brackets", []):
             if b.get("edge") is not None and 0.05 <= b["edge"] < 0.10:
-                label = "{}-{}°F".format(b["floor"], b["cap"])
+                if b["floor"] is None:
+                    label = "≤{}°F".format(b["cap"])
+                elif b["cap"] is None:
+                    label = "≥{}°F".format(b["floor"])
+                else:
+                    label = "{}-{}°F".format(b["floor"], b["cap"])
                 near_misses.append({
                     "bracket": label,
                     "edge": round(b["edge"], 4),
@@ -2098,7 +2103,7 @@ async def trading_breakers():
         config = {k: v for k, v in config_rows}
 
         kill_switch = config.get("kill_switch", "False").lower() in ("true", "1", "yes")
-        max_daily_loss = int(config.get("max_daily_loss_cents", "-1000"))
+        max_daily_loss = int(config.get("max_daily_loss_cents", "-1000")) / 100
         max_open = int(config.get("max_open_positions", "5"))
         min_edge_pct = float(config.get("min_edge_pct", "5.0"))
         cooldown_minutes = int(float(config.get("cooldown_minutes", "30")))

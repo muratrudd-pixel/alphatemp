@@ -300,7 +300,7 @@ function refreshObsFeed() {
                 sourceColor = 'text-amber-400';
             } else if (o.source === 'NWS CLI') {
                 sourceColor = 'text-emerald-400';
-            } else if (o.source === 'Synoptic' || (o.source && o.source.startsWith('AWC'))) {
+            } else if ((o.source && o.source.startsWith('Synoptic')) || (o.source && o.source.startsWith('AWC'))) {
                 sourceColor = 'text-teal-400';
             } else {
                 sourceColor = 'text-slate-300';

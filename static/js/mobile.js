@@ -143,7 +143,7 @@ function refreshMobile() {
                     var kalshiPct = b.market_mid != null ? (b.market_mid * 100).toFixed(1) : '--';
                     var edgePct = (b.edge * 100).toFixed(1);
                     var netEdge = ((b.edge - 0.11) * 100).toFixed(1);
-                    var askPrice = b.ask != null ? (b.ask * 100).toFixed(0) + '\u00a2' : '--';
+                    var askPrice = b.yes_ask != null ? (b.yes_ask * 100).toFixed(0) + '\u00a2' : '--';
                     var volume = b.volume != null ? b.volume : 0;
 
                     var html = '<div class="bg-slate-700/50 rounded border border-slate-600 p-3 mb-2">';

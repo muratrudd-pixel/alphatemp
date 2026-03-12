@@ -315,7 +315,7 @@ def test_trading_breakers_returns_status(client):
     assert "kill_switch" in breakers
     assert breakers["kill_switch"] is False
     assert "max_daily_loss" in breakers
-    assert breakers["max_daily_loss"]["threshold"] == -1000
+    assert breakers["max_daily_loss"]["threshold"] == -10.0  # -1000 cents = -$10
     assert "max_open" in breakers
     assert breakers["max_open"]["threshold"] == 5
     assert "min_edge_pct" in breakers
