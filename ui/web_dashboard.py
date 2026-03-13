@@ -1671,14 +1671,17 @@ async def get_review_incidents(time_range: str = Query("30d", alias="range"),
 
     # Build missed_edge incidents
     missed_edge_incidents = []
-    for _, tick_date, bracket_floor, bracket_cap, market_mid in missed_rows:
+    for _, tick_date, bracket_floor, cap_strike, market_mid in missed_rows:
         date_str = str(tick_date)
         sd = settlement_data.get(date_str)
         if sd is None or sd["temp"] is None:
             continue
         settlement_temp = sd["temp"]
+        # Settlement bracket is [floor, floor + BRACKET_WIDTH) — exclusive cap
+        # cap_strike from Kalshi is floor + 1, but settlement uses floor + 2
+        bracket_cap = bracket_floor + 2
         # Did this bracket settle YES?
-        if not (bracket_floor <= settlement_temp <= bracket_cap):
+        if not (bracket_floor <= settlement_temp < bracket_cap):
             continue
         # Did we already trade this bracket?
         if (date_str, bracket_floor, bracket_cap) in traded_keys:
