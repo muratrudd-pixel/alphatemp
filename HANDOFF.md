@@ -1,62 +1,66 @@
-# Handoff - 2026-03-13
+# Handoff - 2026-03-13 (01:10 ET / 05:10 UTC)
 
 ## Current State
 - **Composite: 0.304987** (unchanged — model not altered per Russell's directive)
 - Branch: `autoresearch/run-2026-03-10`
-- **System running**: PID on port 8050 with `--dashboard` flag
-- **Market data NOW FLOWING** — prices were all NULL, fixed field name mismatch
-- **Pipeline end-to-end**: market_fetcher → strategy_engine → circuit_breakers → paper_trader ready
-- **Waiting on HRRR 00z** — features require 00z run, publishes ~1:30 AM ET
+- **System running**: on port 8050 with `--dashboard` flag
+- **PIPELINE FULLY OPERATIONAL** — first paper trades placed at 00:43 ET
+- **5 open paper positions** — all NO trades on between brackets
+- **56 unit tests passing**
 
-## Session Summary (2026-03-12/13 overnight)
+## What's Running Now
+- Market data captured every 60s (6 brackets, real prices, volume, spread)
+- GFS/ECMWF data fetched every 30min via Open-Meteo
+- HRRR forecast fetcher polling every 2min (with incomplete-run backfill)
+- Strategy engine cycling every 5min — generating trade signals
+- Paper trader updating unrealized P&L every 60s
+- Dashboard serving on port 8050 with all endpoints returning valid data
+- AWC observation ingestor running (Synoptic token expired, AWC is primary)
 
-### Critical Pipeline Bugs Fixed (9 commits this session + prior session)
+## Active Paper Positions (as of 01:05 ET)
+| Bracket | Direction | Entry | Unrealized |
+|---------|-----------|-------|------------|
+| 45-47°F | NO | 71c | -$0.06 |
+| 47-49°F | NO | 74c | -$0.01 |
+| 47-49°F | NO | 76c | -$0.03 |
+| 49-51°F | NO | 87c | -$0.01 |
+| 51-53°F | NO | 94c | $0.00 |
 
-1. **Market fetcher field names** (THE blocker) — Kalshi API returns `yes_bid_dollars` (string), not `yes_bid` (int). ALL prices stored as NULL since API change. Fixed field names + parsing. Volume, open_interest, liquidity fields also renamed (`_fp`/`_dollars` suffixes).
+Model predicts high ~45°F (center). Market consensus 45-46°F. All positions are NO trades on brackets above the model's expected range.
 
-2. **Strategy engine targeting tomorrow** — `target_date = now_et + 1 day` meant HRRR 00z never existed for the target date. Fixed to `target_date = now_et.date()`.
+## Session Summary (2026-03-13 overnight, continuation)
 
-3. **10-11 features zeroed in live prediction** — No GFS/ECMWF live fetcher existed. Built `MultiModelFetcher` using Open-Meteo forecast API. Both temp and extended variables for GFS+ECMWF.
+### New Bugs Fixed This Session (5 commits)
 
-4. **HRRR cold start only 6h** — Changed to 24h to catch 00z on late starts.
+18. **HRRR fetcher oldest-first ordering** — `_get_missing_runs()` returned newest-first, causing the consecutive-empty heuristic to skip available 00z runs. Changed to oldest-first.
 
-5. **model_state SQL crash** — DuckDB ON CONFLICT doesn't support CURRENT_TIMESTAMP in SET clause. Fixed with parameter.
+19. **HRRR fetcher incomplete run backfill** — When HRRR forecast hours publish incrementally (fxx 1-2 first, 3-18 later), the fetcher marked runs as "stored" after getting the first few hours and never came back. Added `_get_incomplete_runs()` to detect runs with < 10 distinct fxx hours, `_get_stored_fxx()` to skip already-downloaded hours on retry. This was THE blocker — feature builder needs fxx 5-18 for the daytime window.
 
-6. **Edge reversal at zero** — Positions at 0% edge wouldn't exit. Changed `< 0` to `<= 0`.
+20. **Trading positions bracket key mismatch** — `paper_positions.bracket_cap = floor + 2` (BRACKET_WIDTH) but `market_ticks.cap_strike = floor + 1` (Kalshi). JOIN failed, current_bid/ask always null. Fixed to match on floor_strike only, excluding tail brackets.
 
-7. **Unrealized P&L overstatement** — Used midpoint instead of bid price. Fixed.
+21. **Unrealized P&L bracket key + unit mismatch** — Same bracket key issue in `_update_unrealized()`. Additionally, `yes_bid` is stored as decimal (0.31) but `entry_price` is in cents (71). Formula mixed units. Fixed both: match on floor_strike, convert market prices to cents before comparison. Updated test to use production-format decimal prices.
 
-8. **Strategy engine null floor_strike crash** — Tail brackets (T71, T64) have NULL floor/cap_strike. Added guard to skip them.
+22. **Missed edge incidents off-by-one** — `cap_strike` from market_ticks (floor + 1) was used as `bracket_cap` (should be floor + 2). Settlement check used `<=` (inclusive) instead of `<` (exclusive). Fixed settlement logic and bracket label display.
 
-9. **Settlement source filter** — settlement.py accepted DSM (preliminary), paper_trader only NWS_CLI (authoritative). Aligned both to NWS_CLI only to prevent settling on preliminary data that may be revised.
+### Commits This Session (5 new, 15 total across overnight sessions)
+```
+cde01d3 fix: missed_edge_incidents settlement check off-by-one
+26bcbbb fix: unrealized P&L bracket key mismatch + unit conversion
+043a95a fix: trading positions endpoint bracket key mismatch
+be348ff fix: HRRR fetcher retries incomplete runs to fill missing forecast hours
+f6b42f4 fix: HRRR fetcher processes runs oldest-first to avoid skipping 00z
+```
 
-### Dashboard Fixes
+## Known Issues / Opportunities
 
-10. **KPI summary crash** — `int(None)` when floor/cap_strike is NULL. Added None guards.
+### Tail Bracket Trading Not Implemented
+The strategy engine skips tail brackets (floor=None or cap=None) to prevent an `int(None)` crash. This means the bottom tail bracket (≤44°F) showed a **48% edge** (model 77% vs market 29%) that we can't trade. This is the single biggest source of missed edge. Fixing requires changes to strategy engine, paper trader, and settlement to handle null floor/cap throughout.
 
-11. **Blotter date toggle** — `getTargetDate()` only accepted 'today'/'tomorrow', ignored date picker YYYY-MM-DD values.
+### Bracket Key Convention Mismatch (Systemic)
+Paper positions store `bracket_cap = floor + BRACKET_WIDTH (2)`, but Kalshi/market_ticks use `cap_strike = floor + 1`. This caused 3 bugs this session (trading positions, unrealized P&L, missed edge). Any new code that JOINs these tables must match on `floor_strike` only, not `cap_strike`.
 
-12. **Brackets endpoint model-market merge** — Model created (64,66) keys but Kalshi uses (64,65). Model probs never merged with market data. Fixed to map model probs to actual Kalshi bracket boundaries.
-
-13. **Mobile.js tail bracket labels** — Showed "null-45°F" instead of "≤44°F" for tail brackets.
-
-14. **Deleted dead code** — Removed 728-line `templates/index.html.bak`.
-
-### Test Fixes
-
-15. **Forecast tests** — Updated for 24h cold start lookback and 2-station STATION_COORDS (KNYC + KJFK).
-
-16. **Added test** — `test_zero_edge_exits_position` for edge reversal boundary.
-
-17. **Updated test** — `test_update_unrealized_yes` to use bid price.
-
-### Audit Results (no changes needed)
-- **Circuit breakers**: All logic correct. Default config reasonable ($10 daily loss, 5 max open, 2 per bracket, 30min cooldown).
-- **Settlement bracket membership**: `[floor, cap)` with cap = floor+BRACKET_WIDTH (=66 for floor=64) correctly covers {64, 65}. Tests verify.
-- **Settlement fees**: "No settlement fee" per CLAUDE.md/Kalshi. `net = gross - entry_fee` correct at expiration.
-- **Feature builder**: Handles missing GFS/ECMWF gracefully with defaults. Will pick up MultiModelFetcher data automatically.
-- **JS files**: All 7 reviewed — no remaining bugs. API endpoint URLs correct. Null handling solid.
-- **Dual settlement services**: paper_trader + settlement.py both run but won't double-settle (both check `WHERE status = 'open'`, first update wins).
+### Synoptic API Token Expired
+Last data from Synoptic was March 1. AWC ingestor is the active fallback and working fine.
 
 ## Kalshi Bracket Structure (verified from live API)
 - **Between brackets**: `strike_type: 'between'`, floor_strike=X, cap_strike=X+1, covers temps X and X+1
@@ -67,54 +71,36 @@
 - **Volume/interest**: String fields with `_fp` suffix ("529.00")
 - Strategy engine correctly uses BRACKET_WIDTH=2 to map these to [floor, floor+2) for settlement
 
-## Commits This Session (10 total)
-```
-a3208bc fix: market fetcher field names + dashboard bracket merging + settlement safety
-dc3a0ec fix: model_state persist SQL — use parameter for timestamp
-3739632 fix: increase HRRR cold start lookback to 24h for 00z coverage
-496cfe2 fix: strategy engine targets today's markets instead of tomorrow's
-4b1aa94 fix: edge reversal exits at zero edge + unrealized P&L uses bid not mid
-4ab0180 feat: add live GFS/ECMWF fetcher to populate all 23 model features
-1923ac5 fix: blotter date toggle bug + delete dead index.html.bak
-3b5e201 fix: make Synoptic ingestor optional when token is missing
-```
-
-## What's Working Now
-- Market data captured every 60s (6 brackets, real prices, volume, spread)
-- GFS/ECMWF data fetched every 30min via Open-Meteo
-- HRRR forecast fetcher polling every 2min
-- Strategy engine cycling every 5min (waiting for HRRR 00z to build features)
-- Dashboard serving on port 8050 with all endpoints returning valid data
-- All 55 unit tests passing
-
-## What's Still Not Happening (and why)
-- **No paper trades yet** — HRRR 00z for today hasn't been published. Feature builder requires 00z. Once it lands (~1:30 AM ET), the full pipeline will activate.
-- **No observations for today** — It's midnight ET, no METAR reports yet for the new day.
-- **Synoptic API returning no data** — Token may have expired. AWC ingestor is the fallback and is working.
-
 ## Next Steps
-1. **Monitor first full pipeline cycle** — When HRRR 00z arrives, verify: feature build → QR prediction → bracket probs → edge vs market → circuit breaker → paper trade
+1. **Tail bracket trading** — Enable trading on bottom/top tail brackets. Biggest edge opportunity.
 2. **Non-linear model exploration** — Tree-based QR (LightGBM/XGBoost) to break the 0.305 plateau
-3. **Synoptic API** — Check token expiry, may need renewal or removal
+3. **Monitor today's P&L** — First real day of paper trading. Watch for settlement.
+4. **Synoptic API** — Check token expiry, may need renewal or removal
 
 ## Verification Queries
 ```bash
 cd ~/Projects/alphatemp/alphatemp
 
-# Check system is running
-ps aux | grep "python.*main.py" | grep -v grep
-
 # Dashboard health
 curl -s http://localhost:8050/api/health | python3 -m json.tool
 
-# Market prices non-NULL (should show recent ticks with prices)
-# NOTE: DB is locked while system runs. Stop system first to query.
-# Or use the API:
+# Open positions with unrealized P&L
+curl -s 'http://localhost:8050/api/trading/positions' | python3 -m json.tool
+
+# Market prices (should show 6 brackets with prices)
 curl -s http://localhost:8050/api/brackets/NYC | python3 -m json.tool
 
-# Strategy engine status (check for "Model fit OK" and trade signals)
-grep -E "Strategy|signal|TRADE|edge|Feature" /tmp/alphatemp.log | tail -20
+# Strategy engine activity (should show TRADE signals)
+grep -a -E "Strategy|signal|TRADE|edge|Feature" /tmp/alphatemp.log | tail -20
 
-# All tests pass
+# Market data freshness (should show recent captured_at)
+PYTHONPATH=. venv/bin/python -c "
+import duckdb
+con = duckdb.connect('data/alphatemp.duckdb', read_only=True)
+print(con.execute('SELECT MAX(captured_at) FROM market_ticks').fetchone()[0])
+con.close()
+"
+
+# All tests pass (56 tests)
 PYTHONPATH=. venv/bin/python -m pytest tests/test_strategy_engine.py tests/test_paper_trader.py tests/test_multi_model_fetcher.py tests/test_forecast.py -v
 ```
