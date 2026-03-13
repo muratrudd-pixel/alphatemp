@@ -29,10 +29,10 @@ def test_missing_runs_cold_start(test_db):
         mock_dt.now.return_value = now
         mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
         runs = fetcher._get_missing_runs()
-    # Should include current hour back to 6 hours ago = 7 runs
-    assert len(runs) == 7
+    # Should include current hour back to 24 hours ago = 25 runs
+    assert len(runs) == 25
     assert runs[0] == datetime(2026, 2, 22, 15, 0, tzinfo=timezone.utc)  # newest
-    assert runs[-1] == datetime(2026, 2, 22, 9, 0, tzinfo=timezone.utc)  # oldest
+    assert runs[-1] == datetime(2026, 2, 21, 15, 0, tzinfo=timezone.utc)  # oldest
 
 
 def test_missing_runs_with_stored_data(test_db):
@@ -133,5 +133,5 @@ def test_fetcher_deduplicates(test_db):
     count = con.execute("SELECT COUNT(*) FROM forecasts").fetchone()[0]
     con.close()
 
-    # 1 station x 2 forecast hours = 2 rows, no duplicates
-    assert count == 2
+    # 2 stations (KNYC, KJFK) x 2 forecast hours = 4 rows, no duplicates
+    assert count == 4

@@ -73,25 +73,24 @@ class MarketFetcher:
                 for m in markets:
                     ticker = m.get("ticker", "")
 
-                    # Kalshi v2 API returns prices in cents (0-99)
-                    yes_bid = m.get("yes_bid")
-                    yes_ask = m.get("yes_ask")
-                    no_bid = m.get("no_bid")
-                    no_ask = m.get("no_ask")
-                    last_price = m.get("last_price")
-                    volume = m.get("volume", 0)
+                    # Kalshi API returns prices as dollar strings ("0.0400")
+                    # with _dollars suffix on price fields
+                    yes_bid = m.get("yes_bid_dollars")
+                    yes_ask = m.get("yes_ask_dollars")
+                    no_bid = m.get("no_bid_dollars")
+                    no_ask = m.get("no_ask_dollars")
+                    last_price = m.get("last_price_dollars")
+                    volume = int(float(m.get("volume_fp", "0")))
                     floor_strike = m.get("floor_strike")
                     cap_strike = m.get("cap_strike")
-                    open_interest = m.get("open_interest")
-                    liquidity = m.get("liquidity")
-                    volume_24h = m.get("volume_24h")
+                    open_interest = int(float(m.get("open_interest_fp", "0")))
+                    liquidity = int(float(m.get("liquidity_dollars", "0") or "0"))
+                    volume_24h = int(float(m.get("volume_24h_fp", "0")))
 
                     def to_decimal(v):
                         if v is None:
                             return None
-                        # Cents (int 0-99) → decimal probability
-                        if isinstance(v, int):
-                            return v / 100.0
+                        # Dollar string ("0.04") → float (already 0-1 range)
                         return float(v)
 
                     con.execute(

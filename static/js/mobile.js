@@ -136,7 +136,10 @@ function refreshMobile() {
 
             if (bets.length > 0) {
                 var betsHtml = bets.map(function(b) {
-                    var label = b.floor + '-' + b.cap + '\u00b0F';
+                    var label;
+                    if (b.floor == null) label = '\u2264' + (b.cap - 1) + '\u00b0F';
+                    else if (b.cap == null) label = '\u2265' + (b.floor + 1) + '\u00b0F';
+                    else label = b.floor + '-' + b.cap + '\u00b0F';
                     var confidence = b.edge >= 0.15 ? 'HIGH' : 'MED';
                     var confColor = b.edge >= 0.15 ? 'text-emerald-400' : 'text-amber-400';
                     var modelPct = (b.model_prob * 100).toFixed(1);

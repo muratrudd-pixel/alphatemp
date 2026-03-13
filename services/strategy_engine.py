@@ -439,7 +439,7 @@ class StrategyEngine:
         prices = {}  # type: Dict[int, Dict[str, int]]
         for row in rows:
             floor_strike, cap_strike, yes_bid, yes_ask, no_bid, no_ask = row
-            if any(v is None for v in [yes_bid, yes_ask, no_bid, no_ask]):
+            if floor_strike is None or any(v is None for v in [yes_bid, yes_ask, no_bid, no_ask]):
                 continue
             bracket_floor = int(floor_strike)
             prices[bracket_floor] = {

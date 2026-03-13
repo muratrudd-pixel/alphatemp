@@ -91,13 +91,15 @@ class SettlementService:
         """
         con = duckdb.connect(self.db_path)
         try:
-            # 1. Check nws_daily for authoritative source (NWS_CLI or DSM)
+            # 1. Check nws_daily for authoritative source (NWS_CLI only)
+            # DSM is preliminary and can differ from the final CLI report.
+            # Paper positions should only settle on the authoritative CLI data.
             nws_row = con.execute("""
                 SELECT max_temp_f, source
                 FROM nws_daily
                 WHERE station_id = 'KNYC'
                   AND obs_date = CAST(? AS DATE)
-                  AND source IN ('NWS_CLI', 'DSM')
+                  AND source = 'NWS_CLI'
             """, [market_date]).fetchone()
 
             if nws_row is None:

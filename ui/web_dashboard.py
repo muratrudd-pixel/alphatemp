@@ -972,16 +972,10 @@ async def bracket_spread(city: str, date: str = None):
     model_2f = {}  # type: Dict[tuple, float]
 
     model_result = _get_model_state(con, city, target_date_str)
+    bracket_probs = None
     if model_result:
         bracket_probs, fcst_high, _ = model_result
         model_center = _model_expected_value(bracket_probs)
-
-        # Map 1degF model probs to 2degF Kalshi brackets
-        for temp_f, prob in bracket_probs.items():
-            floor = (temp_f // 2) * 2
-            cap = floor + 2
-            key = (floor, cap)
-            model_2f[key] = model_2f.get(key, 0.0) + prob
 
     # 2. Get latest Kalshi market ticks for this city + date
     ticks = con.execute(
@@ -1014,6 +1008,17 @@ async def bracket_spread(city: str, date: str = None):
         }
 
     con.close()
+
+    # Map 1°F model probs to actual Kalshi bracket boundaries
+    if bracket_probs:
+        for key in market_by_bracket:
+            floor, cap = key
+            if floor is not None and cap is not None:
+                model_2f[key] = sum(p for k, p in bracket_probs.items() if floor <= k <= cap)
+            elif floor is None and cap is not None:
+                model_2f[key] = sum(p for k, p in bracket_probs.items() if k < cap)
+            elif cap is None and floor is not None:
+                model_2f[key] = sum(p for k, p in bracket_probs.items() if k > floor)
 
     # 3. Merge model + market into bracket objects
     # When model is disabled, only show market brackets
