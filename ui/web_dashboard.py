@@ -1991,15 +1991,16 @@ async def trading_positions(city: str = "nyc"):
                 mt.yes_ask
             FROM paper_positions pp
             LEFT JOIN (
-                SELECT floor_strike, cap_strike, yes_bid, yes_ask,
+                SELECT floor_strike, yes_bid, yes_ask,
                        ROW_NUMBER() OVER (
-                           PARTITION BY floor_strike, cap_strike
+                           PARTITION BY floor_strike
                            ORDER BY captured_at DESC
                        ) AS rn
                 FROM market_ticks
                 WHERE city = ?
+                  AND floor_strike IS NOT NULL
+                  AND cap_strike IS NOT NULL
             ) mt ON mt.floor_strike = pp.bracket_floor
-                AND mt.cap_strike = pp.bracket_cap
                 AND mt.rn = 1
             WHERE pp.city = ? AND pp.status = 'open'
             ORDER BY pp.bracket_floor
