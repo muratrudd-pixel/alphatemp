@@ -27,6 +27,11 @@ FETCH_INTERVAL_SECONDS = 120
 # is always captured even if the system starts late in the day
 COLD_START_LOOKBACK_HOURS = 24
 
+# Minimum distinct fxx hours for a run to be considered "complete enough"
+# to skip on retry. Feature builder needs fxx 5-18 for 00z, so 10 is a
+# reasonable threshold that catches partially-fetched runs.
+MIN_COMPLETE_FXX = 10
+
 
 class HRRRFetcher:
     """Fetches HRRR 2m temperature forecasts for settlement stations."""
@@ -62,6 +67,42 @@ class HRRRFetcher:
             return mr
         return None
 
+    def _get_incomplete_runs(self) -> List[datetime]:
+        """Return recent runs with fewer than MIN_COMPLETE_FXX distinct fxx hours.
+
+        These runs were partially fetched (e.g., fxx 1-2 available but 3-18
+        not yet published) and need to be retried to fill in remaining hours.
+        """
+        con = get_connection(self.db_path)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=COLD_START_LOOKBACK_HOURS)
+        rows = con.execute("""
+            SELECT model_run, COUNT(DISTINCT fxx) as fxx_count
+            FROM forecasts
+            WHERE model_name = 'hrrr'
+              AND model_run >= ?
+            GROUP BY model_run
+            HAVING COUNT(DISTINCT fxx) < ?
+        """, [cutoff.replace(tzinfo=None), MIN_COMPLETE_FXX]).fetchall()
+        con.close()
+
+        result = []
+        for row in rows:
+            mr = row[0]
+            if mr.tzinfo is None:
+                mr = mr.replace(tzinfo=timezone.utc)
+            result.append(mr)
+        return result
+
+    def _get_stored_fxx(self, model_run: datetime) -> set:
+        """Return set of fxx values already stored for this run."""
+        con = get_connection(self.db_path)
+        rows = con.execute("""
+            SELECT DISTINCT fxx FROM forecasts
+            WHERE model_name = 'hrrr' AND model_run = ?
+        """, [model_run.replace(tzinfo=None)]).fetchall()
+        con.close()
+        return {row[0] for row in rows}
+
     def _get_missing_runs(self) -> List[datetime]:
         """Return model run times we should try to fetch, oldest first.
 
@@ -90,7 +131,14 @@ class HRRRFetcher:
             runs.append(candidate)
             candidate += timedelta(hours=1)
 
-        return runs  # oldest first
+        # Also retry runs that were partially fetched (e.g., only fxx 1-2
+        # because higher hours weren't published yet on the first attempt)
+        for incomplete_run in self._get_incomplete_runs():
+            if incomplete_run not in runs:
+                runs.append(incomplete_run)
+
+        runs.sort()  # oldest first
+        return runs
 
     def fetch_run(self, model_run: datetime, fxx_range: range = range(1, 19)) -> int:
         """Fetch a single HRRR run for all stations. Returns rows inserted."""
@@ -98,8 +146,12 @@ class HRRRFetcher:
         con = get_connection(self.db_path)
         now = datetime.now(timezone.utc)
         consecutive_misses = 0
+        stored_fxx = self._get_stored_fxx(model_run)
 
         for fxx in fxx_range:
+            if fxx in stored_fxx:
+                consecutive_misses = 0  # run exists, reset counter
+                continue
             try:
                 H = Herbie(
                     model_run.strftime("%Y-%m-%d %H:%M"),
