@@ -262,24 +262,28 @@ class PaperTrader:
 
             for row in rows:
                 pos_id, direction, entry_price, contracts, floor_val, cap_val, city = row
-                # Get latest tick for this bracket — need both YES and NO mid
+                # Get latest tick for this bracket — match on floor_strike only
+                # (paper positions use bracket_cap = floor + 2, market uses floor + 1)
                 tick = con.execute("""
                     SELECT yes_bid, no_bid
                     FROM market_ticks
                     WHERE city = ?
                       AND floor_strike = CAST(? AS DOUBLE)
-                      AND cap_strike = CAST(? AS DOUBLE)
+                      AND cap_strike IS NOT NULL
                     ORDER BY captured_at DESC LIMIT 1
-                """, [city, floor_val, cap_val]).fetchone()
+                """, [city, floor_val]).fetchone()
 
                 if tick:
                     yes_bid, no_bid = tick
+                    # Market prices are decimal (0-1), entry_price is in cents
+                    yes_bid_cents = yes_bid * 100 if yes_bid is not None else 0
+                    no_bid_cents = no_bid * 100 if no_bid is not None else 0
                     if direction == "YES":
                         # Bought YES at entry_price, would exit at yes_bid
-                        unrealized = (yes_bid - entry_price) * contracts / 100.0
+                        unrealized = (yes_bid_cents - entry_price) * contracts / 100.0
                     else:
                         # Bought NO at entry_price, would exit at no_bid
-                        unrealized = (no_bid - entry_price) * contracts / 100.0
+                        unrealized = (no_bid_cents - entry_price) * contracts / 100.0
                     con.execute(
                         "UPDATE paper_positions SET unrealized_pnl = ? WHERE id = ?",
                         [round(unrealized, 2), pos_id],

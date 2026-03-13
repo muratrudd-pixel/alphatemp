@@ -296,19 +296,20 @@ class TestPositionLifecycle:
 class TestUnrealizedPnL:
     @pytest.mark.asyncio
     async def test_update_unrealized_yes(self, trader, test_db):
-        """Unrealized P&L for YES: (yes_bid - entry_price) * contracts / 100."""
+        """Unrealized P&L for YES: (yes_bid_cents - entry_price) * contracts / 100."""
         trader._record_entry(
             city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="YES", model_prob=0.62,
             market_price=58, entry_price=57, contracts=1,
         )
-        # Insert a market tick: yes_bid=60, yes_ask=64
+        # Insert market tick with decimal prices (production format)
+        # yes_bid=0.60 (60c), cap_strike=47 (Kalshi's 1°F offset, not bracket_cap=48)
         con = duckdb.connect(test_db)
         con.execute("""
             INSERT INTO market_ticks
             (market_id, city, captured_at, yes_bid, yes_ask, no_bid, no_ask, floor_strike, cap_strike)
-            VALUES ('MKT1', 'NYC', '2026-02-28 12:00:00', 60, 64, 36, 40, 46, 48)
+            VALUES ('MKT1', 'NYC', '2026-02-28 12:00:00', 0.60, 0.64, 0.36, 0.40, 46, 47)
         """)
         con.close()
 
@@ -317,7 +318,7 @@ class TestUnrealizedPnL:
         con = duckdb.connect(test_db, read_only=True)
         row = con.execute("SELECT unrealized_pnl FROM paper_positions").fetchone()
         con.close()
-        # bid = 60, entry = 57, unrealized = (60-57)*1/100 = 0.03
+        # yes_bid = 0.60 → 60c, entry = 57c, unrealized = (60-57)*1/100 = $0.03
         assert abs(row[0] - 0.03) < 0.001
 
     @pytest.mark.asyncio
