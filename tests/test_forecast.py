@@ -31,8 +31,8 @@ def test_missing_runs_cold_start(test_db):
         runs = fetcher._get_missing_runs()
     # Should include current hour back to 24 hours ago = 25 runs
     assert len(runs) == 25
-    assert runs[0] == datetime(2026, 2, 22, 15, 0, tzinfo=timezone.utc)  # newest
-    assert runs[-1] == datetime(2026, 2, 21, 15, 0, tzinfo=timezone.utc)  # oldest
+    assert runs[0] == datetime(2026, 2, 21, 15, 0, tzinfo=timezone.utc)  # oldest first
+    assert runs[-1] == datetime(2026, 2, 22, 15, 0, tzinfo=timezone.utc)  # newest last
 
 
 def test_missing_runs_with_stored_data(test_db):
@@ -53,8 +53,8 @@ def test_missing_runs_with_stored_data(test_db):
         runs = fetcher._get_missing_runs()
     # 13z, 14z, 15z — should NOT include 12z (already stored)
     assert len(runs) == 3
-    assert runs[0] == datetime(2026, 2, 22, 15, 0, tzinfo=timezone.utc)
-    assert runs[-1] == datetime(2026, 2, 22, 13, 0, tzinfo=timezone.utc)
+    assert runs[0] == datetime(2026, 2, 22, 13, 0, tzinfo=timezone.utc)  # oldest first
+    assert runs[-1] == datetime(2026, 2, 22, 15, 0, tzinfo=timezone.utc)  # newest last
 
 
 def test_missing_runs_all_caught_up(test_db):

@@ -63,10 +63,13 @@ class HRRRFetcher:
         return None
 
     def _get_missing_runs(self) -> List[datetime]:
-        """Return model run times we should try to fetch, newest first.
+        """Return model run times we should try to fetch, oldest first.
 
         Checks DB for the latest stored run, then returns every hourly
-        run between that and now. On cold start, looks back 6 hours.
+        run between that and now. On cold start, looks back 24 hours.
+        Oldest first so the consecutive-empty heuristic in fetch_latest
+        doesn't prematurely skip available older runs when recent ones
+        haven't been published yet.
         """
         now = datetime.now(timezone.utc)
         current_hour = now.replace(minute=0, second=0, microsecond=0)
@@ -82,12 +85,12 @@ class HRRRFetcher:
 
         # Build list of candidate runs from start_hour up to current_hour
         runs = []
-        candidate = current_hour
-        while candidate >= start_hour:
+        candidate = start_hour
+        while candidate <= current_hour:
             runs.append(candidate)
-            candidate -= timedelta(hours=1)
+            candidate += timedelta(hours=1)
 
-        return runs  # newest first
+        return runs  # oldest first
 
     def fetch_run(self, model_run: datetime, fxx_range: range = range(1, 19)) -> int:
         """Fetch a single HRRR run for all stations. Returns rows inserted."""
