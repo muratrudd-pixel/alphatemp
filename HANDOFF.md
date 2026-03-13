@@ -1,99 +1,120 @@
-# Handoff - 2026-03-01 (18:30 UTC)
+# Handoff - 2026-03-13
 
 ## Current State
-- **Level 3 multimodel_full: CHAMPION** — Brier 0.6511, +14.25% over HRRR OLS (0.7593). Helps all 24 hours.
-- **Level 2 learned weights: IMPLEMENTED BUT DISABLED** — too slow for full backtest without .raw() caching. Code is in ensemble.py, disabled in phase2_ensemble.py.
-- **All prior uncommitted work from last session: COMMITTED** — settlement-day fxx filter, XGBoost extended features (commits 835a0de, a7f6d75, ce08354)
-- **GFS 12z/18z backfill: STATUS UNKNOWN** — 6 EC2 instances were running last session. Check status.
-- **Probability engine: DISABLED** — `PROBABILITY_ENGINE_ENABLED = False`
+- **Composite: 0.304987** (unchanged — model not altered per Russell's directive)
+- Branch: `autoresearch/run-2026-03-10`
+- **System running**: PID on port 8050 with `--dashboard` flag
+- **Market data NOW FLOWING** — prices were all NULL, fixed field name mismatch
+- **Pipeline end-to-end**: market_fetcher → strategy_engine → circuit_breakers → paper_trader ready
+- **Waiting on HRRR 00z** — features require 00z run, publishes ~1:30 AM ET
 
-## What Was Done This Session
+## Session Summary (2026-03-12/13 overnight)
 
-### Level 3: Multi-model OLS Stacking (backtester.py)
-Added `_get_latest_model_fcst_highs_bulk`, `_fit_and_predict_multimodel`, `_make_multimodel_regression_model`, and two pre-built instances:
-- `wf_multimodel_full` — HRRR + GFS + ECMWF, features [0-5]: hrrr_high, gfs_high, ecmwf_high, sin/cos month, delta_temp
-- `wf_multimodel_hrrr_gfs` — HRRR + GFS only, features [0,1,3,4,5]
+### Critical Pipeline Bugs Fixed (9 commits this session + prior session)
 
-Training flow: uses `_walk_forward_regression_data` for HRRR base, merges secondary model highs via bulk SQL, imputes missing with HRRR value. Separate `_fit_and_predict_multimodel` to avoid touching existing OLS.
+1. **Market fetcher field names** (THE blocker) — Kalshi API returns `yes_bid_dollars` (string), not `yes_bid` (int). ALL prices stored as NULL since API change. Fixed field names + parsing. Volume, open_interest, liquidity fields also renamed (`_fp`/`_dollars` suffixes).
 
-### Level 2: Learned Mixture Weights (ensemble.py)
-Added `_generate_simplex_weights`, `_grid_search_simplex_weights`, `_compute_brier_for_weights`, `make_learned_weight_ensemble_fn`. Walk-forward weight optimization using grid search over weight simplex (231 points for 3 models at 0.05 step). Falls back to equal weights when <90 dates of aligned history.
+2. **Strategy engine targeting tomorrow** — `target_date = now_et + 1 day` meant HRRR 00z never existed for the target date. Fixed to `target_date = now_et.date()`.
 
-**Disabled in phase2_ensemble.py** — each eval calls `.raw()` on 3 models × 365 lookback dates, each an expanding-window OLS fit. Total: ~hours for full backtest. Needs precomputation/caching of `.raw()` results per (run_hour, model, date) before enabling.
+3. **10-11 features zeroed in live prediction** — No GFS/ECMWF live fetcher existed. Built `MultiModelFetcher` using Open-Meteo forecast API. Both temp and extended variables for GFS+ECMWF.
 
-### Comparison Script (scripts/phase2_ensemble.py)
-Added multimodel_full, multimodel_hg candidates. Learned_weights commented out with TODO.
+4. **HRRR cold start only 6h** — Changed to 24h to catch 00z on late starts.
 
-### Tests (tests/test_ensemble.py)
-5 new tests, all passing:
-- `test_multimodel_uses_gfs_fcst_high` — bulk SQL returns GFS data, OLS gets both model highs
-- `test_multimodel_imputes_missing` — ECMWF absent → imputed with HRRR
-- `test_multimodel_returns_valid_probs` — bracket probs sum to ~1.0
-- `test_grid_search_finds_optimal` — synthetic 2-model scenario, good model gets weight ≥ 0.7
-- `test_learned_weights_no_data_returns_none` — empty DB returns None
+5. **model_state SQL crash** — DuckDB ON CONFLICT doesn't support CURRENT_TIMESTAMP in SET clause. Fixed with parameter.
 
-### Diagnostics (scripts/multimodel_diagnostics.py)
-New script with 4 diagnostic panels. Key findings:
+6. **Edge reversal at zero** — Positions at 0% edge wouldn't exit. Changed `< 0` to `<= 0`.
 
-**OLS Coefficients** — Two regimes:
-- Hours 0-5z: HRRR coeff ~+0.9, GFS **negative** (~-0.65), ECMWF ~-0.2. GFS used as contrarian signal.
-- Hours 6-23z: GFS coeff ~0.00 (ignored), ECMWF **strongly negative** (~-0.55 to -0.71). ECMWF is the contrarian anchor.
-- Negative coefficients = OLS exploits model disagreement as a bias correction feature.
+7. **Unrealized P&L overstatement** — Used midpoint instead of bid price. Fixed.
 
-**Data Coverage** — ~95% for both GFS and ECMWF at all hours. Imputation to HRRR only ~5%.
+8. **Strategy engine null floor_strike crash** — Tail brackets (T71, T64) have NULL floor/cap_strike. Added guard to skip them.
 
-**Seasonal Brier** — Winter +16.6%, Spring +14.2%, Summer +9.5%, Fall +16.5%. Summer least benefit.
+9. **Settlement source filter** — settlement.py accepted DSM (preliminary), paper_trader only NWS_CLI (authoritative). Aligned both to NWS_CLI only to prevent settling on preliminary data that may be revised.
 
-**Error Distribution** — MAE 1.91→1.36°F. Within-2°F: 72%→85%. Std: 2.61→1.84 (30% tighter).
+### Dashboard Fixes
 
-## Uncommitted Changes (5 files)
+10. **KPI summary crash** — `int(None)` when floor/cap_strike is NULL. Added None guards.
+
+11. **Blotter date toggle** — `getTargetDate()` only accepted 'today'/'tomorrow', ignored date picker YYYY-MM-DD values.
+
+12. **Brackets endpoint model-market merge** — Model created (64,66) keys but Kalshi uses (64,65). Model probs never merged with market data. Fixed to map model probs to actual Kalshi bracket boundaries.
+
+13. **Mobile.js tail bracket labels** — Showed "null-45°F" instead of "≤44°F" for tail brackets.
+
+14. **Deleted dead code** — Removed 728-line `templates/index.html.bak`.
+
+### Test Fixes
+
+15. **Forecast tests** — Updated for 24h cold start lookback and 2-station STATION_COORDS (KNYC + KJFK).
+
+16. **Added test** — `test_zero_edge_exits_position` for edge reversal boundary.
+
+17. **Updated test** — `test_update_unrealized_yes` to use bid price.
+
+### Audit Results (no changes needed)
+- **Circuit breakers**: All logic correct. Default config reasonable ($10 daily loss, 5 max open, 2 per bracket, 30min cooldown).
+- **Settlement bracket membership**: `[floor, cap)` with cap = floor+BRACKET_WIDTH (=66 for floor=64) correctly covers {64, 65}. Tests verify.
+- **Settlement fees**: "No settlement fee" per CLAUDE.md/Kalshi. `net = gross - entry_fee` correct at expiration.
+- **Feature builder**: Handles missing GFS/ECMWF gracefully with defaults. Will pick up MultiModelFetcher data automatically.
+- **JS files**: All 7 reviewed — no remaining bugs. API endpoint URLs correct. Null handling solid.
+- **Dual settlement services**: paper_trader + settlement.py both run but won't double-settle (both check `WHERE status = 'open'`, first update wins).
+
+## Kalshi Bracket Structure (verified from live API)
+- **Between brackets**: `strike_type: 'between'`, floor_strike=X, cap_strike=X+1, covers temps X and X+1
+  - Example: B64.5 → floor=64, cap=65 → covers {64°F, 65°F}
+- **Top tail**: `strike_type: 'greater'`, floor_strike=X, cap=None → covers >X°F
+- **Bottom tail**: `strike_type: 'less'`, floor=None, cap_strike=X → covers <X°F
+- **Prices**: Dollar strings ("0.0400" = $0.04 = 4 cents), not integer cents
+- **Volume/interest**: String fields with `_fp` suffix ("529.00")
+- Strategy engine correctly uses BRACKET_WIDTH=2 to map these to [floor, floor+2) for settlement
+
+## Commits This Session (10 total)
 ```
-M services/backtester.py          — Level 3: _get_latest_model_fcst_highs_bulk, _fit_and_predict_multimodel, _make_multimodel_regression_model, wf_multimodel_full, wf_multimodel_hrrr_gfs + import _find_latest_run_hour from ensemble
-M services/ensemble.py            — Level 2: _generate_simplex_weights, _grid_search_simplex_weights, _compute_brier_for_weights, make_learned_weight_ensemble_fn
-M tests/test_ensemble.py          — 5 new tests for Level 2 + Level 3
-A scripts/phase2_ensemble.py      — comparison script with 8 candidates (learned_weights disabled)
-A scripts/multimodel_diagnostics.py — 4-panel diagnostic script
+a3208bc fix: market fetcher field names + dashboard bracket merging + settlement safety
+dc3a0ec fix: model_state persist SQL — use parameter for timestamp
+3739632 fix: increase HRRR cold start lookback to 24h for 00z coverage
+496cfe2 fix: strategy engine targets today's markets instead of tomorrow's
+4b1aa94 fix: edge reversal exits at zero edge + unrealized P&L uses bid not mid
+4ab0180 feat: add live GFS/ECMWF fetcher to populate all 23 model features
+1923ac5 fix: blotter date toggle bug + delete dead index.html.bak
+3b5e201 fix: make Synoptic ingestor optional when token is missing
 ```
 
-## What Needs to Happen Next
-1. **Commit these changes** — multimodel_full champion + Level 2 code + tests + diagnostics
-2. **Phase 3: Dynamic uncertainty** — static std is still the Brier bottleneck (MAE improved but std is fixed). Quantile regression or EMOS variance should further improve.
-3. **Re-run strategy backtester with multimodel_full** — see if the 14% Brier improvement translates to P&L improvement
-4. **Investigate summer gap** — +9.5% vs +14-17% other seasons. Models agree more in summer → less spread signal.
-5. **Future: Level 2 learned weights optimization** — precompute `.raw()` results per (run_hour, model, date) to make grid search feasible. May not be worth it given Level 3's 14% already.
-6. **Check EC2 fleet status** — GFS 12z/18z backfill may be done by now.
+## What's Working Now
+- Market data captured every 60s (6 brackets, real prices, volume, spread)
+- GFS/ECMWF data fetched every 30min via Open-Meteo
+- HRRR forecast fetcher polling every 2min
+- Strategy engine cycling every 5min (waiting for HRRR 00z to build features)
+- Dashboard serving on port 8050 with all endpoints returning valid data
+- All 55 unit tests passing
 
-## Decisions Made This Session
-- multimodel_full is Phase 2 champion (Brier 0.6511, +14.25% over HRRR OLS)
-- ECMWF adds +9% beyond HRRR+GFS alone — worth keeping despite only 00z data
-- Learned weights deprioritized — OLS coefficients already find optimal linear relationship, learned weights would need nonlinear interactions to improve further
-- GFS standalone is terrible (-26.4%) but GFS as a *feature* in OLS is valuable — the OLS compensates for GFS biases
+## What's Still Not Happening (and why)
+- **No paper trades yet** — HRRR 00z for today hasn't been published. Feature builder requires 00z. Once it lands (~1:30 AM ET), the full pipeline will activate.
+- **No observations for today** — It's midnight ET, no METAR reports yet for the new day.
+- **Synoptic API returning no data** — Token may have expired. AWC ingestor is the fallback and is working.
 
-## Pre-existing Test Failures (9 total, not from this session)
-- `test_db`: test_market_ticks_unique_constraint, test_migrate_forecasts_model_name_from_old_schema
-- `test_phase1_gate`: all 5 tests (market_ticks schema mismatch)
-- `test_forecast`: test_fetcher_deduplicates
-- `test_web_dashboard`: test_brier_comparison_endpoint
-
-## Key Context
-- SSH key: ~/.ssh/alphatemp-hrrr.pem, user: ec2-user
-- PYTHONPATH must be set: `PYTHONPATH=/home/ec2-user/alphatemp`
-- **Authoritative plan:** `docs/plans/2026-02-27-rebuild-design.md`
+## Next Steps
+1. **Monitor first full pipeline cycle** — When HRRR 00z arrives, verify: feature build → QR prediction → bracket probs → edge vs market → circuit breaker → paper trade
+2. **Non-linear model exploration** — Tree-based QR (LightGBM/XGBoost) to break the 0.305 plateau
+3. **Synoptic API** — Check token expiry, may need renewal or removal
 
 ## Verification Queries
 ```bash
-# 1. Run ensemble tests (expect 25 pass: 18 ensemble + 7 multimodel_safety)
-cd ~/Projects/alphatemp/alphatemp && PYTHONPATH=. pytest tests/test_ensemble.py tests/test_multimodel_safety.py -v
+cd ~/Projects/alphatemp/alphatemp
 
-# 2. Verify multimodel_full Brier (quick sanity — run on small date range)
-cd ~/Projects/alphatemp/alphatemp && PYTHONPATH=. python scripts/phase2_ensemble.py --start 2025-01-01 --end 2025-06-01
+# Check system is running
+ps aux | grep "python.*main.py" | grep -v grep
 
-# 3. Full comparison (all 8 candidates, ~40 min)
-cd ~/Projects/alphatemp/alphatemp && PYTHONPATH=. python scripts/phase2_ensemble.py
+# Dashboard health
+curl -s http://localhost:8050/api/health | python3 -m json.tool
 
-# 4. Diagnostics (coefficients, coverage, seasonal, residuals — ~25 min)
-cd ~/Projects/alphatemp/alphatemp && PYTHONPATH=. python scripts/multimodel_diagnostics.py
+# Market prices non-NULL (should show recent ticks with prices)
+# NOTE: DB is locked while system runs. Stop system first to query.
+# Or use the API:
+curl -s http://localhost:8050/api/brackets/NYC | python3 -m json.tool
 
-# 5. EC2 fleet check
-# ssh -i ~/.ssh/alphatemp-hrrr.pem ec2-user@<IP> "ps aux | grep backfill | grep -v grep; tail -3 ~/alphatemp/logs/gfs_*_gap_*.log"
+# Strategy engine status (check for "Model fit OK" and trade signals)
+grep -E "Strategy|signal|TRADE|edge|Feature" /tmp/alphatemp.log | tail -20
+
+# All tests pass
+PYTHONPATH=. venv/bin/python -m pytest tests/test_strategy_engine.py tests/test_paper_trader.py tests/test_multi_model_fetcher.py tests/test_forecast.py -v
 ```
