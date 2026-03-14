@@ -123,9 +123,15 @@ class StrategyEngine:
             return
         features, fcst_high, _feat_run_hour = feat_result
 
+        # 4b. Get observed running max as CDF floor
+        running_max = self._get_running_max(target_date)
+        if running_max is not None:
+            logger.info("Running max: {:.1f}°F", running_max)
+
         # 5. Predict bracket probabilities
         bracket_probs = self.model.predict_bracket_probs(
-            features, fcst_high, run_hour=run_hour, date_key=date_key
+            features, fcst_high, run_hour=run_hour, date_key=date_key,
+            running_max=running_max,
         )
         if bracket_probs is None:
             logger.warning("Prediction failed for {}", target_date)
@@ -449,6 +455,23 @@ class StrategyEngine:
                 "no_ask": int(round(no_ask * 100)),
             }
         return prices
+
+    def _get_running_max(self, target_date):
+        # type: (date) -> Optional[float]
+        """Get the observed running max temperature for today."""
+        con = duckdb.connect(self.db_path)
+        try:
+            row = con.execute("""
+                SELECT MAX(temp_f) FROM observations
+                WHERE station_id = 'KNYC'
+                  AND observed_at::DATE = ?
+                  AND temp_f IS NOT NULL
+            """, [target_date.isoformat()]).fetchone()
+            if row and row[0] is not None:
+                return float(row[0])
+            return None
+        finally:
+            con.close()
 
     def _get_open_positions(self, target_date):
         # type: (date) -> List[Dict[str, Any]]
