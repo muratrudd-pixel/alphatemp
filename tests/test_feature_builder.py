@@ -289,7 +289,7 @@ def test_get_training_data_shapes(builder):
     result = builder.get_training_data(target_date, update_hour=0, window_days=180)
 
     assert result is not None, "Should return data with 90 days in window"
-    X, y, dates = result
+    X, y, dates, _run_hour = result
     assert X.ndim == 2, "X should be 2D"
     assert X.shape[1] == 23, f"X should have 23 features, got {X.shape[1]}"
     assert len(y) == X.shape[0], "y length should match X rows"
@@ -317,7 +317,7 @@ def test_build_features_shape(builder, test_db):
     result = builder.build_features(target_date, update_hour=12)
 
     assert result is not None, "Should return features for a date with data"
-    features, fcst_high = result
+    features, fcst_high, _run_hour = result
     assert features.shape == (23,), f"features should be shape (23,), got {features.shape}"
     assert isinstance(fcst_high, float), "fcst_high should be a float"
     assert fcst_high > 0, "fcst_high should be positive (temperature)"
@@ -353,7 +353,7 @@ def test_fcst_high_is_second_feature(builder):
     result = builder.build_features(target_date, update_hour=0)
 
     assert result is not None
-    features, fcst_high = result
+    features, fcst_high, _run_hour = result
     assert features[1] == fcst_high, "Feature[1] should equal fcst_high"
 
 
@@ -363,7 +363,7 @@ def test_seasonality_features(builder):
     result = builder.build_features(target_date, update_hour=0)
 
     assert result is not None
-    features, _ = result
+    features, _, _run_hour = result
     expected_sin = math.sin(2.0 * math.pi * 2.0 / 12.0)
     expected_cos = math.cos(2.0 * math.pi * 2.0 / 12.0)
     assert abs(features[2] - expected_sin) < 1e-10, "sin_month mismatch"
@@ -376,7 +376,7 @@ def test_ecmwf_spread_is_difference(builder):
     result = builder.build_features(target_date, update_hour=0)
 
     assert result is not None
-    features, fcst_high = result
+    features, fcst_high, _run_hour = result
     # Our test data has ECMWF = HRRR + 1.0, so spread should be ~1.0
     ecmwf_spread = features[7]
     assert abs(ecmwf_spread - 1.0) < 0.5, (
@@ -390,7 +390,7 @@ def test_gfs_spread_is_difference(builder):
     result = builder.build_features(target_date, update_hour=0)
 
     assert result is not None
-    features, fcst_high = result
+    features, fcst_high, _run_hour = result
     # Our test data has GFS = HRRR - 0.5, so spread should be ~-0.5
     gfs_spread = features[9]
     assert abs(gfs_spread - (-0.5)) < 0.5, (
@@ -424,7 +424,7 @@ def test_abs_lag_error_is_last_feature(builder):
     result = builder.build_features(target_date, update_hour=0)
 
     assert result is not None
-    features, _ = result
+    features, _, _run_hour = result
     lag_error = features[15]
     abs_lag = features[22]
     assert abs(abs_lag - abs(lag_error)) < 1e-10, (
@@ -455,7 +455,7 @@ def test_training_and_live_features_consistent(builder):
                                              window_days=180)
     assert train_result is not None
 
-    X, y, dates = train_result
+    X, y, dates, _run_hour = train_result
 
     # Find the row for check_date at update_hour=12
     matching_indices = [i for i, d in enumerate(dates) if d == check_date]
@@ -476,7 +476,7 @@ def test_training_and_live_features_consistent(builder):
     # Get live features for the same date
     live_result = builder.build_features(check_date, update_hour)
     assert live_result is not None
-    live_features, _ = live_result
+    live_features, _, _run_hour = live_result
 
     # Compare all 23 features
     for i in range(23):
@@ -516,7 +516,7 @@ def test_missing_ecmwf_defaults(tmp_path):
     result = fb.build_features(d, update_hour=12)
 
     assert result is not None
-    features, _ = result
+    features, _, _run_hour = result
 
     # ecmwf_spread should be 0.0 (no ECMWF data)
     assert features[7] == 0.0, f"ecmwf_spread should be 0.0, got {features[7]}"
@@ -538,7 +538,7 @@ def test_no_nans_in_features(builder):
     result = builder.build_features(target_date, update_hour=12)
 
     assert result is not None
-    features, fcst_high = result
+    features, fcst_high, _run_hour = result
     assert not np.any(np.isnan(features)), "Features contain NaN values"
     assert not math.isnan(fcst_high), "fcst_high is NaN"
 
@@ -549,7 +549,7 @@ def test_no_nans_in_training_data(builder):
     result = builder.get_training_data(target_date, update_hour=0, window_days=180)
 
     assert result is not None
-    X, y, dates = result
+    X, y, dates, _run_hour = result
     assert not np.any(np.isnan(X)), "Training X contains NaN values"
     assert not np.any(np.isnan(y)), "Training y contains NaN values"
 
@@ -564,7 +564,7 @@ def test_y_is_forecast_error(builder):
     result = builder.get_training_data(target_date, update_hour=0, window_days=180)
 
     assert result is not None
-    X, y, dates = result
+    X, y, dates, _run_hour = result
 
     # All y values should be reasonable forecast errors (not huge)
     assert np.all(np.abs(y) < 30), f"Some y values are unreasonably large: max={np.max(np.abs(y))}"

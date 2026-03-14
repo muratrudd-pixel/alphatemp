@@ -118,10 +118,11 @@ class FeatureBuilder:
 
         Returns
         -------
-        (X, y, dates) or None
+        (X, y, dates, run_hour) or None
             X: ndarray shape (n_samples, 23) — feature matrix
             y: ndarray (n_samples,) — actual errors (fcst_high - actual_high)
             dates: list of dates for each row
+            run_hour: int — HRRR run hour used (0-23)
             Returns None if insufficient data (< MIN_SAMPLES daily rows).
         """
         con = duckdb.connect(self.db_path)
@@ -145,9 +146,10 @@ class FeatureBuilder:
 
         Returns
         -------
-        (features_array, fcst_high) or None
+        (features_array, fcst_high, run_hour) or None
             features_array: ndarray shape (23,) — raw feature vector
             fcst_high: float — HRRR forecast high temperature
+            run_hour: int — HRRR run hour used (0-23)
             Returns None if HRRR data missing for the date.
         """
         con = duckdb.connect(self.db_path)
@@ -165,22 +167,11 @@ class FeatureBuilder:
         station_id = STATION_ID
         min_date = current_date - timedelta(days=window_days)
 
-        # Query 1: daily errors and forecast highs (uses run_hour=0 for
-        # the HRRR high — same as experiment.py which iterates run_hours
-        # but the daily error/fcst_high is run-hour-specific)
-        # NOTE: experiment.py passes run_hour to filter model_run hour.
-        # For training data we need ALL run hours that appear in
-        # TRAIN_UPDATE_HOURS. But experiment.py's get_training_data is called
-        # per run_hour by the harness. For training in the paper system we
-        # use run_hour=0 (the same run_hour the experiment uses for its
-        # baseline). The daily error row is the same regardless of update_hour
-        # since update_hour only affects divergence features.
-        #
-        # IMPORTANT: experiment.py is called with a SINGLE run_hour and then
-        # iterates TRAIN_UPDATE_HOURS internally. We replicate that exactly.
-        # We use run_hour=0 for the daily error query since that's what the
-        # paper trading system will use (00z HRRR run).
-        run_hour = 0
+        # Use the latest HRRR run with afternoon coverage, matching
+        # backtester behavior. Training filters all historical dates by
+        # this same run_hour for consistency.
+        run_hour = self._find_best_hrrr_run_hour(con, current_date)
+        logger.info("Training with HRRR {}z data (window ending {})", run_hour, current_date)
 
         daily_rows = con.execute("""
             WITH daily_errors AS (
@@ -464,7 +455,7 @@ class FeatureBuilder:
 
         X = np.array(X_rows, dtype=np.float64)
         y = np.array(y_rows, dtype=np.float64)
-        return X, y, d_rows
+        return X, y, d_rows, run_hour
 
     # ------------------------------------------------------------------
     # Run hour selection
@@ -515,7 +506,8 @@ class FeatureBuilder:
     def _build_features_impl(self, con, target_date, update_hour):
         # type: (duckdb.DuckDBPyConnection, date, int) -> Optional[Tuple[np.ndarray, float]]
         station_id = STATION_ID
-        run_hour = 0  # HRRR 00z run
+        run_hour = self._find_best_hrrr_run_hour(con, target_date)
+        logger.info("Using HRRR {}z run for {}", run_hour, target_date)
 
         # Get HRRR forecast high for target_date
         fcst_row = con.execute("""
@@ -695,4 +687,4 @@ class FeatureBuilder:
             abs(lag_error),
         ], dtype=np.float64)
 
-        return features, fcst_high
+        return features, fcst_high, run_hour
