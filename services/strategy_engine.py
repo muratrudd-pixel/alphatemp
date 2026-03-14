@@ -101,10 +101,10 @@ class StrategyEngine:
         if train_result is None:
             logger.warning("Insufficient training data for {}", target_date)
             return
-        X_train, y_train, train_dates = train_result
+        X_train, y_train, train_dates, run_hour = train_result
 
         coefficients = self.model.fit(
-            X_train, y_train, run_hour=0, date_key=date_key
+            X_train, y_train, run_hour=run_hour, date_key=date_key
         )
         if coefficients is None:
             logger.warning("Model fit failed for {}", target_date)
@@ -121,11 +121,11 @@ class StrategyEngine:
         if feat_result is None:
             logger.warning("Feature build failed for {}", target_date)
             return
-        features, fcst_high = feat_result
+        features, fcst_high, _feat_run_hour = feat_result
 
         # 5. Predict bracket probabilities
         bracket_probs = self.model.predict_bracket_probs(
-            features, fcst_high, run_hour=0, date_key=date_key
+            features, fcst_high, run_hour=run_hour, date_key=date_key
         )
         if bracket_probs is None:
             logger.warning("Prediction failed for {}", target_date)
