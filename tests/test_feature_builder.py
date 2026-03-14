@@ -585,3 +585,101 @@ def test_diurnal_range_nonnegative(builder):
     assert result is not None
     diurnal_range = result[0][8]
     assert diurnal_range >= 0.0, f"diurnal_range should be >= 0, got {diurnal_range}"
+
+
+# ---------------------------------------------------------------------------
+# _find_best_hrrr_run_hour
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def run_hour_db(tmp_path):
+    """Minimal DB for testing run hour selection only."""
+    db_path = str(tmp_path / "rh_test.duckdb")
+    con = duckdb.connect(db_path)
+    _create_tables(con)
+    con.close()
+    return db_path
+
+
+class TestFindBestHrrrRunHour:
+    """Test _find_best_hrrr_run_hour selection logic."""
+
+    def test_selects_latest_with_afternoon_coverage(self, run_hour_db):
+        """12z run with fxx reaching 18z should be selected over 00z."""
+        from services.feature_builder import FeatureBuilder
+        con = duckdb.connect(run_hour_db)
+        d = date(2026, 3, 14)
+        station = "KNYC"
+
+        # 00z run: fxx 1-10 only (no afternoon)
+        _insert_hrrr_forecasts(con, station, d, 0,
+                               {fxx: 38.0 for fxx in range(1, 11)})
+        # 12z run: fxx 1-18 (reaches 18+12=30 > 18, has afternoon)
+        _insert_hrrr_forecasts(con, station, d, 12,
+                               {fxx: 47.0 for fxx in range(1, 19)})
+        con.close()
+
+        builder = FeatureBuilder(run_hour_db)
+        con = duckdb.connect(run_hour_db)
+        try:
+            rh = builder._find_best_hrrr_run_hour(con, d)
+        finally:
+            con.close()
+        assert rh == 12
+
+    def test_selects_latest_when_multiple_have_afternoon(self, run_hour_db):
+        """When 06z and 12z both cover afternoon, pick 12z (latest)."""
+        from services.feature_builder import FeatureBuilder
+        con = duckdb.connect(run_hour_db)
+        d = date(2026, 3, 14)
+        station = "KNYC"
+
+        # 06z: fxx 1-18 (6+12=18, covers afternoon)
+        _insert_hrrr_forecasts(con, station, d, 6,
+                               {fxx: 45.0 for fxx in range(1, 19)})
+        # 12z: fxx 1-18 (12+6=18, covers afternoon)
+        _insert_hrrr_forecasts(con, station, d, 12,
+                               {fxx: 47.0 for fxx in range(1, 19)})
+        con.close()
+
+        builder = FeatureBuilder(run_hour_db)
+        con = duckdb.connect(run_hour_db)
+        try:
+            rh = builder._find_best_hrrr_run_hour(con, d)
+        finally:
+            con.close()
+        assert rh == 12
+
+    def test_falls_back_to_latest_when_none_reach_afternoon(self, run_hour_db):
+        """Early morning: only 00z and 03z exist, neither reaches 18z."""
+        from services.feature_builder import FeatureBuilder
+        con = duckdb.connect(run_hour_db)
+        d = date(2026, 3, 14)
+        station = "KNYC"
+
+        # 00z: fxx 1-10 (max valid = 10z)
+        _insert_hrrr_forecasts(con, station, d, 0,
+                               {fxx: 38.0 for fxx in range(1, 11)})
+        # 03z: fxx 1-10 (max valid = 13z)
+        _insert_hrrr_forecasts(con, station, d, 3,
+                               {fxx: 39.0 for fxx in range(1, 11)})
+        con.close()
+
+        builder = FeatureBuilder(run_hour_db)
+        con = duckdb.connect(run_hour_db)
+        try:
+            rh = builder._find_best_hrrr_run_hour(con, d)
+        finally:
+            con.close()
+        assert rh == 3  # latest available, even without afternoon
+
+    def test_returns_zero_when_no_data(self, run_hour_db):
+        """No HRRR data at all -> falls back to 0."""
+        from services.feature_builder import FeatureBuilder
+        builder = FeatureBuilder(run_hour_db)
+        con = duckdb.connect(run_hour_db)
+        try:
+            rh = builder._find_best_hrrr_run_hour(con, date(2026, 3, 14))
+        finally:
+            con.close()
+        assert rh == 0

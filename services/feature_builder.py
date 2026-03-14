@@ -467,6 +467,48 @@ class FeatureBuilder:
         return X, y, d_rows
 
     # ------------------------------------------------------------------
+    # Run hour selection
+    # ------------------------------------------------------------------
+
+    def _find_best_hrrr_run_hour(self, con, target_date):
+        # type: (duckdb.DuckDBPyConnection, date) -> int
+        """Find the latest HRRR run hour with afternoon forecast coverage.
+
+        Returns the hour (0-23) of the latest HRRR run on target_date
+        whose forecast hours extend to at least 18z UTC (1 PM ET).
+        Falls back to the latest available run if none reach 18z.
+        """
+        station_id = STATION_ID
+
+        # Best: latest run that covers afternoon (18z UTC)
+        row = con.execute("""
+            SELECT EXTRACT(HOUR FROM model_run)::INTEGER as rh
+            FROM forecasts
+            WHERE model_name = 'hrrr'
+              AND model_run::DATE = ?
+              AND station_id = ?
+              AND (EXTRACT(HOUR FROM model_run) + fxx) >= 18
+            GROUP BY rh
+            ORDER BY rh DESC
+            LIMIT 1
+        """, [target_date, station_id]).fetchone()
+        if row is not None:
+            return int(row[0])
+
+        # Fallback: latest run available (early morning, no afternoon data yet)
+        row = con.execute("""
+            SELECT MAX(EXTRACT(HOUR FROM model_run))::INTEGER
+            FROM forecasts
+            WHERE model_name = 'hrrr'
+              AND model_run::DATE = ?
+              AND station_id = ?
+        """, [target_date, station_id]).fetchone()
+        if row is not None and row[0] is not None:
+            return int(row[0])
+
+        return 0  # absolute fallback
+
+    # ------------------------------------------------------------------
     # Single-day live prediction (mirrors experiment.py model_fn)
     # ------------------------------------------------------------------
 
