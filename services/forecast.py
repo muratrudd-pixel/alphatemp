@@ -6,6 +6,7 @@ HRRR publishes hourly; data typically lands on AWS ~45-90 min after run time.
 """
 
 import asyncio
+import signal as _signal
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
@@ -22,6 +23,19 @@ from core.heartbeat import record_heartbeat
 
 # Poll every 2 minutes — frequent short checks to catch new runs ASAP
 FETCH_INTERVAL_SECONDS = 120
+
+# Timeout for individual Herbie.download() calls — prevents hanging on
+# missing GRIB files that block the entire async event loop.
+HERBIE_TIMEOUT_SECONDS = 45
+
+
+class _HerbieTimeout(Exception):
+    """Raised when Herbie.download() exceeds timeout."""
+    pass
+
+
+def _alarm_handler(signum, frame):
+    raise _HerbieTimeout("Herbie download timed out")
 
 # How many hours back to look on cold start — 24h ensures today's 00z
 # is always captured even if the system starts late in the day
@@ -159,10 +173,23 @@ class HRRRFetcher:
                     product="sfc",
                     fxx=fxx,
                 )
-                grib_path = H.download("TMP:2 m")
+                # Set alarm to prevent indefinite hang on missing GRIB
+                old_handler = _signal.signal(_signal.SIGALRM, _alarm_handler)
+                _signal.alarm(HERBIE_TIMEOUT_SECONDS)
+                try:
+                    grib_path = H.download("TMP:2 m")
+                finally:
+                    _signal.alarm(0)  # cancel alarm
+                    _signal.signal(_signal.SIGALRM, old_handler)
                 grbs = pygrib.open(str(grib_path))
                 msg = grbs.select(name="2 metre temperature")[0]
                 consecutive_misses = 0
+            except _HerbieTimeout:
+                consecutive_misses += 1
+                logger.warning(f"HRRR fxx={fxx} timed out after {HERBIE_TIMEOUT_SECONDS}s for {model_run}")
+                if consecutive_misses >= 2:
+                    break
+                continue
             except Exception as e:
                 consecutive_misses += 1
                 if consecutive_misses >= 2:
