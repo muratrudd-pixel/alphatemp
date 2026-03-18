@@ -27,6 +27,7 @@ The 23 features in order:
 20. precip_agree         — binary: GFS and ECMWF agree on rain
 21. solar_spread         — GFS radiation minus ECMWF radiation
 22. abs(lag_error)       — absolute value of lag_error
+23. running_max          — observed daily high so far (0 if no obs)
 
 Python 3.9 compatible (no subscripted builtins).
 """
@@ -53,6 +54,16 @@ except ImportError:
 TRAIN_UPDATE_HOURS = [0, 6, 12, 18]
 MIN_SAMPLES = 60
 STATION_ID = "KNYC"
+
+
+def _compute_spread_decay(update_hour):
+    # type: (int) -> float
+    """Decay factor for GFS/ECMWF spread features.
+
+    00z forecasts become stale as the day progresses.
+    Returns 1.0 at hour 0, decaying to 0.1 at hour 24.
+    """
+    return max(0.1, 1.0 - update_hour / 24.0)
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +104,7 @@ class FeatureBuilder:
         'precip_agree',
         'solar_spread',
         'abs(lag_error)',
+        'running_max',
     ]
 
     def __init__(self, db_path):
@@ -399,6 +411,11 @@ class FeatureBuilder:
             fc_by_hour = fc_lookup.get(obs_date, {})
 
             for uh in TRAIN_UPDATE_HOURS:
+                # Decay stale 00z forecast spreads by time of day
+                decay = _compute_spread_decay(uh)
+                ecmwf_spread_d = ecmwf_spread * decay
+                gfs_spread_d = gfs_spread * decay
+
                 obs_up_to = [(h, obs_by_hour[h]) for h in sorted(obs_by_hour.keys()) if h <= uh]
                 if len(obs_up_to) < 2:
                     running_max_div = 0.0
@@ -420,6 +437,9 @@ class FeatureBuilder:
 
                     cum_div = sum(divs) / len(divs) if divs else 0.0
 
+                # Raw running max — 0 if no observations yet
+                raw_running_max = rm_by_hour.get(uh, 0.0) if len(obs_up_to) >= 2 else 0.0
+
                 features = [
                     float(uh),
                     float(fcst_high),
@@ -428,9 +448,9 @@ class FeatureBuilder:
                     running_max_div,
                     slope_div,
                     cum_div,
-                    ecmwf_spread,
+                    ecmwf_spread_d,
                     diurnal_range,
-                    gfs_spread,
+                    gfs_spread_d,
                     solar_rad,
                     dp_depression,
                     total_precip,
@@ -444,6 +464,7 @@ class FeatureBuilder:
                     precip_agree,
                     solar_spread,
                     abs(lag_error),
+                    raw_running_max,
                 ]
 
                 X_rows.append(features)
@@ -553,6 +574,11 @@ class FeatureBuilder:
         gfs_high = gfs_row[0] if gfs_row and gfs_row[0] is not None else None
         gfs_spread = (gfs_high - fcst_high) if gfs_high is not None else 0.0
 
+        # Decay stale 00z forecast spreads by time of day
+        decay = _compute_spread_decay(update_hour)
+        ecmwf_spread = ecmwf_spread * decay
+        gfs_spread = gfs_spread * decay
+
         # ECMWF extended features
         ext_row = con.execute("""
             SELECT AVG(shortwave_rad), AVG(dewpoint_2m_f), SUM(precipitation),
@@ -661,6 +687,9 @@ class FeatureBuilder:
                 if len(divs) >= 2:
                     slope_div = (divs[-1] - divs[0]) / max(len(divs) - 1, 1)
 
+        # Raw running max for the model
+        raw_running_max = max(t for _, t in obs_by_hour_et) if len(obs_by_hour_et) >= 2 else 0.0
+
         features = np.array([
             float(update_hour),
             float(fcst_high),
@@ -685,6 +714,7 @@ class FeatureBuilder:
             precip_agree,
             solar_spread,
             abs(lag_error),
+            raw_running_max,
         ], dtype=np.float64)
 
         return features, fcst_high, run_hour
