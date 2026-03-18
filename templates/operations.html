@@ -9,17 +9,7 @@
 
         <!-- Temperature Curve (col-span-3) -->
         <div class="lg:col-span-3 bg-slate-800 rounded-lg p-4 border border-slate-700">
-            <div class="flex items-center justify-between mb-3">
-                <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest">Temperature Curve</h2>
-                <div class="flex items-center gap-2">
-                    <button id="btn-klga" onclick="toggleNeighbor('KLGA')"
-                            class="px-2 py-0.5 text-[10px] rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600 uppercase tracking-wider"
-                            style="font-family: 'Space Mono', monospace;">KLGA</button>
-                    <button id="btn-kewr" onclick="toggleNeighbor('KEWR')"
-                            class="px-2 py-0.5 text-[10px] rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600 uppercase tracking-wider"
-                            style="font-family: 'Space Mono', monospace;">KEWR</button>
-                </div>
-            </div>
+            <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-3">Temperature Curve</h2>
             <div id="temp-curve-chart" style="width:100%; min-height:420px;"></div>
         </div>
 
@@ -29,7 +19,7 @@
             <!-- Observation Feed -->
             <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
                 <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Observation Feed</h2>
-                <div id="obs-feed" class="feed-scroll" style="max-height:200px;">
+                <div id="obs-feed" class="feed-scroll" style="max-height:240px;">
                     <p class="text-xs text-slate-500">No observations</p>
                 </div>
             </div>
@@ -37,7 +27,7 @@
             <!-- Forecast Runs -->
             <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
                 <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Forecast Runs</h2>
-                <div id="fcst-feed" class="feed-scroll" style="max-height:200px;">
+                <div id="fcst-feed" class="feed-scroll" style="max-height:240px;">
                     <p class="text-xs text-slate-500">No forecast runs</p>
                 </div>
             </div>
@@ -45,28 +35,15 @@
         </div>
     </div>
 
-    <!-- Bottom Row: Bracket Spread + Positions -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-
-        <!-- Bracket Spread -->
-        <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
-            <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Bracket Spread</h2>
-            <div id="bracket-chart" style="width:100%; min-height:250px;"></div>
-            <div id="liquidity-bar" class="mt-2"></div>
-        </div>
-
-        <!-- Positions Summary -->
-        <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
-            <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Positions Summary</h2>
-            <div id="positions-panel">
-                <p class="text-xs text-slate-500">Loading...</p>
-            </div>
-        </div>
-
+    <!-- Bottom Row: Bracket Spread (full width) -->
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+        <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Order Book<span id="bracket-stale" class="hidden"></span></h2>
+        <div id="bracket-chart" style="width:100%;"></div>
+        <div id="liquidity-bar" class="mt-2"></div>
     </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/js/operations.js"></script>
+<script src="/static/js/operations.js?v=8"></script>
 {% endblock %}

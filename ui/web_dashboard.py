@@ -65,11 +65,40 @@ def _get_model_state(con, city, target_date):
 
 def _model_expected_value(bracket_probs):
     # type: (Dict[int, float]) -> Optional[float]
-    """Compute expected value (weighted sum of bracket centers * probabilities)."""
+    """Compute median temperature from bracket probability distribution.
+
+    Walks the sorted distribution until cumulative probability crosses 0.5.
+    Interpolates within the median bracket for a smooth value.
+    """
     if not bracket_probs:
         return None
-    ev = sum((floor + 1) * prob for floor, prob in bracket_probs.items())
-    return round(ev, 1)
+    sorted_floors = sorted(bracket_probs.keys())
+    cumulative = 0.0
+    for floor in sorted_floors:
+        prev_cum = cumulative
+        cumulative += bracket_probs[floor]
+        if cumulative >= 0.5:
+            # Interpolate within this bracket
+            frac = (0.5 - prev_cum) / bracket_probs[floor] if bracket_probs[floor] > 0 else 0.5
+            return round(floor + frac, 1)
+    # Fallback: return center of last bracket
+    return round(sorted_floors[-1] + 0.5, 1)
+
+
+def _model_percentile(bracket_probs, pct):
+    # type: (Dict[int, float], float) -> Optional[float]
+    """Compute a given percentile from bracket probability distribution."""
+    if not bracket_probs:
+        return None
+    sorted_floors = sorted(bracket_probs.keys())
+    cumulative = 0.0
+    for floor in sorted_floors:
+        prev_cum = cumulative
+        cumulative += bracket_probs[floor]
+        if cumulative >= pct:
+            frac = (pct - prev_cum) / bracket_probs[floor] if bracket_probs[floor] > 0 else 0.5
+            return round(floor + frac, 1)
+    return round(sorted_floors[-1] + 0.5, 1)
 
 
 def _get_bias_from_db(con, station_id):
@@ -480,33 +509,39 @@ async def forecast_point_feed(city: str, date: str = None):
 
     day_start_utc, day_end_utc = et_day_bounds_utc(date)
 
+    # Coverage check: run must span the peak heating window
+    # A run needs points before 14z (morning) AND after 20z (afternoon)
+    # to be a meaningful daily high forecast
+    target_date_str = date or get_today_et()
+    target_14z = datetime.fromisoformat(target_date_str + "T14:00:00")
+    target_20z = datetime.fromisoformat(target_date_str + "T20:00:00")
+
     con = get_connection()
     rows = con.execute(
-        """SELECT model_run, valid_at, temp_f, ingested_at
+        """SELECT model_run, valid_at, temp_f, ingested_at, model_name
            FROM forecasts
            WHERE station_id = ?
            AND valid_at >= ? AND valid_at < ?
-           AND model_name = 'hrrr'
-           ORDER BY model_run ASC, valid_at ASC""",
+           ORDER BY model_name ASC, model_run ASC, valid_at ASC""",
         [station_id, day_start_utc, day_end_utc],
     ).fetchall()
 
-    # Group by model_run, find the high for each run
+    # Group by (model_run, model_name)
     runs_data = defaultdict(lambda: {"points": [], "ingested_at": None})
-    for model_run, valid_at, temp_f, ingested in rows:
+    for model_run, valid_at, temp_f, ingested, model_name in rows:
         if temp_f is None:
             continue
-        entry = runs_data[model_run]
+        key = (model_run, model_name)
+        entry = runs_data[key]
         entry["points"].append((valid_at, temp_f))
         if ingested and entry["ingested_at"] is None:
             entry["ingested_at"] = ingested
 
-    # Build summaries with deltas from prior run
+    # Build summaries with per-model deltas
     summaries = []
-    prev_high_f = None
-    prev_high_at = None
-    for model_run in sorted(runs_data.keys()):
-        entry = runs_data[model_run]
+    prev_high_by_model = {}  # type: Dict[str, Tuple[float, datetime]]
+    for (model_run, model_name) in sorted(runs_data.keys()):
+        entry = runs_data[(model_run, model_name)]
         if not entry["points"]:
             continue
 
@@ -517,25 +552,32 @@ async def forecast_point_feed(city: str, date: str = None):
         high_at = best_valid.isoformat()
         ingested = entry["ingested_at"]
 
-        # Compute deltas from prior run
-        temp_change = round(high_f - prev_high_f, 1) if prev_high_f is not None else None
+        # Coverage: run must span the peak heating window (before 14z AND after 20z)
+        min_valid = min(p[0] for p in entry["points"])
+        max_valid = max(p[0] for p in entry["points"])
+        coverage = "full" if min_valid <= target_14z and max_valid >= target_20z else "partial"
+
+        # Per-model delta from prior run of the same model
+        temp_change = None
         time_change_mins = None
-        if prev_high_at is not None:
-            delta_secs = (best_valid - prev_high_at_dt).total_seconds()
+        if model_name in prev_high_by_model:
+            prev_f, prev_dt = prev_high_by_model[model_name]
+            temp_change = round(high_f - prev_f, 1)
+            delta_secs = (best_valid - prev_dt).total_seconds()
             time_change_mins = round(delta_secs / 60)
 
         summaries.append({
             "model_run": model_run.isoformat(),
+            "model_name": model_name,
             "ingested_at": ingested.isoformat() if ingested else None,
             "high_temp_f": high_f,
             "high_valid_at": high_at,
             "temp_change": temp_change,
             "time_change_mins": time_change_mins,
+            "coverage": coverage,
         })
 
-        prev_high_f = high_f
-        prev_high_at = high_at
-        prev_high_at_dt = best_valid
+        prev_high_by_model[model_name] = (high_f, best_valid)
 
     # Reverse for display (newest first)
     summaries.reverse()
@@ -841,7 +883,25 @@ async def forecast_curve(city: str, date: str = None):
         "observed_high_at": observed_high_at,
         "settlement_source": settlement_source,
         "neighbor_obs": neighbor_obs,
+        "model_band": _get_model_band(city, date or get_today_et()),
     }
+
+
+def _get_model_band(city, target_date):
+    # type: (str, str) -> Optional[Dict]
+    """Get model median and 25th/75th percentile for the chart overlay."""
+    con = get_connection()
+    try:
+        result = _get_model_state(con, city, target_date)
+        if not result:
+            return None
+        bracket_probs, fcst_high, _ = result
+        median = _model_expected_value(bracket_probs)
+        p25 = _model_percentile(bracket_probs, 0.25)
+        p75 = _model_percentile(bracket_probs, 0.75)
+        return {"median": median, "p25": p25, "p75": p75}
+    finally:
+        con.close()
 
 
 @app.get("/api/market/{city}")
@@ -978,6 +1038,13 @@ async def bracket_spread(city: str, date: str = None):
         model_center = _model_expected_value(bracket_probs)
 
     # 2. Get latest Kalshi market ticks for this city + date
+    captured_at_row = con.execute(
+        """SELECT MAX(captured_at) FROM market_ticks
+           WHERE city = ? AND market_id LIKE ?""",
+        [city, f"%{kalshi_date}%"],
+    ).fetchone()
+    captured_at_iso = captured_at_row[0].isoformat() if captured_at_row and captured_at_row[0] else None
+
     ticks = con.execute(
         """SELECT market_id, yes_bid, yes_ask, last_trade, floor_strike,
                   cap_strike, volume
@@ -1076,6 +1143,7 @@ async def bracket_spread(city: str, date: str = None):
         "brackets": brackets,
         "liquidity": {"total_volume": total_volume, "avg_spread": avg_spread},
         "model_center": model_center,
+        "captured_at": captured_at_iso,
     }
 
 
@@ -1117,7 +1185,7 @@ async def get_positions(city: str, date: str = None):
             pid, floor, cap, direction, model_prob, market_price, edge, entry_price, entry_time = row
             active.append({
                 "id": pid,
-                "bracket": "{}-{}°F".format(int(floor), int(cap)) if floor is not None and cap is not None else "--",
+                "bracket": "{}-{}°F".format(int(floor), int(floor) + 1) if floor is not None else "--",
                 "direction": direction,
                 "model_prob": round(model_prob, 4) if model_prob is not None else None,
                 "market_price": round(market_price, 4) if market_price is not None else None,
@@ -1569,8 +1637,8 @@ def _narrate_incident(incident_type, pos_row, settlement_temp):
     entry_price = pos_row.get("entry_price")
 
     bracket_label = "{}-{}°F".format(
-        int(bracket_floor), int(bracket_cap)
-    ) if bracket_floor is not None and bracket_cap is not None else "?"
+        int(bracket_floor), int(bracket_floor) + 1
+    ) if bracket_floor is not None else "?"
 
     entry_cents = "{}¢".format(int(round(entry_price * 100))) if entry_price is not None else "?¢"
 
@@ -1875,7 +1943,7 @@ async def blotter_data(city: str, date: str = None):
                     sum(p for k, p in bracket_probs.items()
                         if floor_2f <= k < floor_2f + 2), 3
                 )
-                model_bracket = "{}-{}".format(floor_2f, floor_2f + 2)
+                model_bracket = "{}-{}".format(floor_2f, floor_2f + 1)
 
         # Running obs max
         obs_row = con.execute("""
@@ -2026,7 +2094,8 @@ async def trading_positions(city: str = "nyc"):
 
             positions.append({
                 "id": pos_id,
-                "bracket": "{}-{}".format(int(floor_s), int(cap_s)),
+                # Kalshi brackets are floor to floor+1 (not floor+2)
+                "bracket": "{}-{}".format(int(floor_s), int(floor_s) + 1),
                 "direction": direction,
                 "qty": qty or 1,
                 "entry": entry,
@@ -2038,6 +2107,45 @@ async def trading_positions(city: str = "nyc"):
             })
 
         return {"positions": positions}
+    finally:
+        con.close()
+
+
+@app.get("/api/trading/closed")
+async def trading_closed(city: str = "nyc"):
+    """Closed/settled positions with exit details."""
+    city_upper = city.upper()
+    con = get_connection()
+    try:
+        rows = con.execute("""
+            SELECT id, bracket_floor, bracket_cap, direction, contracts,
+                   entry_price, exit_price, exit_reason, gross_pnl, fees, net_pnl,
+                   entry_time, exit_time
+            FROM paper_positions
+            WHERE city = ? AND status != 'open'
+            ORDER BY exit_time DESC
+        """, [city_upper]).fetchall()
+
+        closed = []
+        for r in rows:
+            (pos_id, floor_s, cap_s, direction, qty,
+             entry, exit_p, reason, gross, fees, net,
+             entry_time, exit_time) = r
+            closed.append({
+                "id": pos_id,
+                "bracket": "{}-{}".format(int(floor_s), int(floor_s) + 1),
+                "direction": direction,
+                "qty": qty or 1,
+                "entry": entry,
+                "exit": exit_p,
+                "reason": reason or "",
+                "gross": round(gross, 2) if gross is not None else 0.0,
+                "fees": round(fees, 2) if fees is not None else 0.0,
+                "net": round(net, 2) if net is not None else 0.0,
+                "exit_time": exit_time.isoformat() if exit_time else "",
+            })
+
+        return {"closed": closed}
     finally:
         con.close()
 
