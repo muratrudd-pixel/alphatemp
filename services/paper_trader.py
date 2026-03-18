@@ -216,7 +216,12 @@ class PaperTrader:
 
             for row in rows:
                 pos_id, direction, entry_price, contracts, floor_val, cap_val, entry_fee, actual_high = row
-                settled_yes = floor_val <= actual_high < cap_val
+                if floor_val is None:
+                    settled_yes = actual_high < cap_val    # lower tail
+                elif cap_val is None:
+                    settled_yes = actual_high > floor_val  # upper tail
+                else:
+                    settled_yes = floor_val <= actual_high < cap_val  # interior
 
                 if direction == "YES":
                     won = settled_yes
@@ -262,16 +267,25 @@ class PaperTrader:
 
             for row in rows:
                 pos_id, direction, entry_price, contracts, floor_val, cap_val, city = row
-                # Get latest tick for this bracket — match on floor_strike only
-                # (paper positions use bracket_cap = floor + 2, market uses floor + 1)
-                tick = con.execute("""
-                    SELECT yes_bid, no_bid
-                    FROM market_ticks
-                    WHERE city = ?
-                      AND floor_strike = CAST(? AS DOUBLE)
-                      AND cap_strike IS NOT NULL
-                    ORDER BY captured_at DESC LIMIT 1
-                """, [city, floor_val]).fetchone()
+                # Get latest tick — NULL-safe matching for tail brackets
+                if floor_val is None:
+                    tick = con.execute("""
+                        SELECT yes_bid, no_bid FROM market_ticks
+                        WHERE city = ? AND floor_strike IS NULL AND cap_strike = CAST(? AS DOUBLE)
+                        ORDER BY captured_at DESC LIMIT 1
+                    """, [city, cap_val]).fetchone()
+                elif cap_val is None:
+                    tick = con.execute("""
+                        SELECT yes_bid, no_bid FROM market_ticks
+                        WHERE city = ? AND floor_strike = CAST(? AS DOUBLE) AND cap_strike IS NULL
+                        ORDER BY captured_at DESC LIMIT 1
+                    """, [city, floor_val]).fetchone()
+                else:
+                    tick = con.execute("""
+                        SELECT yes_bid, no_bid FROM market_ticks
+                        WHERE city = ? AND floor_strike = CAST(? AS DOUBLE) AND cap_strike IS NOT NULL
+                        ORDER BY captured_at DESC LIMIT 1
+                    """, [city, floor_val]).fetchone()
 
                 if tick:
                     yes_bid, no_bid = tick

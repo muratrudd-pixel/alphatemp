@@ -18,8 +18,9 @@ Python 3.9 compatible (no subscripted builtins).
 import asyncio
 import hashlib
 import json
+import math
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 from loguru import logger
@@ -54,6 +55,7 @@ class StrategyEngine:
         self.feature_builder = FeatureBuilder(db_path)
         self.circuit_breakers = CircuitBreakers(db_path)
         self.min_edge_pct = 5.0  # will be read from paper_config
+        self.min_ev_cents = 2    # will be read from paper_config
         self._last_data_hash = None  # type: Optional[str]
 
     # ------------------------------------------------------------------
@@ -159,7 +161,7 @@ class StrategyEngine:
 
         # 7. Generate trade signals
         signals = self._generate_signals(bracket_probs, market_prices)
-        logger.info("Generated {} trade signals", len(signals))
+        logger.info("Generated {} raw trade signals", len(signals))
 
         # 8. Check edge reversals for open positions
         open_positions = self._get_open_positions(target_date)
@@ -168,11 +170,19 @@ class StrategyEngine:
                 bracket_probs, market_prices, open_positions
             )
 
+        # 8b. Dedup guard — filter signals matching existing open positions
+        if open_positions:
+            held = {(p["bracket_floor"], p["bracket_cap"], p["direction"]) for p in open_positions}
+            before = len(signals)
+            signals = [s for s in signals if (s["bracket_floor"], s["bracket_cap"], s["direction"]) not in held]
+            if before != len(signals):
+                logger.info("Dedup: filtered {} -> {} signals", before, len(signals))
+
         # 9. Send signals through circuit breakers to paper trader
         market_date_str = target_date.isoformat()
         for sig in signals:
             bracket_floor = sig["bracket_floor"]
-            bracket_cap = bracket_floor + BRACKET_WIDTH
+            bracket_cap = sig["bracket_cap"]
 
             allowed, reason = self.circuit_breakers.check(
                 bracket_floor=bracket_floor,
@@ -182,9 +192,17 @@ class StrategyEngine:
             )
 
             if allowed:
+                # Format bracket label for logging
+                if bracket_floor is None:
+                    label = "<={}".format(bracket_cap)
+                elif bracket_cap is None:
+                    label = ">={}".format(bracket_floor)
+                else:
+                    label = "[{}-{})".format(bracket_floor, bracket_cap)
+
                 logger.info(
-                    "TRADE: {} [{}–{}) edge={:.1f}% model={:.1f}% market={}c",
-                    sig["direction"], bracket_floor, bracket_cap,
+                    "TRADE: {} {} edge={:.1f}% model={:.1f}% market={}c",
+                    sig["direction"], label,
                     sig["edge_pct"], sig["model_prob"] * 100,
                     sig["market_price"],
                 )
@@ -200,7 +218,7 @@ class StrategyEngine:
                 )
             else:
                 logger.debug(
-                    "Blocked: [{}–{}) {} — {}",
+                    "Blocked: ({},{}) {} — {}",
                     bracket_floor, bracket_cap, sig["direction"], reason,
                 )
 
@@ -229,79 +247,76 @@ class StrategyEngine:
 
     @staticmethod
     def _aggregate_to_kalshi_brackets(bracket_probs, market_prices):
-        # type: (Dict[int, float], Dict[int, Dict[str, int]]) -> Dict[int, float]
-        """Aggregate 1-degree model probabilities into 2-degree Kalshi brackets.
+        # type: (Dict[int, float], Dict) -> Dict
+        """Aggregate 1-degree model probabilities into Kalshi brackets.
 
-        The model produces 1°F bracket probs (e.g., {72: 0.08, 73: 0.07, ...}).
-        Kalshi brackets are 2°F wide (e.g., [72, 74) covers temps 72 and 73).
-        For each Kalshi bracket floor, sum the model probs for floor and floor+1.
-
-        Returns
-        -------
-        dict
-            {kalshi_bracket_floor: aggregated_model_prob}
+        Handles three bracket types:
+        - Lower tail (None, cap): sum probs for k < cap
+        - Upper tail (floor, None): sum probs for k > floor
+        - Interior (floor, cap): sum probs for floor <= k <= cap
         """
-        aggregated = {}  # type: Dict[int, float]
-        for kalshi_floor in market_prices:
-            # Sum 1°F probs that fall within [floor, floor + BRACKET_WIDTH)
-            total = 0.0
-            for offset in range(BRACKET_WIDTH):
-                total += bracket_probs.get(kalshi_floor + offset, 0.0)
-            aggregated[kalshi_floor] = total
+        aggregated = {}
+        for key in market_prices:
+            floor, cap = key
+            if floor is None and cap is not None:
+                total = sum(p for k, p in bracket_probs.items() if k < cap)
+            elif cap is None and floor is not None:
+                total = sum(p for k, p in bracket_probs.items() if k > floor)
+            elif floor is not None and cap is not None:
+                total = sum(p for k, p in bracket_probs.items() if floor <= k <= cap)
+            else:
+                continue
+            aggregated[key] = total
         return aggregated
 
     def _generate_signals(self, bracket_probs, market_prices):
-        # type: (Dict[int, float], Dict[int, Dict[str, int]]) -> List[Dict[str, Any]]
+        # type: (Dict[int, float], Dict) -> List[Dict[str, Any]]
         """Generate trade signals by comparing model probs to market prices.
 
         For each Kalshi bracket:
-        - Aggregate 1°F model probs into 2°F Kalshi brackets
-        - Check YES edge: aggregated model_prob vs yes_ask
-        - Check NO edge: (1 - aggregated model_prob) vs no_ask
-        - Only include signals where edge >= min_edge_pct
-        - Don't signal both YES and NO on same bracket (prefer YES)
-
-        Parameters
-        ----------
-        bracket_probs : dict
-            {bracket_floor: probability} from model (1°F brackets, normalized).
-        market_prices : dict
-            {bracket_floor: {yes_bid, yes_ask, no_bid, no_ask}} in cents.
-
-        Returns
-        -------
-        list of dicts
-            Each: {bracket_floor, direction, model_prob, market_price, edge_pct}.
+        - Aggregate 1°F model probs into Kalshi brackets (including tails)
+        - Check YES/NO edge
+        - Apply minimum EV filter (blocks penny bets with negative fee-adjusted EV)
         """
-        # Aggregate 1°F model probs to match 2°F Kalshi brackets
         kalshi_probs = self._aggregate_to_kalshi_brackets(bracket_probs, market_prices)
 
         signals = []  # type: List[Dict[str, Any]]
 
-        for bracket_floor, model_prob in kalshi_probs.items():
-            prices = market_prices[bracket_floor]
+        for key, model_prob in kalshi_probs.items():
+            floor, cap = key
+            prices = market_prices[key]
 
             yes_ask = prices["yes_ask"]
             no_ask = prices["no_ask"]
 
-            # YES edge: model says bracket more likely than market
             yes_edge = self._compute_edge(model_prob, yes_ask)
-
-            # NO edge: model says bracket less likely than market
             no_prob = 1.0 - model_prob
             no_edge = self._compute_edge(no_prob, no_ask)
 
             if yes_edge >= self.min_edge_pct:
+                # EV filter: edge_pct - fee_cents >= min_ev_cents
+                price_decimal = yes_ask / 100.0
+                fee_cents = max(math.ceil(round(0.07 * price_decimal * (1 - price_decimal) * 100, 10)), 1)
+                ev_cents = yes_edge - fee_cents
+                if ev_cents < self.min_ev_cents:
+                    continue
                 signals.append({
-                    "bracket_floor": bracket_floor,
+                    "bracket_floor": floor,
+                    "bracket_cap": cap,
                     "direction": "YES",
                     "model_prob": model_prob,
                     "market_price": yes_ask,
                     "edge_pct": yes_edge,
                 })
             elif no_edge >= self.min_edge_pct:
+                price_decimal = no_ask / 100.0
+                fee_cents = max(math.ceil(round(0.07 * price_decimal * (1 - price_decimal) * 100, 10)), 1)
+                ev_cents = no_edge - fee_cents
+                if ev_cents < self.min_ev_cents:
+                    continue
                 signals.append({
-                    "bracket_floor": bracket_floor,
+                    "bracket_floor": floor,
+                    "bracket_cap": cap,
                     "direction": "NO",
                     "model_prob": model_prob,
                     "market_price": no_ask,
@@ -326,13 +341,12 @@ class StrategyEngine:
         open_positions : list of dicts
             Each: {id, bracket_floor, bracket_cap, direction, entry_price}.
         """
-        # Aggregate 1°F model probs to 2°F Kalshi brackets for edge check
         kalshi_probs = self._aggregate_to_kalshi_brackets(bracket_probs, market_prices)
 
         for pos in open_positions:
-            bracket_floor = pos["bracket_floor"]
-            model_prob = kalshi_probs.get(bracket_floor)
-            prices = market_prices.get(bracket_floor)
+            key = (pos["bracket_floor"], pos["bracket_cap"])
+            model_prob = kalshi_probs.get(key)
+            prices = market_prices.get(key)
 
             if model_prob is None or prices is None:
                 # Can't evaluate — skip rather than force-exit
@@ -350,8 +364,8 @@ class StrategyEngine:
 
             if edge <= 0:
                 logger.info(
-                    "Edge reversal: pos {} [{}–{}) {} edge={:.1f}%",
-                    pos["id"], bracket_floor, pos["bracket_cap"],
+                    "Edge reversal: pos {} ({},{}) {} edge={:.1f}%",
+                    pos["id"], pos["bracket_floor"], pos["bracket_cap"],
                     pos["direction"], edge,
                 )
                 await self.paper_trader.exit_position(
@@ -400,6 +414,11 @@ class StrategyEngine:
                 ).fetchone()
                 if row:
                     self.min_edge_pct = float(row[0])
+                row2 = con.execute(
+                    "SELECT value FROM paper_config WHERE key = 'min_ev_cents'"
+                ).fetchone()
+                if row2:
+                    self.min_ev_cents = float(row2[0])
             finally:
                 con.close()
         except Exception:
@@ -442,13 +461,15 @@ class StrategyEngine:
         finally:
             con.close()
 
-        prices = {}  # type: Dict[int, Dict[str, int]]
+        prices = {}
         for row in rows:
             floor_strike, cap_strike, yes_bid, yes_ask, no_bid, no_ask = row
-            if floor_strike is None or any(v is None for v in [yes_bid, yes_ask, no_bid, no_ask]):
+            # Skip degenerate (both None) or any missing price
+            if (floor_strike is None and cap_strike is None) or any(v is None for v in [yes_bid, yes_ask, no_bid, no_ask]):
                 continue
-            bracket_floor = int(floor_strike)
-            prices[bracket_floor] = {
+            floor_key = int(floor_strike) if floor_strike is not None else None
+            cap_key = int(cap_strike) if cap_strike is not None else None
+            prices[(floor_key, cap_key)] = {
                 "yes_bid": int(round(yes_bid * 100)),
                 "yes_ask": int(round(yes_ask * 100)),
                 "no_bid": int(round(no_bid * 100)),

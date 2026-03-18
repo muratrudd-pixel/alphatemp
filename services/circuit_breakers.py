@@ -24,12 +24,13 @@ class CircuitBreakers:
 
     def check(
         self,
-        bracket_floor: int,
-        bracket_cap: int,
-        edge_pct: float,
-        market_date: str,
-        now: Optional[datetime] = None,
-    ) -> Tuple[bool, str]:
+        bracket_floor,   # type: Optional[int]
+        bracket_cap,     # type: Optional[int]
+        edge_pct,        # type: float
+        market_date,     # type: str
+        now=None,        # type: Optional[datetime]
+    ):
+        # type: (...) -> Tuple[bool, str]
         """Run all circuit breakers in order.
 
         Returns (allowed, reason). If blocked, reason identifies which breaker
@@ -71,18 +72,21 @@ class CircuitBreakers:
             if open_count >= max_open:
                 return (False, "max_open: %d positions (>= %d limit)" % (open_count, max_open))
 
-            # 5. Max per bracket
+            # 5. Max per bracket (NULL-safe for tail brackets)
             max_bracket = int(cfg.get("max_per_bracket", "2"))
             bracket_contracts = con.execute(
                 "SELECT COALESCE(SUM(contracts), 0) FROM paper_positions "
-                "WHERE status = 'open' AND bracket_floor = ? AND bracket_cap = ?",
-                [bracket_floor, bracket_cap],
+                "WHERE status = 'open' "
+                "AND (bracket_floor = ? OR (bracket_floor IS NULL AND ? IS NULL)) "
+                "AND (bracket_cap = ? OR (bracket_cap IS NULL AND ? IS NULL))",
+                [bracket_floor, bracket_floor, bracket_cap, bracket_cap],
             ).fetchone()[0]
             if bracket_contracts >= max_bracket:
+                label = "({},{})".format(bracket_floor, bracket_cap)
                 return (
                     False,
-                    "max_per_bracket: %d contracts on [%d, %d) (>= %d limit)"
-                    % (bracket_contracts, bracket_floor, bracket_cap, max_bracket),
+                    "max_per_bracket: %d contracts on %s (>= %d limit)"
+                    % (bracket_contracts, label, max_bracket),
                 )
 
             # 6. Cooldown — time since last non-settlement exit on same bracket
@@ -91,8 +95,9 @@ class CircuitBreakers:
                 "SELECT MAX(exit_time) FROM paper_positions "
                 "WHERE status = 'closed' "
                 "AND exit_reason != 'settlement' "
-                "AND bracket_floor = ? AND bracket_cap = ?",
-                [bracket_floor, bracket_cap],
+                "AND (bracket_floor = ? OR (bracket_floor IS NULL AND ? IS NULL)) "
+                "AND (bracket_cap = ? OR (bracket_cap IS NULL AND ? IS NULL))",
+                [bracket_floor, bracket_floor, bracket_cap, bracket_cap],
             ).fetchone()[0]
             if last_exit is not None:
                 if isinstance(last_exit, str):
@@ -100,9 +105,10 @@ class CircuitBreakers:
                 elapsed = now - last_exit
                 if elapsed < timedelta(minutes=cooldown_min):
                     remaining = cooldown_min - int(elapsed.total_seconds() / 60)
+                    label = "({},{})".format(bracket_floor, bracket_cap)
                     return (
                         False,
-                        "cooldown: %d min remaining on [%d, %d)" % (remaining, bracket_floor, bracket_cap),
+                        "cooldown: %d min remaining on %s" % (remaining, label),
                     )
 
         finally:
