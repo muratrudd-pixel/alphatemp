@@ -93,12 +93,13 @@ class PaperTrader:
         model_prob,     # type: float
         market_price,   # type: float
         edge,           # type: float
+        contracts=1,    # type: int
     ):
         # type: (...) -> None
         """Public entry point called by StrategyEngine.
 
         Delegates to existing _record_entry() method. Paper trades at the
-        ask price (market_price), always 1 contract.
+        ask price (market_price). Contract count determined by Kelly sizing.
         """
         self._record_entry(
             city=city,
@@ -109,7 +110,7 @@ class PaperTrader:
             model_prob=model_prob,
             market_price=market_price,
             entry_price=market_price,  # paper trade at ask
-            contracts=1,
+            contracts=contracts,
         )
 
     async def exit_position(

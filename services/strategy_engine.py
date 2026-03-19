@@ -54,9 +54,12 @@ class StrategyEngine:
         self.model = QRModel()
         self.feature_builder = FeatureBuilder(db_path)
         self.circuit_breakers = CircuitBreakers(db_path)
-        self.min_edge_pct = 5.0  # will be read from paper_config
-        self.min_ev_cents = 2    # will be read from paper_config
-        self._last_data_hash = None  # type: Optional[str]
+        self.min_edge_pct = 5.0       # will be read from paper_config
+        self.min_ev_cents = 2         # will be read from paper_config
+        self.min_model_prob = 0.15    # will be read from paper_config
+        self.starting_capital = 100.0  # will be read from paper_config
+        self.max_per_bracket = 10     # will be read from paper_config
+        self._last_data_hash = None   # type: Optional[str]
 
     # ------------------------------------------------------------------
     # Main loop
@@ -170,9 +173,11 @@ class StrategyEngine:
                 bracket_probs, market_prices, open_positions
             )
 
-        # 8b. Dedup guard — filter signals matching existing open positions
-        if open_positions:
-            held = {(p["bracket_floor"], p["bracket_cap"], p["direction"]) for p in open_positions}
+        # 8b. Dedup guard — filter signals matching ANY existing position (open or settled).
+        # Without this, settled positions get re-opened every cycle.
+        all_positions = self._get_positions_for_dedup(target_date)
+        if all_positions:
+            held = {(p["bracket_floor"], p["bracket_cap"], p["direction"]) for p in all_positions}
             before = len(signals)
             signals = [s for s in signals if (s["bracket_floor"], s["bracket_cap"], s["direction"]) not in held]
             if before != len(signals):
@@ -201,10 +206,10 @@ class StrategyEngine:
                     label = "[{}-{})".format(bracket_floor, bracket_cap)
 
                 logger.info(
-                    "TRADE: {} {} edge={:.1f}% model={:.1f}% market={}c",
+                    "TRADE: {} {} edge={:.1f}% model={:.1f}% market={}c x{}",
                     sig["direction"], label,
                     sig["edge_pct"], sig["model_prob"] * 100,
-                    sig["market_price"],
+                    sig["market_price"], sig["contracts"],
                 )
                 await self.paper_trader.enter_position(
                     city="NYC",
@@ -215,6 +220,7 @@ class StrategyEngine:
                     model_prob=sig["model_prob"],
                     market_price=sig["market_price"],
                     edge=sig["edge_pct"],
+                    contracts=sig["contracts"],
                 )
             else:
                 logger.debug(
@@ -246,6 +252,56 @@ class StrategyEngine:
         return (model_prob - market_ask_cents / 100.0) * 100.0
 
     @staticmethod
+    def _compute_contracts(model_prob, price_cents, bankroll, max_per_bracket):
+        # type: (float, int, float, int) -> int
+        """Half-Kelly position sizing for binary outcome markets.
+
+        Formula:
+            kelly_f = model_prob - price/100  (= edge as decimal)
+            half_kelly = kelly_f / 2
+            contracts = floor(half_kelly * bankroll / price_per_contract)
+            contracts = clamp(contracts, 1, max_per_bracket)
+
+        Parameters
+        ----------
+        model_prob : float
+            The traded probability (model_prob for YES, 1-model_prob for NO).
+        price_cents : int
+            Ask price in cents (cost per contract).
+        bankroll : float
+            Current bankroll in dollars.
+        max_per_bracket : int
+            Maximum contracts per bracket (risk cap).
+
+        Returns
+        -------
+        int
+            Number of contracts to trade (at least 1, at most max_per_bracket).
+        """
+        if price_cents <= 0 or bankroll <= 0:
+            return 1
+        edge_decimal = model_prob - price_cents / 100.0
+        if edge_decimal <= 0:
+            return 1
+        half_kelly = edge_decimal / 2.0
+        price_dollars = price_cents / 100.0
+        raw = half_kelly * bankroll / price_dollars
+        return max(1, min(int(raw), max_per_bracket))
+
+    def _get_bankroll(self):
+        # type: () -> float
+        """Compute current bankroll: starting_capital + sum(net_pnl)."""
+        con = duckdb.connect(self.db_path)
+        try:
+            row = con.execute(
+                "SELECT COALESCE(SUM(net_pnl), 0) FROM paper_positions"
+            ).fetchone()
+            total_pnl = float(row[0]) if row else 0.0
+            return self.starting_capital + total_pnl
+        finally:
+            con.close()
+
+    @staticmethod
     def _aggregate_to_kalshi_brackets(bracket_probs, market_prices):
         # type: (Dict[int, float], Dict) -> Dict
         """Aggregate 1-degree model probabilities into Kalshi brackets.
@@ -275,10 +331,13 @@ class StrategyEngine:
 
         For each Kalshi bracket:
         - Aggregate 1°F model probs into Kalshi brackets (including tails)
+        - Apply min_model_prob filter (reject tail noise)
         - Check YES/NO edge
         - Apply minimum EV filter (blocks penny bets with negative fee-adjusted EV)
+        - Compute half-Kelly position size
         """
         kalshi_probs = self._aggregate_to_kalshi_brackets(bracket_probs, market_prices)
+        bankroll = self._get_bankroll()
 
         signals = []  # type: List[Dict[str, Any]]
 
@@ -294,12 +353,18 @@ class StrategyEngine:
             no_edge = self._compute_edge(no_prob, no_ask)
 
             if yes_edge >= self.min_edge_pct:
+                # Min model probability filter — reject tail noise
+                if model_prob < self.min_model_prob:
+                    continue
                 # EV filter: edge_pct - fee_cents >= min_ev_cents
                 price_decimal = yes_ask / 100.0
                 fee_cents = max(math.ceil(round(0.07 * price_decimal * (1 - price_decimal) * 100, 10)), 1)
                 ev_cents = yes_edge - fee_cents
                 if ev_cents < self.min_ev_cents:
                     continue
+                contracts = self._compute_contracts(
+                    model_prob, yes_ask, bankroll, self.max_per_bracket,
+                )
                 signals.append({
                     "bracket_floor": floor,
                     "bracket_cap": cap,
@@ -307,13 +372,20 @@ class StrategyEngine:
                     "model_prob": model_prob,
                     "market_price": yes_ask,
                     "edge_pct": yes_edge,
+                    "contracts": contracts,
                 })
             elif no_edge >= self.min_edge_pct:
+                # Min model probability filter — reject tail noise
+                if no_prob < self.min_model_prob:
+                    continue
                 price_decimal = no_ask / 100.0
                 fee_cents = max(math.ceil(round(0.07 * price_decimal * (1 - price_decimal) * 100, 10)), 1)
                 ev_cents = no_edge - fee_cents
                 if ev_cents < self.min_ev_cents:
                     continue
+                contracts = self._compute_contracts(
+                    no_prob, no_ask, bankroll, self.max_per_bracket,
+                )
                 signals.append({
                     "bracket_floor": floor,
                     "bracket_cap": cap,
@@ -321,6 +393,7 @@ class StrategyEngine:
                     "model_prob": model_prob,
                     "market_price": no_ask,
                     "edge_pct": no_edge,
+                    "contracts": contracts,
                 })
 
         return signals
@@ -405,24 +478,28 @@ class StrategyEngine:
 
     def _load_config(self):
         # type: () -> None
-        """Load min_edge_pct from paper_config table."""
+        """Load trading parameters from paper_config table."""
         try:
             con = duckdb.connect(self.db_path)
             try:
-                row = con.execute(
-                    "SELECT value FROM paper_config WHERE key = 'min_edge_pct'"
-                ).fetchone()
-                if row:
-                    self.min_edge_pct = float(row[0])
-                row2 = con.execute(
-                    "SELECT value FROM paper_config WHERE key = 'min_ev_cents'"
-                ).fetchone()
-                if row2:
-                    self.min_ev_cents = float(row2[0])
+                rows = con.execute(
+                    "SELECT key, value FROM paper_config"
+                ).fetchall()
+                cfg = {k: v for k, v in rows}
+                if "min_edge_pct" in cfg:
+                    self.min_edge_pct = float(cfg["min_edge_pct"])
+                if "min_ev_cents" in cfg:
+                    self.min_ev_cents = float(cfg["min_ev_cents"])
+                if "min_model_prob" in cfg:
+                    self.min_model_prob = float(cfg["min_model_prob"])
+                if "starting_capital" in cfg:
+                    self.starting_capital = float(cfg["starting_capital"])
+                if "max_per_bracket" in cfg:
+                    self.max_per_bracket = int(cfg["max_per_bracket"])
             finally:
                 con.close()
         except Exception:
-            pass  # keep current value
+            pass  # keep current values
 
     def _get_market_prices(self, target_date):
         # type: (date) -> Dict[int, Dict[str, int]]
@@ -438,9 +515,8 @@ class StrategyEngine:
         """
         con = duckdb.connect(self.db_path)
         try:
-            # Get the latest tick per bracket for the target date's markets.
-            # Filter to captures within last 24h to avoid stale prices from
-            # expired markets with the same brackets.
+            # Get the latest tick per bracket, filtered to the target event date.
+            # This prevents mixing tomorrow's uncertain prices with today's model.
             rows = con.execute("""
                 WITH latest AS (
                     SELECT floor_strike, cap_strike,
@@ -451,13 +527,13 @@ class StrategyEngine:
                            ) AS rn
                     FROM market_ticks
                     WHERE city = 'NYC'
-                      AND captured_at > CURRENT_TIMESTAMP - INTERVAL '24' HOUR
+                      AND event_date = ?
                 )
                 SELECT floor_strike, cap_strike,
                        yes_bid, yes_ask, no_bid, no_ask
                 FROM latest
                 WHERE rn = 1
-            """).fetchall()
+            """, [target_date.isoformat()]).fetchall()
         finally:
             con.close()
 
@@ -516,6 +592,34 @@ class StrategyEngine:
                 "bracket_cap": r[2],
                 "direction": r[3],
                 "entry_price": r[4],
+            }
+            for r in rows
+        ]
+
+    def _get_positions_for_dedup(self, target_date):
+        # type: (date) -> List[Dict[str, Any]]
+        """Get all positions (open and settled) for dedup check.
+
+        Unlike _get_open_positions which only returns open positions (for edge
+        reversals), this returns every position for the date so we don't
+        re-enter a bracket that already settled.
+        """
+        con = duckdb.connect(self.db_path)
+        try:
+            rows = con.execute("""
+                SELECT bracket_floor, bracket_cap, direction
+                FROM paper_positions
+                WHERE city = 'NYC'
+                  AND event_date = ?
+            """, [target_date.isoformat()]).fetchall()
+        finally:
+            con.close()
+
+        return [
+            {
+                "bracket_floor": r[0],
+                "bracket_cap": r[1],
+                "direction": r[2],
             }
             for r in rows
         ]

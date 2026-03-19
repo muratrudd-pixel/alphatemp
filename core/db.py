@@ -48,7 +48,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             last_trade   DOUBLE,
             volume       INTEGER,
             floor_strike DOUBLE,
-            cap_strike   DOUBLE
+            cap_strike   DOUBLE,
+            event_date   DATE
         )
     """)
 
@@ -65,6 +66,15 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute(f"ALTER TABLE market_ticks ADD COLUMN {col} {dtype}")
         except Exception:
             pass  # Column already exists
+
+    # Migration: add event_date to market_ticks
+    try:
+        con.execute("ALTER TABLE market_ticks ADD COLUMN event_date DATE")
+    except Exception:
+        pass  # Column already exists
+
+    # One-time backfill: parse event_date from market_id for existing rows
+    _backfill_market_ticks_event_date(con)
 
     # Migration: add 6-hour synoptic max/min columns to observations
     for col in ("six_hr_max_c", "six_hr_min_c"):
@@ -97,6 +107,12 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         con.execute("ALTER TABLE observations ADD COLUMN obs_type VARCHAR DEFAULT 'metar'")
     except Exception:
         pass
+
+    # Migration: add raw_text column to nws_daily for CLI report storage
+    try:
+        con.execute("ALTER TABLE nws_daily ADD COLUMN raw_text TEXT")
+    except Exception:
+        pass  # Column already exists
 
     # Migration: add UNIQUE constraint to market_ticks
     _migrate_market_ticks_unique(con)
@@ -283,8 +299,11 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             INSERT INTO paper_config (key, value) VALUES
             ('max_daily_loss_cents', '-1000'),
             ('max_open_positions', '5'),
-            ('max_per_bracket', '2'),
+            ('max_per_bracket', '10'),
             ('min_edge_pct', '5.0'),
+            ('min_model_prob', '0.15'),
+            ('min_ev_cents', '2'),
+            ('starting_capital', '100.0'),
             ('cooldown_minutes', '30'),
             ('kill_switch', 'False')
         """)
@@ -449,6 +468,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         "CREATE INDEX IF NOT EXISTS idx_fcst_model ON forecasts (model_name)",
         "CREATE INDEX IF NOT EXISTS idx_drift_city_time ON drift_signals (city, calculated_at)",
         "CREATE INDEX IF NOT EXISTS idx_market_city_time ON market_ticks (city, captured_at)",
+        "CREATE INDEX IF NOT EXISTS idx_market_city_event_date ON market_ticks (city, event_date)",
         "CREATE INDEX IF NOT EXISTS idx_bias_station_time ON station_bias (station_id, calculated_at)",
         "CREATE INDEX IF NOT EXISTS idx_nws_station_date ON nws_daily (station_id, obs_date)",
         "CREATE INDEX IF NOT EXISTS idx_ks_series ON kalshi_settlements (series_ticker)",
@@ -469,6 +489,53 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
 
     logger.info("Database tables initialized")
     con.close()
+
+
+def _backfill_market_ticks_event_date(con: duckdb.DuckDBPyConnection) -> None:
+    """Parse event_date from market_id for existing rows missing it.
+
+    Kalshi tickers use YYMMMDD format: e.g., KXHIGHNY-26MAR18-B55 -> 2026-03-18.
+    Only runs once — skips if any row already has a non-NULL event_date.
+    """
+    import re
+
+    already_done = con.execute(
+        "SELECT COUNT(*) FROM market_ticks WHERE event_date IS NOT NULL"
+    ).fetchone()[0]
+    if already_done > 0:
+        return
+
+    _MONTH_MAP = {
+        'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+        'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+    }
+    _TICKER_DATE_RE = re.compile(r'-(\d{2})([A-Z]{3})(\d{2})')
+
+    from datetime import date as _date
+
+    rows = con.execute(
+        "SELECT rowid, market_id FROM market_ticks WHERE event_date IS NULL"
+    ).fetchall()
+    updated = 0
+    for rowid, market_id in rows:
+        m = _TICKER_DATE_RE.search(market_id or "")
+        if not m:
+            continue
+        yy, mmm, dd = m.group(1), m.group(2), m.group(3)
+        month = _MONTH_MAP.get(mmm)
+        if not month:
+            continue
+        try:
+            event_date = _date(2000 + int(yy), month, int(dd))
+        except ValueError:
+            continue
+        con.execute(
+            "UPDATE market_ticks SET event_date = ? WHERE rowid = ?",
+            [event_date, rowid],
+        )
+        updated += 1
+    if updated:
+        logger.info(f"Backfilled event_date for {updated} market_ticks rows")
 
 
 def _backfill_6h_columns(con: duckdb.DuckDBPyConnection) -> None:
@@ -557,6 +624,7 @@ def _migrate_market_ticks_unique(con: duckdb.DuckDBPyConnection) -> None:
                 open_interest BIGINT,
                 liquidity    BIGINT,
                 volume_24h   BIGINT,
+                event_date   DATE,
                 UNIQUE (market_id, captured_at)
             )
         """)
@@ -565,7 +633,7 @@ def _migrate_market_ticks_unique(con: duckdb.DuckDBPyConnection) -> None:
             SELECT DISTINCT ON (market_id, captured_at)
                 market_id, city, captured_at, yes_bid, yes_ask,
                 no_bid, no_ask, last_trade, volume, floor_strike, cap_strike,
-                open_interest, liquidity, volume_24h
+                open_interest, liquidity, volume_24h, event_date
             FROM market_ticks
             ORDER BY market_id, captured_at
         """)

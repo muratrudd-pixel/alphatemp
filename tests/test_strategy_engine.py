@@ -29,7 +29,12 @@ def engine():
     eng.circuit_breakers = MagicMock()
     eng.min_edge_pct = 5.0
     eng.min_ev_cents = 2
+    eng.min_model_prob = 0.15
+    eng.starting_capital = 100.0
+    eng.max_per_bracket = 10
     eng._last_data_hash = None
+    # Mock _get_bankroll so _generate_signals doesn't hit DB
+    eng._get_bankroll = MagicMock(return_value=100.0)
     return eng
 
 
@@ -295,3 +300,120 @@ class TestCheckEdgeReversals:
             engine._check_edge_reversals(bracket_probs, market_prices, open_positions)
         )
         engine.paper_trader.exit_position.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# min_model_prob filter
+# ---------------------------------------------------------------------------
+
+class TestMinModelProbFilter:
+    def test_blocks_low_prob_yes_signal(self, engine):
+        """5% model prob on a 1c bracket has edge but should be blocked."""
+        engine.min_model_prob = 0.15
+        engine.min_edge_pct = 3.0
+        bracket_probs = {72: 0.051}
+        market_prices = {
+            (72, 73): {"yes_bid": 1, "yes_ask": 1, "no_bid": 97, "no_ask": 99},
+        }
+        signals = engine._generate_signals(bracket_probs, market_prices)
+        assert len(signals) == 0
+
+    def test_blocks_low_prob_no_signal(self, engine):
+        """Model says 92% YES (8% NO) — NO side should be blocked."""
+        engine.min_model_prob = 0.15
+        bracket_probs = {72: 0.46, 73: 0.46}  # 92% YES, 8% NO
+        market_prices = {
+            (72, 73): {"yes_bid": 90, "yes_ask": 95, "no_bid": 1, "no_ask": 1},
+        }
+        signals = engine._generate_signals(bracket_probs, market_prices)
+        # NO prob = 8% < 15% threshold — blocked
+        assert len(signals) == 0
+
+    def test_passes_high_prob_yes_signal(self, engine):
+        """25% model prob on 12c bracket — above threshold, should pass."""
+        engine.min_model_prob = 0.15
+        bracket_probs = {72: 0.25}
+        market_prices = {
+            (72, 73): {"yes_bid": 10, "yes_ask": 12, "no_bid": 86, "no_ask": 88},
+        }
+        signals = engine._generate_signals(bracket_probs, market_prices)
+        assert len(signals) == 1
+        assert signals[0]["direction"] == "YES"
+
+    def test_passes_high_prob_no_signal(self, engine):
+        """Model says 10% YES (90% NO) on 85c bracket — NO prob above threshold."""
+        engine.min_model_prob = 0.15
+        bracket_probs = {72: 0.10}
+        market_prices = {
+            (72, 73): {"yes_bid": 25, "yes_ask": 30, "no_bid": 60, "no_ask": 65},
+        }
+        signals = engine._generate_signals(bracket_probs, market_prices)
+        assert len(signals) == 1
+        assert signals[0]["direction"] == "NO"
+
+
+# ---------------------------------------------------------------------------
+# _compute_contracts (half-Kelly)
+# ---------------------------------------------------------------------------
+
+class TestComputeContracts:
+    def test_basic_kelly(self):
+        """20% model prob, 10c price, $100 bankroll -> kelly_f=0.10, half=0.05,
+        raw = 0.05 * 100 / 0.10 = 50, capped at max_per_bracket=10."""
+        result = StrategyEngine._compute_contracts(0.20, 10, 100.0, 10)
+        assert result == 10
+
+    def test_small_edge(self):
+        """16% model prob, 10c price, $100 bankroll -> kelly_f=0.06, half=0.03,
+        raw = 0.03 * 100 / 0.10 = 30, capped at 10."""
+        result = StrategyEngine._compute_contracts(0.16, 10, 100.0, 10)
+        assert result == 10
+
+    def test_moderate_edge_moderate_price(self):
+        """40% model prob, 25c price, $100 bankroll -> kelly_f=0.15, half=0.075,
+        raw = 0.075 * 100 / 0.25 = 30, capped at 10."""
+        result = StrategyEngine._compute_contracts(0.40, 25, 100.0, 10)
+        assert result == 10
+
+    def test_small_contract_count(self):
+        """Moderate edge on cheap bracket gives reasonable count."""
+        # 15% prob, 10c price -> edge=0.05, half=0.025,
+        # raw = 0.025 * 100 / 0.10 = 25, capped at 10
+        result = StrategyEngine._compute_contracts(0.15, 10, 100.0, 10)
+        assert result == 10
+        # With lower cap, count is limited
+        result2 = StrategyEngine._compute_contracts(0.15, 10, 100.0, 3)
+        assert result2 == 3
+
+    def test_zero_edge_returns_one(self):
+        """No edge -> returns 1 (floor)."""
+        result = StrategyEngine._compute_contracts(0.10, 10, 100.0, 10)
+        assert result == 1
+
+    def test_negative_edge_returns_one(self):
+        result = StrategyEngine._compute_contracts(0.05, 10, 100.0, 10)
+        assert result == 1
+
+    def test_zero_bankroll_returns_one(self):
+        result = StrategyEngine._compute_contracts(0.30, 10, 0.0, 10)
+        assert result == 1
+
+    def test_zero_price_returns_one(self):
+        result = StrategyEngine._compute_contracts(0.30, 0, 100.0, 10)
+        assert result == 1
+
+    def test_max_per_bracket_cap(self):
+        """Huge edge should still be capped at max_per_bracket."""
+        result = StrategyEngine._compute_contracts(0.90, 5, 1000.0, 5)
+        assert result == 5
+
+    def test_signals_include_contracts(self, engine):
+        """Generated signals should include a contracts field."""
+        bracket_probs = {72: 0.25}
+        market_prices = {
+            (72, 73): {"yes_bid": 10, "yes_ask": 12, "no_bid": 86, "no_ask": 88},
+        }
+        signals = engine._generate_signals(bracket_probs, market_prices)
+        assert len(signals) == 1
+        assert "contracts" in signals[0]
+        assert signals[0]["contracts"] >= 1
