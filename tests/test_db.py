@@ -351,11 +351,11 @@ def test_market_ticks_unique_constraint():
     now = datetime(2026, 1, 1, 12, 0, 0)
     row = ["MKT1", "NYC", now, 0.5, 0.6, 0.4, 0.5, 0.55, 100, 70.0, 72.0]
     con.execute(
-        "INSERT INTO market_ticks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row
+        "INSERT INTO market_ticks (market_id, city, captured_at, yes_bid, yes_ask, no_bid, no_ask, last_trade, volume, floor_strike, cap_strike) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row
     )
     with pytest.raises(duckdb.ConstraintException):
         con.execute(
-            "INSERT INTO market_ticks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row
+            "INSERT INTO market_ticks (market_id, city, captured_at, yes_bid, yes_ask, no_bid, no_ask, last_trade, volume, floor_strike, cap_strike) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row
         )
     con.close()
 

@@ -2,8 +2,9 @@
 
 import asyncio
 import os
+import re
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from loguru import logger
@@ -15,6 +16,29 @@ from services.exchange import KalshiClient, SERIES_MAP, get_temperature_markets
 
 # Poll every 60 seconds — Kalshi books update frequently
 MARKET_POLL_INTERVAL = 60
+
+# Kalshi ticker date format: YYMMMDD (e.g., KXHIGHNY-26MAR18-B55 -> 2026-03-18)
+_MONTH_MAP = {
+    'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+    'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+}
+_TICKER_DATE_RE = re.compile(r'-(\d{2})([A-Z]{3})(\d{2})')
+
+
+def _parse_event_date(ticker):
+    # type: (str) -> Optional[date]
+    """Parse event date from Kalshi ticker (YYMMMDD format)."""
+    m = _TICKER_DATE_RE.search(ticker)
+    if not m:
+        return None
+    yy, mmm, dd = m.group(1), m.group(2), m.group(3)
+    month = _MONTH_MAP.get(mmm)
+    if not month:
+        return None
+    try:
+        return date(2000 + int(yy), month, int(dd))
+    except ValueError:
+        return None
 
 
 class MarketFetcher:
@@ -86,6 +110,7 @@ class MarketFetcher:
                     open_interest = int(float(m.get("open_interest_fp", "0")))
                     liquidity = int(float(m.get("liquidity_dollars", "0") or "0"))
                     volume_24h = int(float(m.get("volume_24h_fp", "0")))
+                    event_date = _parse_event_date(ticker)
 
                     def to_decimal(v):
                         if v is None:
@@ -98,8 +123,9 @@ class MarketFetcher:
                             (market_id, city, captured_at, yes_bid, yes_ask,
                              no_bid, no_ask, last_trade, volume,
                              floor_strike, cap_strike,
-                             open_interest, liquidity, volume_24h)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                             open_interest, liquidity, volume_24h,
+                             event_date)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         [
                             ticker, city, now,
                             to_decimal(yes_bid), to_decimal(yes_ask),
@@ -108,6 +134,7 @@ class MarketFetcher:
                             volume,
                             floor_strike, cap_strike,
                             open_interest, liquidity, volume_24h,
+                            event_date,
                         ],
                     )
                     total_stored += 1
@@ -125,11 +152,22 @@ class MarketFetcher:
         """Async polling loop for market data."""
         logger.info("Starting Market Fetcher")
 
-        if not self._init_client():
-            logger.warning("Market Fetcher disabled — no valid Kalshi credentials")
-            # Don't kill the whole process; just idle
-            while True:
-                await asyncio.sleep(3600)
+        # Retry auth with backoff instead of permanently disabling
+        AUTH_RETRY_DELAYS = [60, 120, 300, 600, 600]  # 1m, 2m, 5m, 10m, then 10m forever
+        auth_attempt = 0
+        while not self._init_client():
+            delay = AUTH_RETRY_DELAYS[min(auth_attempt, len(AUTH_RETRY_DELAYS) - 1)]
+            logger.warning(
+                "Market Fetcher auth failed — retrying in {}s (attempt {})".format(
+                    delay, auth_attempt + 1
+                )
+            )
+            record_heartbeat("MarketFetcher", duration_ms=0, status="error",
+                             error="Auth failed, retry in {}s".format(delay))
+            await asyncio.sleep(delay)
+            auth_attempt += 1
+
+        logger.info("Market Fetcher authenticated — starting poll loop")
 
         while True:
             try:

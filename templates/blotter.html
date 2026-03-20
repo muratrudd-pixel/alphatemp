@@ -1,38 +1,120 @@
 {% extends "base.html" %}
 {% block title %}Blotter{% endblock %}
 {% block content %}
-<div class="p-4 space-y-4 max-w-6xl mx-auto">
+<div class="space-y-4 max-w-[1400px] mx-auto">
 
-  <!-- Settlement Countdown -->
-  <div id="countdown-section" class="bg-slate-800/50 rounded-lg p-4">
-    <h2 class="text-sm font-bold text-slate-300 mb-3 tracking-wide">SETTLEMENT COUNTDOWN</h2>
-    <div id="countdown-today" class="mb-4"></div>
-    <div id="countdown-tomorrow"></div>
+  <!-- Summary Stats Bar -->
+  <div class="at-card px-5 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-6 at-mono text-sm">
+      <div><span class="text-gray-400 text-xs uppercase">Record</span> <strong id="stat-record" class="text-gray-900">--</strong></div>
+      <div><span class="text-gray-400 text-xs uppercase">Win Rate</span> <strong id="stat-winrate" class="text-gray-900">--</strong></div>
+      <div><span class="text-gray-400 text-xs uppercase">Wagered</span> <strong id="stat-wagered" class="text-gray-900">--</strong></div>
+      <div><span class="text-gray-400 text-xs uppercase">Profit</span> <strong id="stat-profit" class="text-gray-900">--</strong></div>
+      <div><span class="text-gray-400 text-xs uppercase">ROI</span> <strong id="stat-roi" class="text-gray-900">--</strong></div>
+    </div>
+    <div class="flex items-center gap-1">
+      <button onclick="setBlotterRange('7d')" id="br-7d" class="px-3 py-1 text-xs rounded bg-gray-100 text-gray-500">7D</button>
+      <button onclick="setBlotterRange('30d')" id="br-30d" class="px-3 py-1 text-xs rounded bg-gray-900 text-white">30D</button>
+      <button onclick="setBlotterRange('90d')" id="br-90d" class="px-3 py-1 text-xs rounded bg-gray-100 text-gray-500">90D</button>
+      <button onclick="setBlotterRange('all')" id="br-all" class="px-3 py-1 text-xs rounded bg-gray-100 text-gray-500">All</button>
+    </div>
   </div>
 
-  <!-- Trade Blotter -->
-  <div class="bg-slate-800/50 rounded-lg p-4">
-    <h2 class="text-sm font-bold text-slate-300 mb-3 tracking-wide">TRADE BLOTTER</h2>
-    <table class="w-full text-xs font-mono">
-      <thead>
-        <tr class="text-slate-500 border-b border-slate-700">
-          <th class="py-2 text-left">Bracket</th>
-          <th class="py-2 text-right">Model</th>
-          <th class="py-2 text-right">Market</th>
-          <th class="py-2 text-right">Edge</th>
-          <th class="py-2 text-center">Dir</th>
-          <th class="py-2 text-right">Pos</th>
-          <th class="py-2 text-right">Entry</th>
-          <th class="py-2 text-right">P&L</th>
-        </tr>
-      </thead>
-      <tbody id="blotter-body"></tbody>
-    </table>
-    <div id="blotter-summary" class="mt-3 pt-3 border-t border-slate-700 text-xs text-slate-400"></div>
+  <!-- Calendar + Positions Layout -->
+  <div class="flex gap-4">
+
+    <!-- Calendar (left) -->
+    <div class="at-card p-4 shrink-0" style="width: 260px;">
+      <div class="flex items-center justify-between mb-3">
+        <button onclick="calendarPrev()" class="text-gray-400 hover:text-gray-700 p-1"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg></button>
+        <span id="cal-month-label" class="text-sm font-semibold text-gray-900"></span>
+        <div class="flex items-center gap-2">
+          <span id="cal-month-pnl" class="text-sm font-bold at-mono"></span>
+          <button onclick="calendarNext()" class="text-gray-400 hover:text-gray-700 p-1"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></button>
+        </div>
+      </div>
+      <div id="calendar-grid"></div>
+    </div>
+
+    <!-- Positions (right) -->
+    <div class="flex-1 space-y-4">
+
+      <!-- Settlement Banner -->
+      <div class="at-card px-5 py-3">
+        <div id="settle-info" class="flex items-center gap-6 text-sm at-mono"></div>
+      </div>
+
+      <!-- Risk Grid -->
+      <div class="grid grid-cols-4 gap-3">
+        <div class="at-card p-3 text-center">
+          <div class="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Capital Locked</div>
+          <div id="risk-capital" class="text-lg font-bold text-gray-900 at-mono">--</div>
+        </div>
+        <div class="at-card p-3 text-center">
+          <div class="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Portfolio EV</div>
+          <div id="risk-ev" class="text-lg font-bold text-gray-900 at-mono">--</div>
+        </div>
+        <div class="at-card p-3 text-center">
+          <div class="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Max Loss</div>
+          <div id="risk-max-loss" class="text-lg font-bold text-gray-900 at-mono">--</div>
+        </div>
+        <div class="at-card p-3 text-center">
+          <div class="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Day P&L</div>
+          <div id="risk-pnl" class="text-lg font-bold text-gray-900 at-mono">--</div>
+        </div>
+      </div>
+
+      <!-- Live Positions -->
+      <div class="at-card p-5">
+        <h2 class="text-base font-semibold text-gray-900 mb-3">Live Positions <span id="positions-date-label" class="text-sm font-normal text-gray-400"></span></h2>
+        <table class="w-full text-xs at-mono" id="live-table">
+          <thead>
+            <tr class="text-[10px] text-gray-400 uppercase tracking-wider at-border-subtle">
+              <th class="py-2 text-left font-medium sortable" data-table="live" data-key="bracket">Bracket</th>
+              <th class="py-2 text-center font-medium">Side</th>
+              <th class="py-2 text-right font-medium sortable" data-table="live" data-key="model_conf">Model</th>
+              <th class="py-2 text-right font-medium">Qty</th>
+              <th class="py-2 text-right font-medium sortable" data-table="live" data-key="entry_price">Entry</th>
+              <th class="py-2 text-right font-medium">Mark</th>
+              <th class="py-2 text-right font-medium sortable" data-table="live" data-key="unrealized_pnl">P&L</th>
+              <th class="py-2 text-right font-medium sortable" data-table="live" data-key="roc">ROC</th>
+              <th class="py-2 text-right font-medium sortable" data-table="live" data-key="entry_time">Opened</th>
+            </tr>
+          </thead>
+          <tbody id="live-positions-body"></tbody>
+        </table>
+        <div id="live-positions-empty" class="text-xs text-gray-400 py-4 text-center hidden">No open positions</div>
+      </div>
+
+      <!-- Closed Trades -->
+      <div class="at-card p-5">
+        <h2 class="text-base font-semibold text-gray-900 mb-3">Closed / Settled</h2>
+        <table class="w-full text-xs at-mono" id="closed-table">
+          <thead>
+            <tr class="text-[10px] text-gray-400 uppercase tracking-wider at-border-subtle">
+              <th class="py-2 text-left font-medium sortable" data-table="closed" data-key="bracket">Bracket</th>
+              <th class="py-2 text-center font-medium">Side</th>
+              <th class="py-2 text-right font-medium sortable" data-table="closed" data-key="model_conf">Model</th>
+              <th class="py-2 text-right font-medium">Qty</th>
+              <th class="py-2 text-right font-medium sortable" data-table="closed" data-key="entry_price">Entry</th>
+              <th class="py-2 text-right font-medium">Exit</th>
+              <th class="py-2 text-right font-medium sortable" data-table="closed" data-key="gross_pnl">Gross</th>
+              <th class="py-2 text-right font-medium">Fees</th>
+              <th class="py-2 text-right font-medium sortable" data-table="closed" data-key="net_pnl">Net</th>
+              <th class="py-2 text-right font-medium sortable" data-table="closed" data-key="entry_time">Opened</th>
+              <th class="py-2 text-right font-medium sortable" data-table="closed" data-key="exit_time">Settled</th>
+            </tr>
+          </thead>
+          <tbody id="closed-positions-body"></tbody>
+        </table>
+        <div id="closed-positions-empty" class="text-xs text-gray-400 py-4 text-center hidden">No closed trades</div>
+      </div>
+
+    </div>
   </div>
 
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="/static/js/blotter.js"></script>
+<script src="/static/js/blotter.js?v=5"></script>
 {% endblock %}

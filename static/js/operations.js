@@ -1,5 +1,5 @@
 /**
- * AlphaTemp — Operations tab
+ * AlphaTemp — Operations tab (Light Theme)
  *
  * Renders the temperature curve chart, observation feed,
  * forecast runs feed, and bracket spread panel.
@@ -13,11 +13,6 @@
 // Helpers
 // -----------------------------------------------------------------------
 
-/**
- * Convert UTC ISO string to full ET ISO string for Plotly x-axis.
- * The shared toET() returns locale-formatted display text (e.g. "14:30"),
- * which Plotly can't parse as a datetime axis. We need full ISO strings.
- */
 function toETIso(utcStr) {
   if (!utcStr) return null;
   var input = utcStr;
@@ -48,9 +43,6 @@ function toETIso(utcStr) {
   );
 }
 
-/**
- * Current time in ET as an ISO-like string (for "now" line on chart).
- */
 function nowETIso() {
   var d = new Date();
   var et = new Date(
@@ -88,7 +80,7 @@ function refreshTempChart() {
               {
                 text: "No forecast data",
                 showarrow: false,
-                font: { size: 14, color: COLORS.slate400 },
+                font: { size: 14, color: "#9ca3af" },
                 xref: "paper",
                 yref: "paper",
                 x: 0.5,
@@ -101,7 +93,6 @@ function refreshTempChart() {
         return;
       }
 
-      // Extract arrays
       var fcstX = data.forecasts.map(function (p) {
         return toETIso(p.valid_at);
       });
@@ -123,24 +114,25 @@ function refreshTempChart() {
         y: fcstY,
         type: "scatter",
         mode: "lines",
-        line: { color: COLORS.blue, width: 2, dash: "dot" },
+        line: { color: "#60a5fa", width: 2, dash: "dot" },
         name: "HRRR Forecast",
         hovertemplate: "%{y:.1f}\u00b0F<extra></extra>",
       };
 
-      // 2. Observations (white, lines+markers)
+      // 2. Observations (blue line with light blue area fill)
       var traceObs = {
         x: obsX,
         y: obsY,
         type: "scatter",
-        mode: "lines+markers",
-        line: { color: COLORS.white, width: 2 },
-        marker: { size: 4, color: COLORS.white },
+        mode: "lines",
+        line: { color: "#3b82f6", width: 2.5 },
+        fill: "tozeroy",
+        fillcolor: "rgba(59,130,246,0.08)",
         name: "Observed",
         hovertemplate: "%{y:.1f}\u00b0F<extra></extra>",
       };
 
-      // 8. 6-hour synoptic max markers (amber, triangle-up)
+      // 6-hour synoptic max markers (gray triangles)
       var trace6hMax = null;
       if (data.six_hr_maxes && data.six_hr_maxes.length > 0) {
         trace6hMax = {
@@ -155,56 +147,59 @@ function refreshTempChart() {
           marker: {
             size: 7,
             symbol: "triangle-up",
-            color: "rgba(148,163,184,0.5)",
+            color: "#9ca3af",
           },
           name: "6hr High",
           hovertemplate: "%{y:.1f}\u00b0F<extra>6-hour max</extra>",
         };
       }
 
-      // 9. Settlement marker
+      // Settlement marker (amber glowing circle)
       var traceSettlement = null;
       if (data.observed_high != null && data.observed_high_at) {
         var src = data.settlement_source;
-        var settleName, settleHover, settleSymbol;
+        var settleName, settleHover;
         if (src === "nws_cli") {
           settleName = "NWS Settlement (CLI)";
           settleHover = "NWS Settlement: ";
-          settleSymbol = "diamond";
         } else if (src === "dsm") {
           settleName = "Settlement (DSM)";
           settleHover = "DSM Settlement: ";
-          settleSymbol = "diamond";
         } else {
           settleName = "Running High (est)";
           settleHover = "Running High: ";
-          settleSymbol = "circle";
         }
         traceSettlement = {
           x: [toETIso(data.observed_high_at)],
           y: [data.observed_high],
           type: "scatter",
-          mode: "markers",
+          mode: "markers+text",
           marker: {
-            size: 14,
-            color: COLORS.amber,
-            symbol: settleSymbol,
-            line: { color: "#ffffff", width: 1.5 },
+            size: 18,
+            color: "#f59e0b",
+            symbol: "circle",
+            line: { color: "rgba(245,158,11,0.35)", width: 6 },
+          },
+          text: [data.observed_high.toFixed(0) + "\u00b0"],
+          textposition: "top center",
+          textfont: {
+            size: 11,
+            color: "#d97706",
+            family: "Inter, sans-serif",
+            weight: 600,
           },
           name: settleName,
           hovertemplate: settleHover + "%{y:.1f}\u00b0F<extra></extra>",
         };
       }
 
-      // 12. Model prediction band (p25-p75 shaded, median line)
+      // Model prediction band (p25-p75 shaded, median line)
       var traceModelBandUpper = null;
       var traceModelBandLower = null;
       var traceModelMedian = null;
       if (data.model_band && data.model_band.median != null) {
         var mb = data.model_band;
-        // Use the full x-range of the chart for horizontal bands
         var bandX = [fcstX[0], fcstX[fcstX.length - 1]];
-        // Upper bound (invisible, sets top of fill)
         traceModelBandUpper = {
           x: bandX,
           y: [mb.p75, mb.p75],
@@ -214,7 +209,6 @@ function refreshTempChart() {
           showlegend: false,
           hoverinfo: "skip",
         };
-        // Lower bound (fill to upper)
         traceModelBandLower = {
           x: bandX,
           y: [mb.p25, mb.p25],
@@ -222,17 +216,16 @@ function refreshTempChart() {
           mode: "lines",
           line: { color: "transparent", width: 0 },
           fill: "tonexty",
-          fillcolor: "rgba(168,85,247,0.20)",
+          fillcolor: "rgba(168,85,247,0.05)",
           name: "Model 25-75%",
           hoverinfo: "skip",
         };
-        // Median line
         traceModelMedian = {
           x: bandX,
           y: [mb.median, mb.median],
           type: "scatter",
           mode: "lines",
-          line: { color: "rgba(168,85,247,0.6)", width: 2, dash: "dashdot" },
+          line: { color: "rgba(168,85,247,0.3)", width: 1.5, dash: "dashdot" },
           name: "Model Median (" + mb.median + "\u00b0F)",
           hovertemplate:
             "Model Median: " + mb.median + "\u00b0F<extra></extra>",
@@ -266,11 +259,24 @@ function refreshTempChart() {
           y0: 0,
           y1: 1,
           yref: "paper",
-          line: { color: "rgba(148,163,184,0.4)", width: 1, dash: "dash" },
+          line: { color: "rgba(0,0,0,0.15)", width: 1, dash: "dash" },
         },
       ];
 
-      // Compute y-axis range that includes model band
+      // Add "Now" annotation at bottom of the line
+      var annotations = [
+        {
+          x: nowLine,
+          y: 0,
+          yref: "paper",
+          text: "Now",
+          showarrow: false,
+          font: { size: 10, color: "#9ca3af", family: "Inter, sans-serif" },
+          yanchor: "top",
+          yshift: 5,
+        },
+      ];
+
       var yAxisOpts = Object.assign({}, PLOTLY_LAYOUT.yaxis, {
         title: { text: "\u00b0F", standoff: 8, font: { size: 10 } },
       });
@@ -286,14 +292,7 @@ function refreshTempChart() {
       }
 
       var layout = Object.assign({}, PLOTLY_LAYOUT, {
-        showlegend: true,
-        legend: {
-          x: 1,
-          y: 1,
-          xanchor: "right",
-          bgcolor: "rgba(15,23,42,0.7)",
-          font: { size: 9 },
-        },
+        showlegend: false,
         yaxis: yAxisOpts,
         xaxis: Object.assign({}, PLOTLY_LAYOUT.xaxis, {
           type: "date",
@@ -303,9 +302,59 @@ function refreshTempChart() {
           showgrid: true,
         }),
         shapes: shapes,
+        annotations: annotations,
       });
 
       Plotly.react("temp-curve-chart", allTraces, layout, PLOTLY_CONFIG);
+
+      // Render HTML legend below chart
+      var legendEl = document.getElementById("chart-legend");
+      if (legendEl) {
+        var items = [
+          {
+            color: "#f59e0b",
+            symbol: "&#9679;",
+            label: traceSettlement ? traceSettlement.name : "Settlement",
+          },
+          { color: "#9ca3af", symbol: "&#9650;", label: "6hr High" },
+        ];
+        if (traceModelMedian) {
+          items.push({
+            color: "rgba(168,85,247,0.5)",
+            symbol: "- -",
+            label: traceModelMedian.name,
+          });
+        }
+        if (traceModelBandLower) {
+          items.push({
+            color: "rgba(168,85,247,0.12)",
+            symbol: "&#9632;",
+            label: "Model 25-75%",
+          });
+        }
+        items.push({ color: "#3b82f6", symbol: "&#9644;", label: "Observed" });
+        items.push({
+          color: "#60a5fa",
+          symbol: "&#8943;",
+          label: "HRRR Forecast",
+        });
+
+        legendEl.innerHTML = items
+          .map(function (item) {
+            return (
+              '<span class="flex items-center gap-1.5">' +
+              '<span style="color:' +
+              item.color +
+              '; font-size: 14px; line-height: 1;">' +
+              item.symbol +
+              "</span>" +
+              "<span>" +
+              item.label +
+              "</span></span>"
+            );
+          })
+          .join("");
+      }
     },
   );
 }
@@ -323,50 +372,59 @@ function refreshObsFeed() {
 
       if (!data || !data.observations || data.observations.length === 0) {
         container.innerHTML =
-          '<p class="text-xs text-slate-500">No observations</p>';
+          '<p class="text-xs text-gray-400">No observations</p>';
         return;
       }
 
-      var obs = data.observations.slice(0, 20);
+      // Sort by ingested_at descending (most recently received first)
+      var sorted = data.observations.slice().sort(function (a, b) {
+        var aT = a.ingested_at || "";
+        var bT = b.ingested_at || "";
+        return bT.localeCompare(aT);
+      });
+      var obs = sorted.slice(0, 20);
 
-      // Column header
       var header =
-        '<div class="grid grid-cols-[60px_70px_1fr] gap-x-2 text-[10px] text-slate-500 uppercase tracking-wider py-1 border-b border-slate-600">' +
-        "<span>Time</span><span>Temp</span><span>Details</span></div>";
+        '<div class="grid grid-cols-[2fr_2fr_2fr_3fr] gap-x-2 text-[10px] text-gray-400 uppercase tracking-wider py-1.5 at-border-subtle at-mono">' +
+        "<span>Rcvd</span><span>Obs</span><span>Temp</span><span>Details</span></div>";
 
       var rows = obs
         .map(function (o) {
-          var time = toET(o.observed_at);
+          var obsTime = toET(o.observed_at);
+          var rcvdTime = o.ingested_at ? toET(o.ingested_at) : "--";
 
-          // Build detail badges
-          var badges;
+          // Only show badges for actionable signals — no generic METAR
+          var badges = "";
           if (o.source && o.source.includes("SPECI")) {
             badges =
-              '<span class="px-1.5 py-0.5 rounded border text-[10px] bg-amber-900/50 text-amber-400 border-amber-700">SPECI</span>';
+              '<span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-100 text-amber-700 font-medium">SPECI</span>';
           } else if (o.source === "NWS CLI") {
             badges =
-              '<span class="px-1.5 py-0.5 rounded border text-[10px] bg-emerald-900/50 text-emerald-400 border-emerald-700">NWS CLI</span>';
-          } else {
-            badges = '<span class="text-[10px] text-slate-600">METAR</span>';
+              '<span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-100 text-emerald-700 font-medium">NWS CLI</span>';
           }
           if (o.obs_window === "prior 6hrs") {
             badges +=
-              ' <span class="px-1.5 py-0.5 rounded border text-[10px] bg-amber-900/50 text-amber-300 border-amber-700">6hr High</span>';
+              (badges ? " " : "") +
+              '<span class="px-1.5 py-0.5 rounded text-[10px] bg-gray-800 text-white font-medium">6hr High</span>';
           }
           if (o.is_new_high === true) {
             badges +=
-              ' <span class="px-1.5 py-0.5 rounded border text-[10px] bg-emerald-900/50 text-emerald-300 border-emerald-700 font-bold">NEW HIGH</span>';
+              (badges ? " " : "") +
+              '<span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-600 text-white font-bold">NEW HIGH</span>';
           }
 
           return (
-            '<div class="grid grid-cols-[60px_70px_1fr] gap-x-2 text-xs py-1 border-b border-slate-700/50 items-center">' +
-            '<span class="text-slate-400">' +
-            time +
+            '<div class="grid grid-cols-[2fr_2fr_2fr_3fr] gap-x-2 text-xs py-1.5 at-border-faint items-center at-mono">' +
+            '<span class="text-gray-500">' +
+            rcvdTime +
             "</span>" +
-            '<span class="text-slate-200">' +
+            '<span class="text-gray-400">' +
+            obsTime +
+            "</span>" +
+            '<span class="text-gray-900 font-medium">' +
             o.temp_f.toFixed(1) +
             "\u00b0F</span>" +
-            '<span class="flex flex-wrap gap-1">' +
+            '<span class="flex flex-wrap gap-1" style="font-family: Inter, sans-serif;">' +
             badges +
             "</span>" +
             "</div>"
@@ -392,75 +450,79 @@ function refreshFcstFeed() {
 
       if (!data || !data.runs || data.runs.length === 0) {
         container.innerHTML =
-          '<p class="text-xs text-slate-500">No forecast runs</p>';
+          '<p class="text-xs text-gray-400">No forecast runs</p>';
         return;
       }
 
-      // Only show runs with full coverage (covers through peak heating)
       var fullRuns = data.runs.filter(function (r) {
         return r.coverage === "full";
       });
 
       if (fullRuns.length === 0) {
         container.innerHTML =
-          '<p class="text-xs text-slate-500">No full-coverage runs</p>';
+          '<p class="text-xs text-gray-400">No full-coverage runs</p>';
         return;
       }
 
-      // Model badge colors
+      // Sort by ingested_at descending (most recently received first)
+      fullRuns.sort(function (a, b) {
+        var aT = a.ingested_at || "";
+        var bT = b.ingested_at || "";
+        return bT.localeCompare(aT);
+      });
+
       var MODEL_COLORS = {
-        hrrr: "bg-blue-900/50 text-blue-400 border-blue-700",
-        gfs: "bg-emerald-900/50 text-emerald-400 border-emerald-700",
-        ecmwf: "bg-purple-900/50 text-purple-400 border-purple-700",
+        hrrr: "bg-blue-100 text-blue-700",
+        gfs: "bg-emerald-100 text-emerald-700",
+        ecmwf: "bg-purple-100 text-purple-700",
       };
 
-      // Column header
       var header =
-        '<div class="grid grid-cols-[3fr_3fr_3fr_2fr] gap-x-2 text-[10px] text-slate-500 uppercase tracking-wider py-1 border-b border-slate-600">' +
-        "<span>Run (ET)</span><span>Model</span><span>High</span><span>\u0394</span></div>";
+        '<div class="grid grid-cols-[2fr_2fr_2fr_2fr_1.5fr] gap-x-2 text-[10px] text-gray-400 uppercase tracking-wider py-1.5 at-border-subtle at-mono">' +
+        "<span>Rcvd</span><span>Run (ET)</span><span>Model</span><span>High</span><span>\u0394</span></div>";
 
       var rows = fullRuns
         .map(function (r) {
           var runLabel = toET(r.model_run);
+          var rcvdLabel = r.ingested_at ? toET(r.ingested_at) : "--";
 
-          // Model badge
           var modelName = (r.model_name || "hrrr").toLowerCase();
           var modelColor =
-            MODEL_COLORS[modelName] ||
-            "bg-slate-700 text-slate-300 border-slate-600";
+            MODEL_COLORS[modelName] || "bg-gray-100 text-gray-600";
           var modelBadge =
-            '<span class="px-1.5 py-0.5 rounded border text-[10px] ' +
+            '<span class="px-2 py-0.5 rounded text-[10px] font-medium ' +
             modelColor +
             '">' +
             modelName.toUpperCase() +
             "</span>";
 
-          // Forecast high
           var highStr =
             r.high_temp_f != null ? r.high_temp_f.toFixed(1) + "\u00b0" : "--";
 
-          // Delta from prior run of same model
           var deltaStr = "--";
-          var deltaColor = "text-slate-500";
+          var deltaColor = "text-gray-400";
           if (r.temp_change != null && r.temp_change !== 0) {
             var sign = r.temp_change > 0 ? "+" : "";
             deltaStr = sign + r.temp_change.toFixed(1) + "\u00b0";
             deltaColor =
-              r.temp_change > 0 ? "text-emerald-400" : "text-red-400";
+              r.temp_change > 0 ? "text-emerald-600" : "text-red-600";
           } else if (r.temp_change === 0) {
             deltaStr = "\u2014";
-            deltaColor = "text-slate-600";
+            deltaColor = "text-gray-300";
           }
 
           return (
-            '<div class="grid grid-cols-[3fr_3fr_3fr_2fr] gap-x-2 text-xs py-1 border-b border-slate-700/50 items-center">' +
-            '<span class="text-slate-400">' +
+            '<div class="grid grid-cols-[2fr_2fr_2fr_2fr_1.5fr] gap-x-2 text-xs py-1.5 at-border-faint items-center at-mono">' +
+            '<span class="text-gray-500">' +
+            rcvdLabel +
+            "</span>" +
+            '<span class="text-gray-400">' +
             runLabel +
             "</span>" +
             "<span>" +
             modelBadge +
             "</span>" +
-            '<span class="text-slate-200">' +
+            '<span class="text-gray-900 font-medium">' +
             highStr +
             "</span>" +
             '<span class="' +
@@ -494,9 +556,9 @@ function refreshBracketLadder() {
       var capturedMs = new Date(data.captured_at).getTime();
       var ageMin = Math.round((Date.now() - capturedMs) / 60000);
       if (ageMin > 30) {
-        staleEl.textContent = "STALE (" + ageMin + "m)";
+        staleEl.textContent = " STALE (" + ageMin + "m)";
         staleEl.className =
-          "ml-2 px-1.5 py-0.5 rounded border text-[10px] bg-amber-900/50 text-amber-400 border-amber-700";
+          "ml-2 px-1.5 py-0.5 rounded text-[10px] bg-amber-100 text-amber-700 font-medium";
       } else {
         staleEl.textContent = "";
         staleEl.className = "hidden";
@@ -505,124 +567,162 @@ function refreshBracketLadder() {
 
     if (!data || !data.brackets || data.brackets.length === 0) {
       chartEl.innerHTML =
-        '<p class="text-xs text-slate-500">No bracket data</p>';
+        '<p class="text-xs text-gray-400">No bracket data</p>';
       var liqEl = document.getElementById("liquidity-bar");
       if (liqEl) liqEl.innerHTML = "";
       return;
     }
 
-    // Filter to brackets with market data
     var filtered = data.brackets.filter(function (b) {
       return b.yes_bid != null || b.yes_ask != null;
     });
 
     if (filtered.length === 0) {
-      chartEl.innerHTML =
-        '<p class="text-xs text-slate-500">No market data</p>';
+      chartEl.innerHTML = '<p class="text-xs text-gray-400">No market data</p>';
       return;
     }
 
-    // Build table header
+    // Find model-favored bracket (highest model_prob)
+    var maxModelProb = 0;
+    var modelFavIdx = -1;
+    filtered.forEach(function (b, i) {
+      if (b.model_prob != null && b.model_prob > maxModelProb) {
+        maxModelProb = b.model_prob;
+        modelFavIdx = i;
+      }
+    });
+
+    // Build table
     var html =
-      '<table class="w-full text-xs">' +
-      '<thead><tr class="text-[10px] text-slate-500 uppercase tracking-wider border-b border-slate-600">' +
-      '<th class="py-1 text-left">Bracket</th>' +
-      '<th class="py-1 text-right">Bid</th>' +
-      '<th class="py-1 text-right">Ask</th>' +
-      '<th class="py-1 text-right">Model</th>' +
-      '<th class="py-1 text-right">Edge</th>' +
-      '<th class="py-1 text-right">EV</th>' +
+      '<table class="w-full text-xs at-mono" style="border-collapse: separate; border-spacing: 0;">' +
+      '<thead><tr class="text-[10px] text-gray-400 uppercase tracking-wider at-border-subtle">' +
+      '<th class="py-2 text-left font-medium">Bracket</th>' +
+      '<th class="py-2 text-right font-medium">Volume</th>' +
+      '<th class="py-2 text-right font-medium">Bid</th>' +
+      '<th class="py-2 text-right font-medium">Ask</th>' +
+      '<th class="py-2 text-right font-medium">Model %</th>' +
+      '<th class="py-2 text-right font-medium">Edge</th>' +
+      '<th class="py-2 text-right font-medium">EV</th>' +
       "</tr></thead><tbody>";
 
-    filtered.forEach(function (b) {
-      // Label
+    filtered.forEach(function (b, idx) {
       var label;
       if (b.floor == null) label = "\u2264" + (b.cap - 1) + "\u00b0F";
       else if (b.cap == null) label = "\u2265" + (b.floor + 1) + "\u00b0F";
       else label = b.floor + "-" + b.cap + "\u00b0F";
 
-      // Bid/Ask in cents (integer)
       var bidCents = b.yes_bid != null ? Math.round(b.yes_bid * 100) : null;
       var askCents = b.yes_ask != null ? Math.round(b.yes_ask * 100) : null;
 
-      // Model as percentage
+      // Volume display (compact: 1.2k, 54k, etc.)
+      var volStr = "--";
+      if (b.volume != null) {
+        if (b.volume >= 1000) {
+          volStr = (b.volume / 1000).toFixed(b.volume >= 10000 ? 0 : 1) + "k";
+        } else {
+          volStr = b.volume.toString();
+        }
+      }
+
       var modelPct =
         b.model_prob != null ? Math.round(b.model_prob * 10000) / 100 : null;
 
-      // Edge & EV calculations
-      var askFrac = b.yes_ask; // 0-1 probability
+      var askFrac = b.yes_ask;
       var edgePct = null;
       var evCents = null;
       var feeCents = null;
 
       if (b.model_prob != null && askFrac != null && askFrac > 0) {
         edgePct = Math.round((b.model_prob - askFrac) * 10000) / 100;
-
-        // Fee per contract: max(ceil(0.07 * P * (1-P) * 100), 1)
         var P = askFrac;
         feeCents = Math.max(Math.ceil(0.07 * P * (1 - P) * 100), 1);
-
-        // EV = (model_prob - yes_ask) * 100 - feeCents
         evCents =
           Math.round((b.model_prob - askFrac) * 100 * 100) / 100 - feeCents;
         evCents = Math.round(evCents * 100) / 100;
       }
 
-      // Row highlighting
-      var rowClass = "border-b border-slate-700/50";
-      if (evCents != null) {
-        if (evCents > 0) rowClass += " bg-emerald-900/20";
-        else if (evCents < 0) rowClass += " bg-red-900/10";
-      }
+      // Pill badges — strict highlighting: only green if EV clears fee drag
+      var clearsFees = evCents != null && evCents > 0;
 
-      // Bold edge text when edge exceeds fee
-      var edgeBold =
-        edgePct != null && feeCents != null && edgePct > feeCents
-          ? " font-bold"
-          : "";
-
-      // Edge color
-      var edgeColor = "text-slate-500";
+      var edgePill = '<span class="text-gray-300">--</span>';
       if (edgePct != null) {
-        edgeColor = edgePct > 0 ? "text-emerald-400" : "text-red-400";
+        var edgePillClass;
+        if (edgePct > 0 && clearsFees) {
+          edgePillClass = "pill pill-positive";
+        } else if (edgePct < 0) {
+          edgePillClass = "pill pill-negative";
+        } else {
+          edgePillClass = "pill pill-neutral";
+        }
+        edgePill =
+          '<span class="' +
+          edgePillClass +
+          '">' +
+          (edgePct > 0 ? "+" : "") +
+          edgePct.toFixed(1) +
+          "pp</span>";
       }
 
-      // EV color
-      var evColor = "text-slate-500";
+      var evPill = '<span class="text-gray-300">--</span>';
       if (evCents != null) {
-        evColor = evCents > 0 ? "text-emerald-400" : "text-red-400";
+        var evPillClass;
+        if (clearsFees) {
+          evPillClass = "pill pill-positive";
+        } else if (evCents < 0) {
+          evPillClass = "pill pill-negative";
+        } else {
+          evPillClass = "pill pill-neutral";
+        }
+        evPill =
+          '<span class="' +
+          evPillClass +
+          '">' +
+          (evCents > 0 ? "+" : "") +
+          evCents.toFixed(1) +
+          "\u00a2</span>";
+      }
+
+      // Row highlighting: model favorite vs market confirmed
+      var rowStyle = "";
+      var rowClass = "at-border-faint";
+      if (idx === modelFavIdx) {
+        // Check if market confirms (yes_bid >= 0.99)
+        var marketConfirmed = b.yes_bid != null && b.yes_bid >= 0.99;
+        if (marketConfirmed) {
+          rowStyle =
+            ' style="background: rgba(16,185,129,0.08); outline: 2.5px solid rgba(16,185,129,0.4); outline-offset: -1px; border-radius: 6px;"';
+        } else {
+          rowStyle =
+            ' style="background: rgba(139,92,246,0.06); outline: 2px solid rgba(139,92,246,0.3); outline-offset: -1px; border-radius: 6px;"';
+        }
       }
 
       html +=
         '<tr class="' +
         rowClass +
-        '">' +
-        '<td class="py-1 text-slate-300">' +
+        '"' +
+        rowStyle +
+        ">" +
+        '<td class="py-2 text-gray-800 font-medium">' +
         label +
         "</td>" +
-        '<td class="py-1 text-right text-slate-400">' +
+        '<td class="py-2 text-right text-gray-500">' +
+        volStr +
+        "</td>" +
+        '<td class="py-2 text-right text-gray-500">' +
         (bidCents != null ? bidCents + "\u00a2" : "--") +
         "</td>" +
-        '<td class="py-1 text-right text-slate-400">' +
+        '<td class="py-2 text-right text-gray-500">' +
         (askCents != null ? askCents + "\u00a2" : "--") +
         "</td>" +
-        '<td class="py-1 text-right text-slate-200">' +
+        '<td class="py-2 text-right text-gray-800">' +
         (modelPct != null ? modelPct.toFixed(1) + "%" : "--") +
         "</td>" +
-        '<td class="py-1 text-right ' +
-        edgeColor +
-        edgeBold +
-        '">' +
-        (edgePct != null
-          ? (edgePct > 0 ? "+" : "") + edgePct.toFixed(1) + "pp"
-          : "--") +
+        '<td class="py-2 text-right">' +
+        edgePill +
         "</td>" +
-        '<td class="py-1 text-right ' +
-        evColor +
-        '">' +
-        (evCents != null
-          ? (evCents > 0 ? "+" : "") + evCents.toFixed(1) + "\u00a2"
-          : "--") +
+        '<td class="py-2 text-right">' +
+        evPill +
         "</td>" +
         "</tr>";
     });
@@ -630,20 +730,30 @@ function refreshBracketLadder() {
     html += "</tbody></table>";
     chartEl.innerHTML = html;
 
-    // Render liquidity info below the table
+    // Liquidity bar with visual progress
     var liqEl = document.getElementById("liquidity-bar");
     if (liqEl && data.liquidity) {
       var spreadCents = Math.round(data.liquidity.avg_spread * 100);
+      var vol = data.liquidity.total_volume;
+      // Rough bar fill: log scale, cap at 500k
+      var fillPct = Math.min(
+        100,
+        Math.round((Math.log10(vol + 1) / Math.log10(500000)) * 100),
+      );
       liqEl.innerHTML =
-        '<span class="text-slate-400">Vol:</span> ' +
-        '<span class="text-slate-200">' +
-        data.liquidity.total_volume.toLocaleString() +
+        '<div class="flex items-center gap-3 text-xs text-gray-500 at-mono">' +
+        "<span>Liquidity</span>" +
+        '<div class="liq-bar flex-1"><div class="liq-bar-fill" style="width:' +
+        fillPct +
+        '%"></div></div>' +
+        '<span class="text-gray-700">Vol: ' +
+        vol.toLocaleString() +
         "</span>" +
-        '<span class="mx-2 text-slate-600">|</span>' +
-        '<span class="text-slate-400">Avg Spread:</span> ' +
-        '<span class="text-slate-200">' +
+        '<span class="text-gray-400">|</span>' +
+        '<span class="text-gray-700">Avg Spread: ' +
         spreadCents +
-        "\u00a2</span>";
+        "\u00a2</span>" +
+        "</div>";
     }
   });
 }
@@ -665,13 +775,51 @@ async function checkStaleness() {
       "Forecasts (" + Math.round(health.fcst_age_minutes) + " min)",
     );
   var banner = document.getElementById("stale-banner");
-  if (!banner) return;
+  var staleText = document.getElementById("stale-text");
+  if (!banner || !staleText) return;
   if (warnings.length > 0) {
-    banner.textContent = "Stale data: " + warnings.join(", ");
+    staleText.textContent = "Stale data: " + warnings.join(", ");
     banner.classList.remove("hidden");
   } else {
     banner.classList.add("hidden");
   }
+}
+
+// -----------------------------------------------------------------------
+// NWS CLI Report
+// -----------------------------------------------------------------------
+
+function refreshCLI() {
+  var dateParam = selectedDate ? "?date=" + selectedDate : "";
+  fetchAPI("/api/nws-cli/" + selectedCity + dateParam).then(function (data) {
+    var statusEl = document.getElementById("cli-status");
+    var textEl = document.getElementById("cli-text");
+    if (!statusEl || !textEl) return;
+
+    if (!data || !data.raw_text) {
+      var src = data && data.source ? " (source: " + data.source + ")" : "";
+      statusEl.textContent = "No CLI report available yet" + src;
+      textEl.textContent = "Waiting for NWS CLI product (~16:30 ET)...";
+      textEl.className =
+        "text-[11px] at-mono text-gray-400 bg-gray-50 rounded-lg p-3 italic";
+      return;
+    }
+
+    var ingestedStr = data.ingested_at
+      ? " \u00B7 Received: " + toET(data.ingested_at)
+      : "";
+    statusEl.innerHTML =
+      '<span class="pill pill-positive">CLI</span> ' +
+      '<span class="text-gray-700 font-medium">' +
+      data.max_temp_f +
+      "\u00B0F</span>" +
+      '<span class="text-gray-400">' +
+      ingestedStr +
+      "</span>";
+    textEl.textContent = data.raw_text;
+    textEl.className =
+      "text-[11px] at-mono text-gray-700 bg-gray-50 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto";
+  });
 }
 
 // -----------------------------------------------------------------------
@@ -683,21 +831,17 @@ function refreshAll() {
   refreshObsFeed();
   refreshFcstFeed();
   refreshBracketLadder();
+  refreshCLI();
   checkStaleness();
   countdown = 60;
 }
 
-// Hook into base.html's date toggle
 function onDateChange() {
   refreshAll();
 }
 
-// Show loading skeletons before first fetch
 showSkeleton("obs-feed", 6);
 showSkeleton("fcst-feed", 5);
 
-// Initial load
 refreshAll();
-
-// Auto-refresh every 60 seconds
 setInterval(refreshAll, 60000);

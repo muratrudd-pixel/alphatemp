@@ -76,29 +76,46 @@ def compute_composite(brier, hit_rate, pnl_cents, baseline):
     return W_PNL * pnl_norm + W_BRIER * brier_norm + W_HIT * hit_norm
 
 
-def compute_simple_pnl(results):
-    # type: (list) -> float
-    """Simplified P&L: bet $1 at 50c on every Kalshi-scored event.
+def compute_displacement_pnl(results):
+    # type: (list) -> tuple
+    """Displacement-based P&L: only bet when model shows edge over uniform.
 
-    Hit = profit (100 - 50 - fee), miss = loss (50 + fee).
-    Returns total P&L in cents.
+    For each event, compare model's per-event Brier against uniform Brier
+    ((n-1)/n). Only bet when model Brier < 80% of uniform (genuine edge).
+    Entry at 50c on top bracket. Returns (total_pnl, bets_placed).
     """
     from services.strategy_backtester import compute_taker_fee
 
+    EDGE_THRESHOLD = 0.80  # model brier must be < 80% of uniform brier to bet
+
     total_pnl = 0.0
+    bets_placed = 0
+
     for r in results:
-        if not r.used_kalshi_brackets:
+        if not r.used_kalshi_brackets or r.n_brackets < 2:
             continue
+
+        # Uniform Brier: (n-1)/n — what you'd get predicting 1/n for all brackets
+        uniform_brier = (r.n_brackets - 1.0) / r.n_brackets
+
+        # Only bet when model demonstrates meaningful edge on this event
+        if r.brier_score >= uniform_brier * EDGE_THRESHOLD:
+            continue
+
+        # Model shows edge — place bet
         entry_price = 50.0  # cents
         qty = 1
         fee = compute_taker_fee(entry_price, qty)
+
         if r.hit:
             pnl = (100.0 - entry_price) * qty - fee
         else:
             pnl = -(entry_price * qty + fee)
-        total_pnl += pnl
 
-    return total_pnl
+        total_pnl += pnl
+        bets_placed += 1
+
+    return total_pnl, bets_placed
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
@@ -151,10 +168,10 @@ def main():
     brier = result.mean_brier
     hit_rate = result.top1_hit_rate
     total_evals = result.total_evaluations
-    pnl_cents = compute_simple_pnl(result.run_results)
+    pnl_cents, bets_placed = compute_displacement_pnl(result.run_results)
 
-    print("  Brier: {:.4f}  Hit rate: {:.4f}  P&L: {:.0f}c  Evals: {}  Time: {:.1f}s".format(
-        brier, hit_rate, pnl_cents, total_evals, elapsed,
+    print("  Brier: {:.4f}  Hit rate: {:.4f}  P&L: {:.0f}c  Bets: {}/{}  Time: {:.1f}s".format(
+        brier, hit_rate, pnl_cents, bets_placed, total_evals, elapsed,
     ))
 
     # Load or create baseline

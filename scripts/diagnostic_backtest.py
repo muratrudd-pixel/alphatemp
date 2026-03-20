@@ -21,11 +21,12 @@ def parse_args():
     p.add_argument("--db", default="data/alphatemp.duckdb")
     p.add_argument("--start", required=True, help="YYYY-MM-DD")
     p.add_argument("--end", required=True, help="YYYY-MM-DD")
+    p.add_argument("--hour", type=int, default=12, help="Update hour (ET)")
     return p.parse_args()
 
 
-def run_diagnostic(db_path, start_date, end_date):
-    # type: (str, date, date) -> None
+def run_diagnostic(db_path, start_date, end_date, update_hour=12):
+    # type: (str, date, date, int) -> None
     fb = FeatureBuilder(db_path)
     model = QRModel()
 
@@ -79,8 +80,7 @@ def run_diagnostic(db_path, start_date, end_date):
             current += timedelta(days=1)
             continue
 
-        # Run model at update_hour=12 (midday — representative)
-        train_result = fb.get_training_data(current, 12)
+        train_result = fb.get_training_data(current, update_hour)
         if train_result is None:
             print("{:>10} {:>8} {:>8} {:>6} — insufficient training data".format(
                 current.isoformat(), "N/A", actual, "N/A"))
@@ -94,7 +94,7 @@ def run_diagnostic(db_path, start_date, end_date):
             current += timedelta(days=1)
             continue
 
-        feat_result = fb.build_features(current, 12)
+        feat_result = fb.build_features(current, update_hour)
         if feat_result is None:
             current += timedelta(days=1)
             continue
@@ -134,4 +134,4 @@ if __name__ == "__main__":
     args = parse_args()
     start = date.fromisoformat(args.start)
     end = date.fromisoformat(args.end)
-    run_diagnostic(args.db, start, end)
+    run_diagnostic(args.db, start, end, args.hour)

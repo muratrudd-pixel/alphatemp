@@ -20,7 +20,7 @@ from scipy import sparse
 from services.data_provider import BacktestDataProvider
 
 # ── Description (updated by the agent each experiment) ──────────────────────
-DESCRIPTION = "MIN_SAMPLES=60 (more permissive fitting)"
+DESCRIPTION = "standardize features before LP (improves conditioning)"
 
 # ── Hyperparameters ─────────────────────────────────────────────────────────
 QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -39,6 +39,7 @@ except ImportError:
 
 # Module-level caches (reset between harness runs via importlib)
 _coeff_cache = {}  # type: Dict[Tuple[int, str], Optional[List[np.ndarray]]]
+_scale_cache = {}  # type: Dict[Tuple[int, str], Tuple[np.ndarray, np.ndarray]]
 
 
 # ── Quantile Regression Solver ──────────────────────────────────────────────
@@ -454,10 +455,16 @@ def model_fn(provider, ref_time):
             _coeff_cache[cache_key] = None
         else:
             X_train, y_train = result
+            feat_mean = X_train.mean(axis=0)
+            feat_std = X_train.std(axis=0)
+            feat_std[feat_std < 1e-10] = 1.0
+            X_scaled = (X_train - feat_mean) / feat_std
+            _scale_cache[cache_key] = (feat_mean, feat_std)
+
             coefficients = []  # type: List[np.ndarray]
             failed = False
             for tau in QUANTILES:
-                coeffs = fit_quantile_regression(X_train, y_train, tau)
+                coeffs = fit_quantile_regression(X_scaled, y_train, tau)
                 if coeffs is None:
                     _coeff_cache[cache_key] = None
                     failed = True
@@ -630,7 +637,9 @@ def model_fn(provider, ref_time):
         abs(lag_error),
     ])
 
-    x_row = np.concatenate([[1.0], features_today])
+    feat_mean, feat_std = _scale_cache[cache_key]
+    features_scaled = (features_today - feat_mean) / feat_std
+    x_row = np.concatenate([[1.0], features_scaled])
     error_quantiles = [float(np.dot(c, x_row)) for c in coefficients]
 
     temp_quantiles = [fcst_high - eq for eq in error_quantiles]

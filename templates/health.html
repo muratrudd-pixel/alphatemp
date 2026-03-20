@@ -1,27 +1,27 @@
 {% extends "base.html" %}
 {% block title %}Health{% endblock %}
 {% block content %}
-<div class="p-4 space-y-6 max-w-5xl mx-auto">
+<div class="p-4 space-y-4 max-w-5xl mx-auto">
 
-  <div class="bg-slate-800/50 rounded-lg p-4">
-    <h2 class="text-sm font-bold text-slate-300 mb-3 tracking-wide">DATA FRESHNESS</h2>
-    <div id="freshness-table" class="space-y-1 text-xs font-mono"></div>
+  <div class="at-card p-5">
+    <h2 class="text-base font-semibold text-gray-900 mb-3">Data Freshness</h2>
+    <div id="freshness-table" class="space-y-1 text-xs at-mono"></div>
   </div>
 
-  <div class="bg-slate-800/50 rounded-lg p-4">
-    <h2 class="text-sm font-bold text-slate-300 mb-3 tracking-wide">PIPELINE STATUS</h2>
-    <div id="pipeline-table" class="space-y-1 text-xs font-mono"></div>
+  <div class="at-card p-5">
+    <h2 class="text-base font-semibold text-gray-900 mb-3">Pipeline Status</h2>
+    <div id="pipeline-table" class="space-y-1 text-xs at-mono"></div>
   </div>
 
-  <div class="bg-slate-800/50 rounded-lg p-4">
-    <h2 class="text-sm font-bold text-slate-300 mb-3 tracking-wide">DATABASE</h2>
-    <div id="db-table" class="space-y-1 text-xs font-mono"></div>
-    <div id="db-size" class="text-xs text-slate-500 mt-2"></div>
+  <div class="at-card p-5">
+    <h2 class="text-base font-semibold text-gray-900 mb-3">Database</h2>
+    <div id="db-table" class="space-y-1 text-xs at-mono"></div>
+    <div id="db-size" class="text-xs text-gray-400 mt-2"></div>
   </div>
 
-  <div class="bg-slate-800/50 rounded-lg p-4">
-    <h2 class="text-sm font-bold text-slate-300 mb-3 tracking-wide">CONFIGURATION</h2>
-    <div id="config-table" class="space-y-1 text-xs font-mono"></div>
+  <div class="at-card p-5">
+    <h2 class="text-base font-semibold text-gray-900 mb-3">Configuration</h2>
+    <div id="config-table" class="space-y-1 text-xs at-mono"></div>
   </div>
 
 </div>

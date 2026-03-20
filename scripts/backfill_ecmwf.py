@@ -9,6 +9,8 @@ Usage:
 """
 
 import argparse
+import gc
+import os
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -71,8 +73,14 @@ def get_resume_date(db_path, run_hour):
 
 def extract_nearest(msg, lat, lon):
     # type: (object, float, float) -> float
-    """Extract value at nearest grid point using cosine-weighted distance."""
+    """Extract value at nearest grid point using cosine-weighted distance.
+
+    ECMWF GRIB files use 0-360° longitude, so we normalize to -180/180
+    before computing distance (STATION_COORDS uses negative longitudes).
+    """
     lat_grid, lon_grid = msg.latlons()
+    # Normalize 0-360 longitudes to -180/180 (ECMWF uses 0-360)
+    lon_grid = np.where(lon_grid > 180, lon_grid - 360, lon_grid)
     cos_lat = np.cos(np.radians(lat))
     dist = np.abs(lat_grid - lat) + np.abs(lon_grid - lon) * cos_lat
     idx = np.unravel_index(np.argmin(dist), dist.shape)
@@ -144,22 +152,31 @@ def backfill_ecmwf(
         day_inserted = 0
 
         for fxx in fxx_range:
+            grbs = None
+            grib_path = None
             try:
                 H = Herbie(
                     model_run.strftime("%Y-%m-%d %H:%M"),
-                    model="ecmwf",
+                    model="ifs",
                     product="oper",
                     fxx=fxx,
                     priority=["aws"],
                 )
-                grib_path = H.download("TMP:2 m above ground")
+                grib_path = H.download(":2t:")
                 grbs = pygrib.open(str(grib_path))
-                msg = grbs.select(name="2 metre temperature")[0]
+                msg = grbs[1]  # single message: 2m temperature
             except Exception as e:
                 logger.debug(
                     "ECMWF {:02d}z {} fxx={}: not available — {}",
                     run_hour, current, fxx, e,
                 )
+                if grbs is not None:
+                    grbs.close()
+                if grib_path is not None:
+                    try:
+                        os.remove(str(grib_path))
+                    except OSError:
+                        pass
                 continue
 
             valid_at = model_run + timedelta(hours=fxx)
@@ -182,6 +199,14 @@ def backfill_ecmwf(
                 pass  # Duplicate
             except Exception as e:
                 logger.warning("ECMWF extract failed fxx={}: {}", fxx, e)
+            finally:
+                if grbs is not None:
+                    grbs.close()
+                if grib_path is not None:
+                    try:
+                        os.remove(str(grib_path))
+                    except OSError:
+                        pass
 
             time.sleep(delay_seconds)
 

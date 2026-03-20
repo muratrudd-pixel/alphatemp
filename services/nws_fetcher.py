@@ -230,6 +230,7 @@ class NWSFetcher:
                     "min_temp_f": min_temp,
                     "source": "NWS_CLI",
                     "ingested_at": now_utc.replace(tzinfo=None),
+                    "raw_text": text,
                 })
 
         return rows
@@ -265,10 +266,11 @@ class NWSFetcher:
                 [row["station_id"], row["obs_date"]],
             )
             con.execute(
-                """INSERT INTO nws_daily (station_id, obs_date, max_temp_f, min_temp_f, source, ingested_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO nws_daily (station_id, obs_date, max_temp_f, min_temp_f, source, ingested_at, raw_text)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 [row["station_id"], row["obs_date"], row["max_temp_f"],
-                 row["min_temp_f"], row["source"], row["ingested_at"]],
+                 row["min_temp_f"], row["source"], row["ingested_at"],
+                 row.get("raw_text")],
             )
             return True
         finally:

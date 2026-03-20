@@ -20,6 +20,7 @@ from services.backtester import (
     uniform_model, walk_forward_model,
     wf_regression_full, wf_regression_full_no_spinup,
     wf_regression_cross_hour,
+    wf_multimodel_full,
 )
 
 
@@ -35,7 +36,7 @@ def parse_args():
     p.add_argument("--max-spread", type=float, default=10.0, help="Maximum spread (cents)")
     p.add_argument("--bootstrap", type=int, default=10000, help="Bootstrap iterations")
     p.add_argument("--model", type=str, default="uniform",
-                    help="Model: uniform, walkforward, ols, ols_no_spinup, emos, xgboost, cross_hour")
+                    help="Model: uniform, walkforward, ols, ols_no_spinup, emos, xgboost, cross_hour, multimodel")
     return p.parse_args()
 
 
@@ -104,6 +105,7 @@ def main():
         "ols": wf_regression_full,
         "ols_no_spinup": wf_regression_full_no_spinup,
         "cross_hour": wf_regression_cross_hour,
+        "multimodel": wf_multimodel_full,
     }
     # Lazy imports for optional candidates
     if args.model == "emos":

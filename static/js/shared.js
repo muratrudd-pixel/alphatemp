@@ -9,42 +9,42 @@
 // Color Palette
 // -----------------------------------------------------------------------
 var COLORS = {
-    green:    '#10b981',
-    red:      '#ef4444',
-    amber:    '#f59e0b',
-    blue:     '#3b82f6',
-    teal:     '#2dd4bf',
-    white:    '#f1f5f9',
-    slate400: '#94a3b8',
-    slate500: '#64748b',
-    slate700: '#334155',
+  green: "#10b981",
+  red: "#ef4444",
+  amber: "#f59e0b",
+  blue: "#3b82f6",
+  teal: "#2dd4bf",
+  white: "#f1f5f9",
+  slate400: "#94a3b8",
+  slate500: "#64748b",
+  slate700: "#334155",
 };
 
 // -----------------------------------------------------------------------
 // Plotly Defaults
 // -----------------------------------------------------------------------
 var PLOTLY_LAYOUT = {
-    paper_bgcolor: '#0f172a',
-    plot_bgcolor:  '#0f172a',
-    font: {
-        family: 'Space Mono, monospace',
-        color:  '#94a3b8',
-        size:   11,
-    },
-    margin: { t: 10, r: 20, b: 40, l: 50 },
-    xaxis: {
-        gridcolor: 'rgba(51,65,85,0.5)',
-        zeroline: false,
-    },
-    yaxis: {
-        gridcolor: 'rgba(51,65,85,0.5)',
-        zeroline: false,
-    },
+  paper_bgcolor: "#ffffff",
+  plot_bgcolor: "#ffffff",
+  font: {
+    family: "JetBrains Mono, Roboto Mono, monospace",
+    color: "#6b7280",
+    size: 11,
+  },
+  margin: { t: 10, r: 20, b: 40, l: 50 },
+  xaxis: {
+    gridcolor: "rgba(0,0,0,0.06)",
+    zeroline: false,
+  },
+  yaxis: {
+    gridcolor: "rgba(0,0,0,0.06)",
+    zeroline: false,
+  },
 };
 
 var PLOTLY_CONFIG = {
-    displayModeBar: false,
-    responsive: true,
+  displayModeBar: false,
+  responsive: true,
 };
 
 // -----------------------------------------------------------------------
@@ -59,23 +59,27 @@ var PLOTLY_CONFIG = {
  * @returns {string}       — Formatted ET string
  */
 function toET(utcIso, opts) {
-    if (!utcIso) return '--';
-    // Ensure the string is treated as UTC
-    var input = utcIso;
-    if (input.indexOf('Z') === -1 && input.indexOf('+') === -1 && input.indexOf('T') !== -1) {
-        input = input + 'Z';
-    }
-    var d = new Date(input);
-    if (isNaN(d.getTime())) return '--';
+  if (!utcIso) return "--";
+  // Ensure the string is treated as UTC
+  var input = utcIso;
+  if (
+    input.indexOf("Z") === -1 &&
+    input.indexOf("+") === -1 &&
+    input.indexOf("T") !== -1
+  ) {
+    input = input + "Z";
+  }
+  var d = new Date(input);
+  if (isNaN(d.getTime())) return "--";
 
-    var defaults = {
-        timeZone: 'America/New_York',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-    };
-    var merged = Object.assign({}, defaults, opts || {});
-    return d.toLocaleString('en-US', merged);
+  var defaults = {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  };
+  var merged = Object.assign({}, defaults, opts || {});
+  return d.toLocaleString("en-US", merged);
 }
 
 // -----------------------------------------------------------------------
@@ -89,11 +93,11 @@ function toET(utcIso, opts) {
  * @returns {string}     — YYYY-MM-DD in ET
  */
 function getTargetDate(which) {
-    var d = new Date();
-    if (which === 'tomorrow') {
-        d.setDate(d.getDate() + 1);
-    }
-    return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  var d = new Date();
+  if (which === "tomorrow") {
+    d.setDate(d.getDate() + 1);
+  }
+  return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 }
 
 // -----------------------------------------------------------------------
@@ -107,20 +111,20 @@ function getTargetDate(which) {
  * @returns {Promise<object|null>}
  */
 function fetchAPI(url) {
-    return fetch(url)
-        .then(function(r) {
-            if (!r.ok) {
-                console.error('fetchAPI non-OK:', r.status, url);
-                showToast('API error: ' + url, 'error');
-                return null;
-            }
-            return r.json();
-        })
-        .catch(function(e) {
-            console.error('fetchAPI error:', url, e);
-            showToast('API error: ' + url, 'error');
-            return null;
-        });
+  return fetch(url)
+    .then(function (r) {
+      if (!r.ok) {
+        console.error("fetchAPI non-OK:", r.status, url);
+        showToast("API error: " + url, "error");
+        return null;
+      }
+      return r.json();
+    })
+    .catch(function (e) {
+      console.error("fetchAPI error:", url, e);
+      showToast("API error: " + url, "error");
+      return null;
+    });
 }
 
 // -----------------------------------------------------------------------
@@ -134,11 +138,11 @@ function fetchAPI(url) {
  * @returns {{text: string, colorClass: string}}
  */
 function formatPnL(amount) {
-    if (amount == null) return { text: '--', colorClass: 'text-slate-500' };
-    var sign = amount >= 0 ? '+' : '';
-    var text = sign + '$' + Math.abs(amount).toFixed(2);
-    var colorClass = amount >= 0 ? 'text-emerald-400' : 'text-red-400';
-    return { text: text, colorClass: colorClass };
+  if (amount == null) return { text: "--", colorClass: "text-slate-500" };
+  var sign = amount >= 0 ? "+" : "";
+  var text = sign + "$" + Math.abs(amount).toFixed(2);
+  var colorClass = amount >= 0 ? "text-emerald-600" : "text-red-600";
+  return { text: text, colorClass: colorClass };
 }
 
 /**
@@ -149,19 +153,19 @@ function formatPnL(amount) {
  * @returns {{text: string, colorClass: string}}
  */
 function formatEdge(edge) {
-    if (edge == null) return { text: '--', colorClass: 'text-slate-500' };
-    var pct = (edge * 100).toFixed(1);
-    var sign = edge >= 0 ? '+' : '';
-    var text = sign + pct + '%';
-    var colorClass;
-    if (edge >= 0.10) {
-        colorClass = 'text-emerald-400';
-    } else if (edge >= 0) {
-        colorClass = 'text-amber-400';
-    } else {
-        colorClass = 'text-red-400';
-    }
-    return { text: text, colorClass: colorClass };
+  if (edge == null) return { text: "--", colorClass: "text-slate-500" };
+  var pct = (edge * 100).toFixed(1);
+  var sign = edge >= 0 ? "+" : "";
+  var text = sign + pct + "%";
+  var colorClass;
+  if (edge >= 0.1) {
+    colorClass = "text-emerald-400";
+  } else if (edge >= 0) {
+    colorClass = "text-amber-400";
+  } else {
+    colorClass = "text-red-400";
+  }
+  return { text: text, colorClass: colorClass };
 }
 
 // -----------------------------------------------------------------------
@@ -175,8 +179,8 @@ function formatEdge(edge) {
  * @param {*}      text — Value to display
  */
 function setText(id, text) {
-    var el = document.getElementById(id);
-    if (el) el.textContent = text;
+  var el = document.getElementById(id);
+  if (el) el.textContent = text;
 }
 
 /**
@@ -187,11 +191,12 @@ function setText(id, text) {
  * @param {string} colorClass — Tailwind color class
  */
 function setColoredText(id, text, colorClass) {
-    var el = document.getElementById(id);
-    if (el) {
-        el.textContent = text;
-        el.className = el.className.replace(/text-\S+/g, '').trim() + ' ' + colorClass;
-    }
+  var el = document.getElementById(id);
+  if (el) {
+    el.textContent = text;
+    el.className =
+      el.className.replace(/text-\S+/g, "").trim() + " " + colorClass;
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -203,34 +208,48 @@ function setColoredText(id, text, colorClass) {
  * Called on page load and every 60s from base.html.
  */
 async function refreshKPI() {
-    var data = await fetchAPI('/api/kpi-summary?city=' + (window.selectedCity || 'nyc'));
-    if (!data) return;
+  var data = await fetchAPI(
+    "/api/kpi-summary?city=" + (window.selectedCity || "nyc"),
+  );
+  if (!data) return;
 
-    var dot = document.getElementById('kpi-status-dot');
-    if (dot) {
-        dot.style.background = data.system_status === 'green' ? '#10b981' :
-                               data.system_status === 'amber' ? '#f59e0b' : '#ef4444';
-    }
+  var dot = document.getElementById("kpi-status-dot");
+  if (dot) {
+    dot.style.background =
+      data.system_status === "green"
+        ? "#10b981"
+        : data.system_status === "amber"
+          ? "#f59e0b"
+          : "#ef4444";
+  }
 
-    setText('kpi-model-high', data.model_high ? data.model_high + '\u00B0F' : '--');
+  setText(
+    "kpi-model-high",
+    data.model_high ? data.model_high + "\u00B0F" : "--",
+  );
 
-    var stl = data.settlement || {};
-    if (stl.source === 'NWS_CLI') {
-        setText('kpi-settlement', stl.temp + '\u00B0F (CLI)');
-    } else if (stl.source === 'DSM') {
-        setText('kpi-settlement', stl.temp + '\u00B0F (DSM)');
-    } else {
-        setText('kpi-settlement', 'Pending');
-    }
+  var stl = data.settlement || {};
+  if (stl.source === "NWS_CLI") {
+    setText("kpi-settlement", stl.temp + "\u00B0F (CLI)");
+  } else if (stl.source === "DSM") {
+    setText("kpi-settlement", stl.temp + "\u00B0F (DSM)");
+  } else {
+    setText("kpi-settlement", "Pending");
+  }
 
-    setText('kpi-consensus', data.market_consensus || '--');
-    setText('kpi-drift', data.drift !== null ? (data.drift > 0 ? '+' : '') + data.drift + '\u00B0F' : '--');
-    setText('kpi-open-pos', data.open_positions);
+  setText("kpi-consensus", data.market_consensus || "--");
+  setText(
+    "kpi-drift",
+    data.drift !== null
+      ? (data.drift > 0 ? "+" : "") + data.drift + "\u00B0F"
+      : "--",
+  );
+  setText("kpi-open-pos", data.open_positions);
 
-    var dayPnl = formatPnL(data.day_pnl || 0);
-    var totalPnl = formatPnL(data.total_pnl || 0);
-    setColoredText('kpi-day-pnl', dayPnl.text, dayPnl.colorClass);
-    setColoredText('kpi-total-pnl', totalPnl.text, totalPnl.colorClass);
+  var dayPnl = formatPnL(data.day_pnl || 0);
+  var totalPnl = formatPnL(data.total_pnl || 0);
+  setColoredText("kpi-day-pnl", dayPnl.text, dayPnl.colorClass);
+  setColoredText("kpi-total-pnl", totalPnl.text, totalPnl.colorClass);
 }
 
 // -----------------------------------------------------------------------
@@ -245,14 +264,17 @@ async function refreshKPI() {
  * @param {number} rows       — Number of skeleton rows (default 5)
  */
 function showSkeleton(containerId, rows) {
-    rows = rows || 5;
-    var el = document.getElementById(containerId);
-    if (!el) return;
-    var html = '';
-    for (var i = 0; i < rows; i++) {
-        html += '<div class="skeleton mb-2" style="width:' + (60 + Math.random() * 30) + '%; height: 14px;"></div>';
-    }
-    el.innerHTML = html;
+  rows = rows || 5;
+  var el = document.getElementById(containerId);
+  if (!el) return;
+  var html = "";
+  for (var i = 0; i < rows; i++) {
+    html +=
+      '<div class="skeleton mb-2" style="width:' +
+      (60 + Math.random() * 30) +
+      '%; height: 14px;"></div>';
+  }
+  el.innerHTML = html;
 }
 
 // -----------------------------------------------------------------------
@@ -266,18 +288,24 @@ function showSkeleton(containerId, rows) {
  * @param {string} type    — 'error', 'warning', or 'info'
  */
 function showToast(message, type) {
-    type = type || 'error';
-    var container = document.getElementById('toast-container');
-    if (!container) return;
-    var colors = {
-        error: 'bg-red-900/80 border-red-700 text-red-200',
-        warning: 'bg-amber-900/80 border-amber-700 text-amber-200',
-        info: 'bg-slate-800/80 border-slate-600 text-slate-300',
-    };
-    var toast = document.createElement('div');
-    toast.className = 'px-4 py-2 rounded border text-xs font-mono mb-2 transition-opacity duration-500 ' + (colors[type] || colors.info);
-    toast.textContent = message;
-    container.appendChild(toast);
-    setTimeout(function() { toast.style.opacity = '0'; }, 8000);
-    setTimeout(function() { toast.remove(); }, 10000);
+  type = type || "error";
+  var container = document.getElementById("toast-container");
+  if (!container) return;
+  var colors = {
+    error: "bg-red-900/80 border-red-700 text-red-200",
+    warning: "bg-amber-900/80 border-amber-700 text-amber-200",
+    info: "bg-slate-800/80 border-slate-600 text-slate-300",
+  };
+  var toast = document.createElement("div");
+  toast.className =
+    "px-4 py-2 rounded border text-xs font-mono mb-2 transition-opacity duration-500 " +
+    (colors[type] || colors.info);
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(function () {
+    toast.style.opacity = "0";
+  }, 8000);
+  setTimeout(function () {
+    toast.remove();
+  }, 10000);
 }

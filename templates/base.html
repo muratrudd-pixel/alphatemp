@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="bg-slate-900">
+<html lang="en" style="background:#f0f1f3;">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,46 +7,52 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
-<body class="min-h-screen bg-slate-900 text-slate-300" style="font-family: 'Space Mono', monospace;">
+<body class="min-h-screen" style="font-family: 'Inter', -apple-system, sans-serif; background: #f0f1f3; color: #374151;">
 
-    <!-- KPI Header Bar -->
-    <header class="border-b border-slate-700 bg-slate-900/80 backdrop-blur">
-      <div class="flex items-center justify-between px-4 py-2 text-xs">
-        <div class="flex items-center gap-3">
+    <!-- Header Bar (stays dark) -->
+    <header style="background: #1a1b2e;">
+      <!-- Top row: Logo + KPIs + Nav -->
+      <div class="flex items-center justify-between px-5 py-3">
+        <!-- Logo -->
+        <div class="flex items-center gap-3 shrink-0">
           <span id="kpi-status-dot" class="glow-dot"></span>
-          <span class="text-slate-300 font-bold tracking-wide">ALPHATEMP</span>
+          <span class="text-white font-bold tracking-wider text-sm">ALPHATEMP</span>
         </div>
-        <div class="flex items-center gap-6 text-slate-400">
-          <span>Model High: <strong id="kpi-model-high" class="text-white">--</strong></span>
-          <span>Settlement: <strong id="kpi-settlement" class="text-white">--</strong></span>
-          <span>Consensus: <strong id="kpi-consensus" class="text-slate-300">--</strong></span>
-          <span>Drift: <strong id="kpi-drift" class="text-slate-300">--</strong></span>
+
+        <!-- KPI Scorecard -->
+        <div class="flex items-center gap-5" style="font-family: 'JetBrains Mono', monospace;">
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Model High</span><strong id="kpi-model-high" class="text-white text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Settlement</span><strong id="kpi-settlement" class="text-white text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Consensus</span><strong id="kpi-consensus" class="text-gray-200 text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Drift</span><strong id="kpi-drift" class="text-gray-200 text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Open Positions</span><strong id="kpi-open-pos" class="text-white text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Day P&L</span><strong id="kpi-day-pnl" class="text-emerald-400 text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Total P&L</span><strong id="kpi-total-pnl" class="text-emerald-400 text-sm font-semibold">--</strong></div>
         </div>
-        <div class="flex items-center gap-6 text-slate-400">
-          <span>Open: <strong id="kpi-open-pos" class="text-white">--</strong></span>
-          <span>Day P&L: <strong id="kpi-day-pnl" class="text-white">--</strong></span>
-          <span>Total: <strong id="kpi-total-pnl" class="text-white">--</strong></span>
-          <span id="et-clock" class="text-slate-500">--:-- ET</span>
-        </div>
-      </div>
-      <div class="flex items-center justify-between px-4 py-1 border-t border-slate-800">
-        <nav class="flex gap-1">
-          {% for tab, label in [('operations', 'Operations'), ('blotter', 'Blotter'), ('trading', 'Trading'), ('health', 'Health'), ('performance', 'Performance'), ('review', 'Review')] %}
-          <a href="/{{ tab }}"
-             class="px-3 py-1 rounded text-xs {% if active_tab == tab %}bg-slate-700 text-white{% else %}text-slate-500 hover:text-slate-300{% endif %}">
-            {{ label }}
-          </a>
-          {% endfor %}
-        </nav>
-        <div class="flex items-center gap-2">
-          <button onclick="setDateToggle('today')" id="btn-today"
-                  class="px-2 py-0.5 rounded text-xs bg-slate-700 text-white">Today</button>
-          <button onclick="setDateToggle('tomorrow')" id="btn-tomorrow"
-                  class="px-2 py-0.5 rounded text-xs text-slate-500 hover:text-slate-300">Tomorrow</button>
-          <span class="text-slate-600 text-xs ml-2" id="countdown-display">60s</span>
+
+        <!-- Nav + Controls -->
+        <div class="flex flex-col items-end gap-1.5 shrink-0">
+          <nav class="flex gap-1">
+            {% for tab, label in [('operations', 'Operations'), ('blotter', 'Blotter'), ('health', 'Health'), ('review', 'Review')] %}
+            <a href="/{{ tab }}"
+               class="px-3 py-1 text-xs {% if active_tab == tab %}text-white font-medium{% else %}text-gray-500 hover:text-gray-300{% endif %}"
+               {% if active_tab == tab %}style="border-bottom: 2px solid #ffffff;"{% endif %}>
+              {{ label }}
+            </a>
+            {% endfor %}
+          </nav>
+          <div class="flex items-center gap-3 text-xs">
+            <div class="toggle-pill">
+              <button onclick="setDateToggle('today')" id="btn-today" class="active">Today</button>
+              <button onclick="setDateToggle('tomorrow')" id="btn-tomorrow">Tomorrow</button>
+            </div>
+            <span class="text-gray-500" id="countdown-display" style="font-family: 'JetBrains Mono', monospace;">60s</span>
+            <span id="et-clock" class="text-gray-400" style="font-family: 'JetBrains Mono', monospace;">--:-- ET</span>
+          </div>
         </div>
       </div>
     </header>
@@ -59,38 +65,24 @@
     <!-- Shared JS utilities -->
     <script src="/static/js/shared.js"></script>
 
-    <!-- Base page JS: state, clock, date toggle, countdown, KPI refresh -->
+    <!-- Base page JS -->
     <script>
-    // -----------------------------------------------------------------------
-    // Global State
-    // -----------------------------------------------------------------------
     let selectedCity = 'NYC';
     let selectedDate = getTargetDate('today');
     let countdown = 60;
 
-    // -----------------------------------------------------------------------
-    // Date Toggle
-    // -----------------------------------------------------------------------
     const btnToday = document.getElementById('btn-today');
     const btnTomorrow = document.getElementById('btn-tomorrow');
 
     function setDateToggle(which) {
         selectedDate = getTargetDate(which);
-        if (which === 'today') {
-            btnToday.className = 'px-2 py-0.5 rounded text-xs bg-slate-700 text-white';
-            btnTomorrow.className = 'px-2 py-0.5 rounded text-xs text-slate-500 hover:text-slate-300';
-        } else {
-            btnToday.className = 'px-2 py-0.5 rounded text-xs text-slate-500 hover:text-slate-300';
-            btnTomorrow.className = 'px-2 py-0.5 rounded text-xs bg-slate-700 text-white';
-        }
+        btnToday.className = which === 'today' ? 'active' : '';
+        btnTomorrow.className = which === 'tomorrow' ? 'active' : '';
         if (typeof onDateChange === 'function') {
             onDateChange();
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Clock (updates every second)
-    // -----------------------------------------------------------------------
     function updateClock() {
         const now = new Date();
         const et = now.toLocaleString('en-US', {
@@ -103,18 +95,12 @@
     setInterval(updateClock, 1000);
     updateClock();
 
-    // -----------------------------------------------------------------------
-    // Refresh Countdown (ticks every second, resets to 60 on refresh)
-    // -----------------------------------------------------------------------
     function updateCountdown() {
         countdown = Math.max(0, countdown - 1);
         document.getElementById('countdown-display').textContent = countdown + 's';
     }
     setInterval(updateCountdown, 1000);
 
-    // -----------------------------------------------------------------------
-    // KPI Refresh (on load + every 60s)
-    // -----------------------------------------------------------------------
     refreshKPI();
     setInterval(refreshKPI, 60000);
     </script>

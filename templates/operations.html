@@ -1,49 +1,59 @@
 {% extends "base.html" %}
 {% block title %}Operations{% endblock %}
 {% block content %}
-<div id="stale-banner" class="hidden bg-amber-900/50 border border-amber-700 text-amber-200 text-xs px-4 py-2 rounded mb-2"></div>
-<div class="space-y-4">
+<div id="stale-banner" class="hidden stale-banner text-xs px-4 py-2 mb-3 flex items-center gap-2">
+    <svg class="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 6a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 6zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
+    <span id="stale-text"></span>
+</div>
 
-    <!-- Top Row: Temperature Curve + Feeds -->
-    <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+<div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+    <!-- Temperature Curve (top left) -->
+    <div class="lg:col-span-3 at-card p-5">
+        <h2 class="text-base font-semibold text-gray-900 mb-3">Temperature Curve</h2>
+        <div id="temp-curve-chart" style="width:100%; min-height:400px;"></div>
+        <div id="chart-legend" class="flex flex-wrap items-center justify-center gap-x-5 gap-y-1 mt-2 pt-2 text-[11px] text-gray-500"></div>
+    </div>
 
-        <!-- Temperature Curve (col-span-3) -->
-        <div class="lg:col-span-3 bg-slate-800 rounded-lg p-4 border border-slate-700">
-            <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-3">Temperature Curve</h2>
-            <div id="temp-curve-chart" style="width:100%; min-height:420px;"></div>
-        </div>
-
-        <!-- Right Column: Obs Feed + Forecast Runs (col-span-2) -->
-        <div class="lg:col-span-2 flex flex-col gap-4">
-
-            <!-- Observation Feed -->
-            <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
-                <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Observation Feed</h2>
-                <div id="obs-feed" class="feed-scroll" style="max-height:240px;">
-                    <p class="text-xs text-slate-500">No observations</p>
-                </div>
-            </div>
-
-            <!-- Forecast Runs -->
-            <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
-                <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Forecast Runs</h2>
-                <div id="fcst-feed" class="feed-scroll" style="max-height:240px;">
-                    <p class="text-xs text-slate-500">No forecast runs</p>
-                </div>
-            </div>
-
+    <!-- Observation Feed (top right) -->
+    <div class="lg:col-span-2 at-card p-5">
+        <h2 class="text-base font-semibold text-gray-900 mb-3">Observation Feed</h2>
+        <div id="obs-feed" class="feed-scroll" style="max-height:420px;">
+            <p class="text-xs text-gray-400">No observations</p>
         </div>
     </div>
 
-    <!-- Bottom Row: Bracket Spread (full width) -->
-    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
-        <h2 class="text-sm font-bold text-slate-100 uppercase tracking-widest mb-2">Order Book<span id="bracket-stale" class="hidden"></span></h2>
+    <!-- Order Book Ladder (bottom left) -->
+    <div class="lg:col-span-3 at-card p-5">
+        <h2 class="text-base font-semibold text-gray-900 mb-3">Order Book Ladder<span id="bracket-stale" class="hidden"></span></h2>
         <div id="bracket-chart" style="width:100%;"></div>
-        <div id="liquidity-bar" class="mt-2"></div>
+        <div id="liquidity-bar" class="mt-3"></div>
+    </div>
+
+    <!-- Forecast Runs (bottom right) -->
+    <div class="lg:col-span-2 flex flex-col gap-4">
+        <div class="at-card p-5">
+            <h2 class="text-base font-semibold text-gray-900 mb-3">Forecast Runs</h2>
+            <div id="fcst-feed" class="feed-scroll" style="max-height:260px;">
+                <p class="text-xs text-gray-400">No forecast runs</p>
+            </div>
+        </div>
+
+        <!-- NWS CLI Report (Settlement Truth) -->
+        <div class="at-card p-5">
+            <button onclick="document.getElementById('cli-body').classList.toggle('hidden'); this.querySelector('svg').classList.toggle('rotate-180');"
+                    class="flex items-center justify-between w-full text-left">
+                <h2 class="text-base font-semibold text-gray-900">NWS CLI Report</h2>
+                <svg class="w-4 h-4 text-gray-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </button>
+            <div id="cli-body" class="hidden mt-3">
+                <div id="cli-status" class="text-xs text-gray-400 mb-2"></div>
+                <pre id="cli-text" class="text-[11px] at-mono text-gray-700 bg-gray-50 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto"></pre>
+            </div>
+        </div>
     </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/js/operations.js?v=8"></script>
+<script src="/static/js/operations.js?v=15"></script>
 {% endblock %}

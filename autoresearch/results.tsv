@@ -129,3 +129,48 @@ timestamp	composite	brier	hit_rate	pnl_cents	evals	elapsed_s	description
 2026-03-11T01:53:58.342074	0.311288	0.6513	0.4615	14808	1248	72.9	Increase MIN_BRACKET_PROB to 0.001 (prune tiny brackets)
 2026-03-11T01:55:20.250392	0.312186	0.6549	0.4615	14860	1248	73.1	MIN_BRACKET_PROB=0.005 (aggressive pruning)
 2026-03-11T01:56:59.354729	0.311068	0.6509	0.4615	14808	1248	73.3	MIN_SAMPLES=60 (more permissive fitting)
+2026-03-11T01:58:54.987207	0.367095	0.6395	0.4407	12052	1248	70.2	Drop humidity feature (redundant with dp_depression)
+2026-03-11T02:00:35.488058	0.318654	0.6533	0.4607	14516	1248	73.2	Increase spread floor from 0.5 to 1.5 (prevent overconfidence)
+2026-03-11T02:01:58.993247	0.315301	0.6525	0.4607	14656	1248	74.0	Spread floor 1.0
+2026-03-11T02:03:51.675025	0.333041	0.6496	0.4543	13800	1248	72.8	Shift extreme quantiles to 0.03/0.97 (extend known CDF)
+2026-03-11T02:05:43.815503	0.320207	0.6441	0.4623	14180	1248	73.5	Add fcst_high*rain_day interaction (temp-dependent rain error)
+2026-03-11T02:07:39.095370	0.328389	0.6502	0.4567	14012	1248	80.0	Add 8th quantile at 0.15 (better lower-half CDF resolution)
+2026-03-11T02:09:07.909754	0.319675	0.6520	0.4583	14460	1248	80.4	Add 8th quantile at 0.85 (better upper-half CDF resolution)
+2026-03-11T02:11:12.415342	0.320042	0.6507	0.4583	14408	1248	72.0	Seasonal tail modulation (heavier tails in summer convective season)
+2026-03-11T02:13:42.001809	0.446212	0.6735	0.4159	9432	1248	75.1	Add HRRR forecast stdev as 24th feature (non-linear uncertainty)
+2026-03-11T02:16:12.887842	0.449498	0.6529	0.4199	8684	1248	78.7	Skewed normal CDF instead of piecewise linear + exp tails
+2026-03-11T02:17:50.632681	0.529246	0.7750	0.3606	8756	1248	72.4	Softer running_max floor (running_max - 2.0)
+2026-03-11T02:20:27.642281	0.354121	0.6494	0.4471	12864	1248	73.0	Add ecmwf_warmer binary as 24th feature (ECMWF > HRRR regime)
+2026-03-11T02:53:24.513473	0.457191	0.6529	0.4159	8360	1248	81.5	Ensemble: LP QR + HistGBR (shared per run_hour, 50/50 blend)
+2026-03-11T02:55:29.721788	0.343596	0.6417	0.4543	13084	1248	82.0	Ensemble: LP QR (80%) + HistGBR (20%), retrain monthly
+2026-03-11T03:01:42.865643	0.422977	0.6479	0.4215	9808	1248	89.2	RKS v2: N=8, gamma=0.01 (smaller kernel, fewer features)
+2026-03-11T03:04:18.101571	0.496643	0.6852	0.3982	7520	1248	70.9	Exponential decay weighting: recent training data weighted higher (alpha=2.0)
+2026-03-11T03:05:39.372695	0.351525	0.6519	0.4519	13000	1248	72.2	Exponential decay weighting: alpha=0.5 (gentle recent bias)
+2026-03-11T03:06:58.773663	0.329559	0.6445	0.4631	13732	1248	72.7	Exponential decay weighting: alpha=0.3 (very gentle)
+2026-03-11T04:22:29.362551	0.334971	0.6570	0.4570	13872	1232	75.2	Add GFS MOS spread feature (bias-corrected model disagreement)
+2026-03-11T04:24:21.385565	0.734431	0.7645	0.2971	-656	1232	73.7	Replace gfs_spread with mos_spread (bias-corrected > raw GFS)
+2026-03-11T04:33:35.979844	0.385989	0.6603	0.4286	11832	1232	77.0	Add NBM spread + NBM-vs-HRRR features (calibrated ensemble uncertainty)
+2026-03-11T04:34:25.379733	0.555643	0.7510	0.3425	7060	1232	2.0	NBM direct CDF: use NBM percentiles as temperature distribution when available
+2026-03-11T12:53:34.719990	0.341342	0.6477	0.4521	13376	1232	71.2	gfs_evolution: latest GFS run minus 00z (forecast revision signal)
+2026-03-11T12:55:33.571351	0.722168	0.7430	0.3084	-764	1232	70.8	gfs_latest_spread: use most recent GFS run for gfs_spread (not always 00z)
+2026-03-11T12:59:16.389186	0.381361	0.6409	0.4326	11496	1232	71.1	interaction: fcst_high*ecmwf_spread (temp-dependent model disagreement)
+2026-03-11T13:01:46.085327	0.304987	0.6574	0.4643	15240	1232	78.3	standardize features (zero mean, unit var) before LP fitting
+2026-03-11T13:03:54.872840	0.341342	0.6477	0.4521	13376	1232	80.4	standardize + gfs_evolution (24 features, standardized)
+2026-03-11T13:05:45.557709	0.304987	0.6574	0.4643	15240	1232	79.2	standardize features (zero mean, unit var) before LP fitting
+2026-03-11T13:07:20.167391	0.304987	0.6574	0.4643	15240	1232	78.5	standardize + lambda_upper=0.25 (re-tune tail with standardization)
+2026-03-11T13:08:51.509015	0.304987	0.6574	0.4643	15240	1232	79.1	standardize + lambda_upper=0.20 (fatter upper tail)
+2026-03-11T13:10:55.379176	0.346662	0.6532	0.4505	13284	1232	75.7	standardize + drop solar_spread (22 features, less noise)
+2026-03-11T13:12:38.625001	0.401430	0.6418	0.4399	10472	1232	60.2	standardize + TRAIN_WINDOW=150d (shorter, more recent data)
+2026-03-11T13:17:26.742517	0.321007	0.6536	0.4578	14444	1232	62.3	standardize + 5 quantiles (speed: fewer LP fits)
+2026-03-11T13:20:43.158685	0.304987	0.6574	0.4643	15240	1232	72.4	robust standardize (median/IQR) — outlier-resistant
+2026-03-11T13:22:37.135293	0.311379	0.6498	0.4643	14732	1232	79.1	standardize + cyclical update_hour (sin/cos encoding, 24 features)
+2026-03-11T13:24:28.886551	0.304987	0.6574	0.4643	15240	1232	78.0	standardize + highs-ds solver (dual simplex)
+2026-03-11T13:26:08.410669	0.304987	0.6574	0.4643	15240	1232	85.4	standardize + highs-ipm solver (interior point)
+2026-03-11T13:28:02.490162	0.376755	0.6677	0.4513	12212	1232	78.5	standardize + winsorize features at 1st/99th percentile
+2026-03-11T13:30:31.012978	0.315929	0.6499	0.4643	14516	1232	80.1	standardize + update_hour² (quadratic intraday, 24 features)
+2026-03-11T13:32:44.551303	0.304987	0.6574	0.4643	15240	1232	77.4	standardize features before LP (improves conditioning)
+2026-03-12T01:47:58.927475	0.314041	0.6477	0.4619	14576	1232	77.4	standardize + ecmwf_evolution (12z minus 00z revision, 24 features)
+2026-03-12T01:49:58.755837	0.304987	0.6574	0.4643	15240	1232	77.1	standardize features before LP (improves conditioning)
+2026-03-12T01:59:09.269425	0.671797	0.7380	0.3417	1144	1232	56.6	LightGBM quantile regression (non-linear, same 23 features)
+2026-03-12T02:05:51.545546	0.797117	0.7960	0.2614	-2428	1232	15.9	kNN quantile regression (k=25, non-linear, zero training time)
+2026-03-12T02:06:57.390841	0.691622	0.6832	0.3052	-840	1232	12.2	LightGBM QR, train-once (100 trees, 15 leaves, all run_hours combined)

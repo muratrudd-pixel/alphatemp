@@ -30,9 +30,9 @@ function setReviewRange(r) {
         var btn = document.getElementById('rr-' + id);
         if (!btn) return;
         if (id === r) {
-            btn.className = 'px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-100';
+            btn.className = 'px-3 py-1 text-xs uppercase tracking-wider rounded border border-gray-200 bg-gray-900 text-white';
         } else {
-            btn.className = 'px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600';
+            btn.className = 'px-3 py-1 text-xs uppercase tracking-wider rounded border border-gray-200 bg-gray-100 text-gray-500 hover:bg-gray-200';
         }
     });
 
@@ -54,9 +54,9 @@ function setFilter(f) {
         var btn = document.getElementById('filter-' + id);
         if (!btn) return;
         if (id === f) {
-            btn.className = 'px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-100';
+            btn.className = 'px-3 py-1 text-xs uppercase tracking-wider rounded border border-gray-200 bg-gray-900 text-white';
         } else {
-            btn.className = 'px-3 py-1 text-xs uppercase tracking-wider rounded border border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600';
+            btn.className = 'px-3 py-1 text-xs uppercase tracking-wider rounded border border-gray-200 bg-gray-100 text-gray-500 hover:bg-gray-200';
         }
     });
 
@@ -86,7 +86,7 @@ function renderIncidents(data) {
     if (!el) return;
 
     if (!data || !data.incidents || data.incidents.length === 0) {
-        el.innerHTML = '<p class="text-sm text-slate-500 py-8 text-center">'
+        el.innerHTML = '<p class="text-sm text-gray-400 py-8 text-center">'
             + 'No incidents in this range. Either the model is perfect or there\'s no trading data yet.'
             + '</p>';
         return;
@@ -109,24 +109,24 @@ function renderIncidents(data) {
         }
         var severityWidth = Math.max(5, Math.min(100, (inc.severity || 0) * 100));
 
-        html += '<div class="bg-slate-800 rounded-lg p-4 border border-slate-700">';
+        html += '<div class="at-card rounded-lg p-4 border at-border-subtle">';
 
         // Top row: date + category | P&L + severity bar
         html += '<div class="flex items-center justify-between mb-2">';
         html += '<div class="flex items-center gap-2">';
-        html += '<span class="font-bold text-slate-100">' + (inc.date || '--') + '</span>';
-        html += '<span class="px-2 py-0.5 rounded text-xs bg-slate-700 text-slate-300">' + (inc.category || '') + '</span>';
+        html += '<span class="font-bold text-gray-900">' + (inc.date || '--') + '</span>';
+        html += '<span class="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-500">' + (inc.category || '') + '</span>';
         html += '</div>';
         html += '<div class="flex items-center gap-2">';
         html += '<span class="font-bold ' + pnl.colorClass + '">' + pnl.text + '</span>';
-        html += '<div class="w-16 h-1 bg-slate-700 rounded">';
+        html += '<div class="w-16 h-1 bg-gray-100 rounded">';
         html += '<div class="h-1 rounded" style="width: ' + severityWidth + '%; background: ' + severityColor + ';"></div>';
         html += '</div>';
         html += '</div>';
         html += '</div>';
 
         // Middle: bracket, direction, settlement temp
-        html += '<div class="text-xs text-slate-400 mb-1">';
+        html += '<div class="text-xs text-gray-500 mb-1">';
         var middleParts = [];
         if (inc.bracket) middleParts.push(inc.bracket);
         if (inc.direction) middleParts.push(inc.direction);
@@ -142,11 +142,11 @@ function renderIncidents(data) {
         html += '</div>';
 
         // Settlement source
-        html += '<div class="text-slate-600 text-[10px]">Settlement: ' + (inc.settlement_source || 'unknown') + '</div>';
+        html += '<div class="text-gray-300 text-[10px]">Settlement: ' + (inc.settlement_source || 'unknown') + '</div>';
 
         // Narrative
         if (inc.narrative) {
-            html += '<p class="text-slate-300 text-xs mt-1">' + inc.narrative + '</p>';
+            html += '<p class="text-gray-700 text-xs mt-1">' + inc.narrative + '</p>';
         }
 
         html += '</div>';
@@ -164,7 +164,7 @@ function renderPatterns(data) {
     if (!el) return;
 
     if (!data || !data.patterns || data.patterns.length === 0) {
-        el.innerHTML = '<p class="text-sm text-slate-500">No patterns detected yet</p>';
+        el.innerHTML = '<p class="text-sm text-gray-400">No patterns detected yet</p>';
         return;
     }
 
@@ -177,13 +177,13 @@ function renderPatterns(data) {
 
         html += '<li>';
         html += '<div class="flex items-center gap-2">';
-        html += '<span class="text-slate-500 font-mono">' + (idx + 1) + '.</span>';
-        html += '<span class="text-slate-200 font-bold">' + categoryName + '</span>';
+        html += '<span class="text-gray-400 font-mono">' + (idx + 1) + '.</span>';
+        html += '<span class="text-gray-800 font-bold">' + categoryName + '</span>';
         html += '<span class="' + pnl.colorClass + '">' + pnl.text + '</span>';
-        html += '<span class="text-slate-500">(' + (pat.count || 0) + ' incidents)</span>';
+        html += '<span class="text-gray-400">(' + (pat.count || 0) + ' incidents)</span>';
         html += '</div>';
         if (pat.suggested_action) {
-            html += '<p class="text-xs text-slate-400 ml-6 mt-0.5">' + pat.suggested_action + '</p>';
+            html += '<p class="text-xs text-gray-500 ml-6 mt-0.5">' + pat.suggested_action + '</p>';
         }
         html += '</li>';
     });

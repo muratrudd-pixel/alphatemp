@@ -1,10 +1,9 @@
 """AlphaTemp Web Dashboard — FastAPI backend serving Plotly + Tailwind frontend."""
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from pydantic import BaseModel
 
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -135,12 +134,6 @@ async def operations_page(request: Request):
     return templates.TemplateResponse("operations.html", {"request": request, "active_tab": "operations"})
 
 
-@app.get("/performance")
-async def performance_page(request: Request):
-    """Serve the Performance tab."""
-    return templates.TemplateResponse("performance.html", {"request": request, "active_tab": "performance"})
-
-
 @app.get("/review")
 async def review_page(request: Request):
     """Serve the Review tab."""
@@ -154,6 +147,37 @@ async def mobile_page(request: Request):
 
 
 STALE_THRESHOLD_MINUTES = 30
+
+
+@app.get("/api/nws-cli/{city}")
+async def nws_cli_report(city: str, date: str = None):
+    """Return raw NWS CLI report text for the given date."""
+    city = city.upper()
+    if city not in CITIES:
+        return {"error": f"Unknown city: {city}"}
+
+    station_id = CITIES[city]["settlement"]
+    from core.timezone import ET as _ET
+    target_date = date if date else datetime.now(_ET).strftime("%Y-%m-%d")
+
+    con = get_connection()
+    row = con.execute(
+        "SELECT raw_text, max_temp_f, source, ingested_at FROM nws_daily WHERE station_id = ? AND obs_date = ?",
+        [station_id, target_date],
+    ).fetchone()
+    con.close()
+
+    if not row or not row[0]:
+        return {"city": city, "date": target_date, "raw_text": None, "source": row[2] if row else None}
+
+    return {
+        "city": city,
+        "date": target_date,
+        "raw_text": row[0],
+        "max_temp_f": row[1],
+        "source": row[2],
+        "ingested_at": row[3].isoformat() if row[3] else None,
+    }
 
 
 @app.get("/api/health")
@@ -1185,7 +1209,7 @@ async def get_positions(city: str, date: str = None):
             pid, floor, cap, direction, model_prob, market_price, edge, entry_price, entry_time = row
             active.append({
                 "id": pid,
-                "bracket": "{}-{}°F".format(int(floor), int(floor) + 1) if floor is not None else "--",
+                "bracket": "{}-{}°F".format(int(floor), int(cap)) if floor is not None else "--",
                 "direction": direction,
                 "model_prob": round(model_prob, 4) if model_prob is not None else None,
                 "market_price": round(market_price, 4) if market_price is not None else None,
@@ -1242,242 +1266,6 @@ async def get_positions(city: str, date: str = None):
         "near_misses": near_misses,
         "daily_pnl": daily_pnl,
         "total_pnl": total_pnl,
-    }
-
-
-@app.get("/api/performance")
-async def get_performance(time_range: str = Query("30d", alias="range")):
-    """Return P&L data from paper_positions for the Performance tab.
-
-    Query parameter 'range' (aliased to time_range) accepts "7d", "30d", or "all".
-    """
-    days_map = {"7d": 7, "30d": 30, "all": 9999}
-    days = days_map.get(time_range, 30)
-
-    con = get_connection()
-    try:
-        # Daily P&L, wins, losses, fees, gross for settled positions in range
-        # days comes from controlled map — safe to interpolate
-        daily_rows = con.execute(
-            """SELECT event_date,
-                      COALESCE(SUM(net_pnl), 0) AS pnl,
-                      COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins,
-                      COALESCE(SUM(CASE WHEN net_pnl <= 0 THEN 1 ELSE 0 END), 0) AS losses,
-                      COALESCE(SUM(fees), 0) AS fees,
-                      COALESCE(SUM(gross_pnl), 0) AS gross
-               FROM paper_positions
-               WHERE status = 'settled'
-               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
-               GROUP BY event_date
-               ORDER BY event_date ASC""".format(days),
-        ).fetchall()
-
-        # Build daily bars and cumulative P&L
-        daily_bars = []
-        cumulative_pnl = []
-        running = 0.0
-        total_wins = 0
-        total_losses = 0
-        total_gross = 0.0
-        total_fees = 0.0
-        total_net = 0.0
-
-        for event_date, pnl, wins, losses, fees_val, gross_val in daily_rows:
-            date_str = str(event_date)
-            daily_bars.append({
-                "date": date_str,
-                "pnl": round(pnl, 2),
-                "wins": int(wins),
-                "losses": int(losses),
-            })
-            running += pnl
-            cumulative_pnl.append({
-                "date": date_str,
-                "pnl": round(running, 2),
-            })
-            total_wins += int(wins)
-            total_losses += int(losses)
-            total_gross += gross_val
-            total_fees += fees_val
-            total_net += pnl
-
-        total_trades = total_wins + total_losses
-        win_rate = round(total_wins / total_trades, 4) if total_trades > 0 else 0.0
-
-        # Breakdown by bracket
-        bracket_rows = con.execute(
-            """SELECT bracket_floor, bracket_cap,
-                      COALESCE(SUM(net_pnl), 0) AS pnl,
-                      COUNT(*) AS trades,
-                      COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
-               FROM paper_positions
-               WHERE status = 'settled'
-               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
-               GROUP BY bracket_floor, bracket_cap
-               ORDER BY bracket_floor ASC""".format(days),
-        ).fetchall()
-
-        by_bracket = []
-        for floor, cap, pnl, trades, wins in bracket_rows:
-            bracket_label = "{}-{}".format(int(floor), int(cap)) if floor is not None and cap is not None else "--"
-            wr = round(wins / trades, 4) if trades > 0 else 0.0
-            by_bracket.append({
-                "bracket": bracket_label,
-                "pnl": round(pnl, 2),
-                "trades": int(trades),
-                "win_rate": wr,
-            })
-
-        # Breakdown by edge bucket
-        edge_rows = con.execute(
-            """SELECT
-                   CASE
-                       WHEN edge >= 0.15 THEN '>15%'
-                       WHEN edge >= 0.10 THEN '10-15%'
-                       WHEN edge >= 0.05 THEN '5-10%'
-                       ELSE '<5%'
-                   END AS bucket,
-                   COALESCE(SUM(net_pnl), 0) AS pnl,
-                   COUNT(*) AS trades,
-                   COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
-               FROM paper_positions
-               WHERE status = 'settled'
-               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
-               GROUP BY bucket
-               ORDER BY bucket DESC""".format(days),
-        ).fetchall()
-
-        by_edge = []
-        for bucket, pnl, trades, wins in edge_rows:
-            wr = round(wins / trades, 4) if trades > 0 else 0.0
-            by_edge.append({
-                "bucket": bucket,
-                "pnl": round(pnl, 2),
-                "trades": int(trades),
-                "win_rate": wr,
-            })
-    finally:
-        con.close()
-
-    return {
-        "range": time_range,
-        "cumulative_pnl": cumulative_pnl,
-        "daily_bars": daily_bars,
-        "win_rate": win_rate,
-        "total_trades": total_trades,
-        "total_gross": round(total_gross, 2),
-        "total_fees": round(total_fees, 2),
-        "total_net": round(total_net, 2),
-        "by_bracket": by_bracket,
-        "by_edge": by_edge,
-    }
-
-
-@app.get("/api/brier-comparison")
-async def get_brier_comparison(time_range: str = Query("30d", alias="range")):
-    """Brier score comparison — market Brier from last candlestick price vs settlement outcome.
-
-    For each settled market, the market's implied probability is the last
-    candlestick close price (0-1 range).  Brier = avg((prob - outcome)^2) per date.
-    Model Brier requires logging model predictions at market close (not yet implemented).
-    """
-    days_map = {"7d": 7, "30d": 30, "all": 9999}
-    days = days_map.get(time_range, 30)
-
-    con = get_connection()
-    try:
-        # For each settled market, get its outcome and the last candlestick
-        # close price as the market probability.
-        rows = con.execute(
-            """
-            SELECT
-                ks.event_date,
-                ks.market_ticker,
-                ks.settled_yes,
-                kc.price_close AS market_prob
-            FROM kalshi_settlements ks
-            JOIN (
-                SELECT market_ticker, price_close
-                FROM kalshi_candlesticks kc_inner
-                WHERE (market_ticker, end_period_ts) IN (
-                    SELECT market_ticker, MAX(end_period_ts)
-                    FROM kalshi_candlesticks
-                    GROUP BY market_ticker
-                )
-            ) kc ON kc.market_ticker = ks.market_ticker
-            WHERE ks.city = 'NYC'
-              AND ks.measure = 'high'
-              AND ks.settled_yes IS NOT NULL
-              AND ks.event_date >= CURRENT_DATE - INTERVAL '{}' DAY
-            ORDER BY ks.event_date
-            """.format(days),
-        ).fetchall()
-
-        # Aggregate Brier per date: avg((market_prob - outcome)^2)
-        from collections import defaultdict
-        date_scores = defaultdict(list)  # type: ignore[var-annotated]
-        for event_date, _ticker, settled_yes, market_prob in rows:
-            if market_prob is not None and settled_yes is not None:
-                brier = (market_prob - settled_yes) ** 2
-                date_scores[str(event_date)].append(brier)
-
-        by_date = []
-        for date_str in sorted(date_scores.keys()):
-            scores = date_scores[date_str]
-            avg_brier = round(sum(scores) / len(scores), 4)
-            by_date.append({
-                "date": date_str,
-                "market_brier": avg_brier,
-                "model_brier": None,
-            })
-    finally:
-        con.close()
-
-    return {
-        "range": time_range,
-        "by_date": by_date,
-        "note": "Model Brier requires logging predictions at market close (not yet implemented)",
-    }
-
-
-@app.get("/api/edge-heatmap")
-async def get_edge_heatmap(time_range: str = Query("30d", alias="range")):
-    """Edge heatmap — settled positions grouped by bracket and hour (ET)."""
-    days_map = {"7d": 7, "30d": 30, "all": 9999}
-    days = days_map.get(time_range, 30)
-
-    con = get_connection()
-    try:
-        cells_rows = con.execute(
-            """SELECT bracket_floor, bracket_cap,
-                      EXTRACT(HOUR FROM timezone('America/New_York', entry_time)) AS hour_et,
-                      AVG(edge) AS avg_edge,
-                      COUNT(*) AS trades,
-                      COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
-               FROM paper_positions
-               WHERE status = 'settled'
-               AND event_date >= CURRENT_DATE - INTERVAL '{}' DAY
-               GROUP BY bracket_floor, bracket_cap, hour_et
-               ORDER BY bracket_floor ASC, hour_et ASC""".format(days),
-        ).fetchall()
-
-        cells = []
-        for floor, cap, hour_et, avg_edge, trades, wins in cells_rows:
-            bracket_label = "{}-{}".format(int(floor), int(cap)) if floor is not None and cap is not None else "--"
-            wr = round(wins / trades, 4) if trades > 0 else 0.0
-            cells.append({
-                "bracket": bracket_label,
-                "hour_et": int(hour_et) if hour_et is not None else None,
-                "avg_edge": round(avg_edge, 4) if avg_edge is not None else None,
-                "trades": int(trades),
-                "win_rate": wr,
-            })
-    finally:
-        con.close()
-
-    return {
-        "range": time_range,
-        "cells": cells,
     }
 
 
@@ -1921,6 +1709,71 @@ async def get_review_patterns(time_range: str = Query("30d", alias="range")):
 # ---------------------------------------------------------------------------
 
 
+@app.get("/api/blotter/calendar/{city}")
+async def blotter_calendar(city: str, range: str = "30d"):
+    """Daily P&L summary for the calendar widget."""
+    city_upper = city.upper()
+    if city_upper not in CITIES:
+        return {"error": f"Unknown city: {city}"}
+
+    days_back = {"7d": 7, "30d": 30, "90d": 90, "all": 365}.get(range, 30)
+    from core.timezone import ET as _ET
+    today = datetime.now(_ET).date()
+    start_date = today - timedelta(days=days_back)
+
+    con = get_connection()
+    try:
+        rows = con.execute("""
+            SELECT event_date,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN net_pnl <= 0 AND status != 'open' THEN 1 ELSE 0 END) as losses,
+                   SUM(COALESCE(CASE WHEN status = 'open' THEN unrealized_pnl ELSE net_pnl END, 0)) as net_pnl,
+                   SUM(CASE WHEN status != 'open' THEN ABS(COALESCE(entry_price, 0) * COALESCE(contracts, 1)) ELSE 0 END) as wagered
+            FROM paper_positions
+            WHERE city = ? AND event_date >= ?
+            GROUP BY event_date
+            ORDER BY event_date
+        """, [city_upper, start_date.isoformat()]).fetchall()
+
+        days = []
+        total_trades = 0
+        total_wins = 0
+        total_losses = 0
+        total_pnl = 0.0
+        total_wagered = 0.0
+
+        for r in rows:
+            net = round(r[4], 2)
+            days.append({
+                "date": r[0].isoformat() if hasattr(r[0], 'isoformat') else str(r[0]),
+                "trades": r[1],
+                "wins": r[2],
+                "losses": r[3],
+                "net_pnl": net,
+            })
+            total_trades += r[1]
+            total_wins += r[2]
+            total_losses += r[3]
+            total_pnl += net
+            total_wagered += r[5] or 0
+
+        return {
+            "days": days,
+            "summary": {
+                "total_trades": total_trades,
+                "wins": total_wins,
+                "losses": total_losses,
+                "win_rate": round(total_wins / max(total_trades, 1), 3),
+                "total_wagered": round(total_wagered / 100, 2),
+                "total_profit": round(total_pnl, 2),
+                "roi": round(total_pnl / max(total_wagered / 100, 0.01), 3),
+            },
+        }
+    finally:
+        con.close()
+
+
 @app.get("/api/blotter/{city}")
 async def blotter_data(city: str, date: str = None):
     """Bundled data for the blotter page: countdown + brackets + positions."""
@@ -1992,7 +1845,9 @@ async def blotter_data(city: str, date: str = None):
         # --- Positions ---
         positions = con.execute("""
             SELECT bracket_floor, bracket_cap, direction, contracts,
-                   entry_price, unrealized_pnl, net_pnl, status, exit_reason
+                   entry_price, unrealized_pnl, net_pnl, status, exit_reason,
+                   gross_pnl, fees, exit_price, model_prob, edge,
+                   entry_time, exit_time
             FROM paper_positions
             WHERE city = ? AND event_date = ?
             ORDER BY bracket_floor
@@ -2004,13 +1859,21 @@ async def blotter_data(city: str, date: str = None):
                 "bracket_floor": p[0], "bracket_cap": p[1],
                 "direction": p[2], "contracts": p[3],
                 "entry_price": p[4],
-                "pnl": p[5] if p[7] == "open" else p[6],
+                "unrealized_pnl": p[5],
+                "net_pnl": p[6],
                 "status": p[7], "exit_reason": p[8],
+                "gross_pnl": p[9], "fees": p[10],
+                "exit_price": p[11],
+                "model_prob": p[12], "edge": p[13],
+                "entry_time": p[14].isoformat() if p[14] else None,
+                "exit_time": p[15].isoformat() if p[15] else None,
             })
 
         open_positions = [p for p in positions if p[7] == "open"]
+        closed_positions = [pos for pos in position_list if pos["status"] != "open"]
         open_count = len(open_positions)
-        day_exposure = sum((p[4] * p[3] / 100.0) for p in open_positions if p[4] and p[3])
+        capital_locked = sum((p[4] * p[3] / 100.0) for p in open_positions if p[4] and p[3])
+        max_loss = capital_locked  # worst case = lose all locked capital
         day_pnl = sum(
             (p[5] if p[7] == "open" else (p[6] or 0))
             for p in positions
@@ -2020,259 +1883,13 @@ async def blotter_data(city: str, date: str = None):
             "countdown": countdown,
             "brackets": brackets_resp,
             "positions": position_list,
+            "closed_positions": closed_positions,
             "positions_summary": {
                 "open_count": open_count,
-                "day_exposure": round(day_exposure, 2),
+                "capital_locked": round(capital_locked, 2),
+                "max_loss": round(max_loss, 2),
                 "day_pnl": round(day_pnl, 2),
             },
         }
-    finally:
-        con.close()
-
-
-# ---------------------------------------------------------------------------
-# Trading Tab — page + API endpoints
-# ---------------------------------------------------------------------------
-
-
-@app.get("/trading")
-async def trading_page(request: Request):
-    """Serve the Trading tab."""
-    return templates.TemplateResponse("trading.html", {"request": request, "active_tab": "trading"})
-
-
-@app.get("/api/trading/positions")
-async def trading_positions(city: str = "nyc"):
-    """Open positions with unrealized P&L and current market prices."""
-    city_upper = city.upper()
-    con = get_connection()
-    try:
-        rows = con.execute("""
-            SELECT
-                pp.id,
-                pp.bracket_floor,
-                pp.bracket_cap,
-                pp.direction,
-                pp.contracts,
-                pp.entry_price,
-                pp.edge,
-                pp.unrealized_pnl,
-                pp.entry_time,
-                mt.yes_bid,
-                mt.yes_ask
-            FROM paper_positions pp
-            LEFT JOIN (
-                SELECT floor_strike, yes_bid, yes_ask,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY floor_strike
-                           ORDER BY captured_at DESC
-                       ) AS rn
-                FROM market_ticks
-                WHERE city = ?
-                  AND floor_strike IS NOT NULL
-                  AND cap_strike IS NOT NULL
-            ) mt ON mt.floor_strike = pp.bracket_floor
-                AND mt.rn = 1
-            WHERE pp.city = ? AND pp.status = 'open'
-            ORDER BY pp.bracket_floor
-        """, [city_upper, city_upper]).fetchall()
-
-        now = datetime.now(timezone.utc)
-        positions = []
-        for r in rows:
-            pos_id, floor_s, cap_s, direction, qty, entry, edge, unreal, entry_time, bid, ask = r
-            # Calculate time held
-            time_held = ""
-            if entry_time is not None:
-                if entry_time.tzinfo is None:
-                    entry_time = entry_time.replace(tzinfo=timezone.utc)
-                delta = now - entry_time
-                total_mins = int(delta.total_seconds() / 60)
-                hours = total_mins // 60
-                mins = total_mins % 60
-                time_held = "{}h {}m".format(hours, mins)
-
-            positions.append({
-                "id": pos_id,
-                # Kalshi brackets are floor to floor+1 (not floor+2)
-                "bracket": "{}-{}".format(int(floor_s), int(floor_s) + 1),
-                "direction": direction,
-                "qty": qty or 1,
-                "entry": entry,
-                "current_bid": bid,
-                "current_ask": ask,
-                "edge": round(edge, 4) if edge is not None else None,
-                "unrealized": round(unreal, 2) if unreal is not None else 0.0,
-                "time_held": time_held,
-            })
-
-        return {"positions": positions}
-    finally:
-        con.close()
-
-
-@app.get("/api/trading/closed")
-async def trading_closed(city: str = "nyc"):
-    """Closed/settled positions with exit details."""
-    city_upper = city.upper()
-    con = get_connection()
-    try:
-        rows = con.execute("""
-            SELECT id, bracket_floor, bracket_cap, direction, contracts,
-                   entry_price, exit_price, exit_reason, gross_pnl, fees, net_pnl,
-                   entry_time, exit_time
-            FROM paper_positions
-            WHERE city = ? AND status != 'open'
-            ORDER BY exit_time DESC
-        """, [city_upper]).fetchall()
-
-        closed = []
-        for r in rows:
-            (pos_id, floor_s, cap_s, direction, qty,
-             entry, exit_p, reason, gross, fees, net,
-             entry_time, exit_time) = r
-            closed.append({
-                "id": pos_id,
-                "bracket": "{}-{}".format(int(floor_s), int(floor_s) + 1),
-                "direction": direction,
-                "qty": qty or 1,
-                "entry": entry,
-                "exit": exit_p,
-                "reason": reason or "",
-                "gross": round(gross, 2) if gross is not None else 0.0,
-                "fees": round(fees, 2) if fees is not None else 0.0,
-                "net": round(net, 2) if net is not None else 0.0,
-                "exit_time": exit_time.isoformat() if exit_time else "",
-            })
-
-        return {"closed": closed}
-    finally:
-        con.close()
-
-
-@app.get("/api/trading/pnl")
-async def trading_pnl(city: str = "nyc"):
-    """P&L summary — realized, unrealized, total, and daily breakdown."""
-    city_upper = city.upper()
-    con = get_connection()
-    try:
-        # Realized: sum of net_pnl for closed/settled positions
-        realized_row = con.execute("""
-            SELECT COALESCE(SUM(net_pnl), 0)
-            FROM paper_positions
-            WHERE city = ? AND status != 'open'
-        """, [city_upper]).fetchone()
-        realized = round(realized_row[0], 2)
-
-        # Unrealized: sum of unrealized_pnl for open positions
-        unrealized_row = con.execute("""
-            SELECT COALESCE(SUM(unrealized_pnl), 0)
-            FROM paper_positions
-            WHERE city = ? AND status = 'open'
-        """, [city_upper]).fetchone()
-        unrealized = round(unrealized_row[0], 2)
-
-        total = round(realized + unrealized, 2)
-
-        # Daily breakdown
-        daily_rows = con.execute("""
-            SELECT
-                event_date,
-                COALESCE(SUM(CASE WHEN status != 'open' THEN net_pnl ELSE 0 END), 0) AS day_realized,
-                COALESCE(SUM(CASE WHEN status = 'open' THEN unrealized_pnl ELSE 0 END), 0) AS day_unrealized,
-                COUNT(*) AS trades,
-                COALESCE(SUM(CASE WHEN net_pnl > 0 AND status != 'open' THEN 1 ELSE 0 END), 0) AS wins
-            FROM paper_positions
-            WHERE city = ?
-            GROUP BY event_date
-            ORDER BY event_date DESC
-        """, [city_upper]).fetchall()
-
-        daily = []
-        for row in daily_rows:
-            daily.append({
-                "date": str(row[0]),
-                "realized": round(row[1], 2),
-                "unrealized": round(row[2], 2),
-                "trades": row[3],
-                "wins": row[4],
-            })
-
-        return {
-            "realized": realized,
-            "unrealized": unrealized,
-            "total": total,
-            "daily": daily,
-        }
-    finally:
-        con.close()
-
-
-@app.get("/api/trading/breakers")
-async def trading_breakers():
-    """Circuit breaker status — thresholds, current values, kill switch."""
-    con = get_connection()
-    try:
-        # Read config values
-        config_rows = con.execute(
-            "SELECT key, value FROM paper_config"
-        ).fetchall()
-        config = {k: v for k, v in config_rows}
-
-        kill_switch = config.get("kill_switch", "False").lower() in ("true", "1", "yes")
-        max_daily_loss = int(config.get("max_daily_loss_cents", "-1000")) / 100
-        max_open = int(config.get("max_open_positions", "5"))
-        min_edge_pct = float(config.get("min_edge_pct", "5.0"))
-        cooldown_minutes = int(float(config.get("cooldown_minutes", "30")))
-
-        # Current open position count
-        open_count = con.execute(
-            "SELECT COUNT(*) FROM paper_positions WHERE status = 'open'"
-        ).fetchone()[0]
-
-        # Today's realized P&L
-        from core.timezone import get_today_et
-        today_et = get_today_et()
-        today_pnl_row = con.execute("""
-            SELECT COALESCE(SUM(net_pnl), 0)
-            FROM paper_positions
-            WHERE event_date = ? AND status != 'open'
-        """, [today_et]).fetchone()
-        today_pnl = round(today_pnl_row[0], 2)
-
-        return {
-            "breakers": {
-                "kill_switch": kill_switch,
-                "max_daily_loss": {
-                    "threshold": max_daily_loss,
-                    "current": today_pnl,
-                },
-                "max_open": {
-                    "threshold": max_open,
-                    "current": open_count,
-                },
-                "min_edge_pct": min_edge_pct,
-                "cooldown_minutes": cooldown_minutes,
-            }
-        }
-    finally:
-        con.close()
-
-
-class KillSwitchRequest(BaseModel):
-    enabled: bool
-
-
-@app.post("/api/trading/kill-switch")
-async def trading_kill_switch(body: KillSwitchRequest):
-    """Toggle the kill switch on/off."""
-    con = get_connection()
-    try:
-        new_val = "True" if body.enabled else "False"
-        con.execute(
-            "UPDATE paper_config SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = 'kill_switch'",
-            [new_val],
-        )
-        return {"kill_switch": body.enabled}
     finally:
         con.close()

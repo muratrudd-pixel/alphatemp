@@ -1,13 +1,28 @@
-/* AlphaTemp Dashboard — Shared Styles */
+/* AlphaTemp Dashboard — Shared Styles (Light Theme) */
 
 body {
-    font-family: 'Space Mono', monospace;
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: #f0f1f3;
+    color: #374151;
+}
+
+/* Card panels — white on light gray page */
+.at-card {
+    background: #ffffff;
+    border: 1px solid rgba(0,0,0,0.08);
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+/* Monospace for tabular data */
+.at-mono {
+    font-family: 'JetBrains Mono', 'Roboto Mono', monospace;
 }
 
 /* Status dot — green, pulsing */
 .glow-dot {
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: #10b981;
     box-shadow: 0 0 6px #10b981;
@@ -19,9 +34,9 @@ body {
     50% { opacity: 0.4; }
 }
 
-/* Flash animation — blue flash fading to transparent over 2s */
+/* Flash animation */
 @keyframes flash-new {
-    0%   { background: rgba(59, 130, 246, 0.3); }
+    0%   { background: rgba(59, 130, 246, 0.15); }
     100% { background: transparent; }
 }
 
@@ -29,20 +44,20 @@ body {
     animation: flash-new 2s ease-out;
 }
 
-/* Active bet indicator — subtle green glow */
+/* Active bet indicator */
 .bet-active {
     box-shadow: 0 0 8px rgba(16, 185, 129, 0.3),
                 0 0 2px rgba(16, 185, 129, 0.2);
 }
 
-/* Severity bar — 4px tall gradient (green -> amber -> red) */
+/* Severity bar */
 .severity-bar {
     height: 4px;
     border-radius: 2px;
     background: linear-gradient(to right, #10b981, #f59e0b, #ef4444);
 }
 
-/* Scrollable feed container with thin scrollbar */
+/* Scrollable feed container */
 .feed-scroll {
     overflow-y: auto;
 }
@@ -56,23 +71,22 @@ body {
 }
 
 .feed-scroll::-webkit-scrollbar-thumb {
-    background: #334155;
+    background: rgba(0,0,0,0.12);
     border-radius: 2px;
 }
 
 .feed-scroll::-webkit-scrollbar-thumb:hover {
-    background: #475569;
+    background: rgba(0,0,0,0.2);
 }
 
-/* Firefox thin scrollbar */
 .feed-scroll {
     scrollbar-width: thin;
-    scrollbar-color: #334155 transparent;
+    scrollbar-color: rgba(0,0,0,0.12) transparent;
 }
 
-/* Skeleton loading placeholder */
+/* Skeleton loading */
 .skeleton {
-    background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+    background: linear-gradient(90deg, #e5e7eb 25%, #d1d5db 50%, #e5e7eb 75%);
     background-size: 200% 100%;
     animation: shimmer 1.5s ease-in-out infinite;
     border-radius: 4px;
@@ -81,4 +95,105 @@ body {
 @keyframes shimmer {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
+}
+
+/* Pill badges for Edge/EV values */
+.pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.4;
+}
+
+.pill-positive {
+    background: #dcfce7;
+    color: #16a34a;
+}
+
+.pill-negative {
+    background: #fee2e2;
+    color: #dc2626;
+}
+
+.pill-neutral {
+    background: #f3f4f6;
+    color: #6b7280;
+}
+
+/* Subtle border utilities (light theme) */
+.at-border-subtle {
+    border-bottom: 1px solid rgba(0,0,0,0.08);
+}
+
+.at-border-faint {
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+}
+
+/* Stale data banner */
+.stale-banner {
+    background: #fef3c7;
+    border: 1px solid #fbbf24;
+    color: #92400e;
+    border-radius: 8px;
+}
+
+/* Today/Tomorrow toggle pill */
+.toggle-pill {
+    display: inline-flex;
+    background: rgba(255,255,255,0.1);
+    border-radius: 20px;
+    padding: 2px;
+}
+.toggle-pill button {
+    padding: 3px 12px;
+    border-radius: 18px;
+    font-size: 12px;
+    transition: all 0.2s;
+    border: none;
+    cursor: pointer;
+    background: transparent;
+    color: rgba(255,255,255,0.5);
+}
+.toggle-pill button.active {
+    background: rgba(255,255,255,0.15);
+    color: #ffffff;
+}
+
+/* Liquidity progress bar */
+.liq-bar {
+    height: 6px;
+    border-radius: 3px;
+    background: #e5e7eb;
+    overflow: hidden;
+}
+.liq-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: #374151;
+}
+
+/* Sortable column headers */
+th.sortable {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+}
+th.sortable:hover {
+    color: #1f2937;
+}
+th.sortable::after {
+    content: ' \2195';
+    font-size: 9px;
+    opacity: 0.4;
+}
+th.sortable.sort-asc::after {
+    content: ' \2191';
+    opacity: 1;
+}
+th.sortable.sort-desc::after {
+    content: ' \2193';
+    opacity: 1;
 }

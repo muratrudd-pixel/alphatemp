@@ -57,8 +57,15 @@ def get_resume_date(db_path, run_hour):
 
 def extract_nearest(msg, lat, lon):
     # type: (object, float, float) -> float
-    """Extract value at nearest grid point (same as HRRRFetcher)."""
+    """Extract value at nearest grid point.
+
+    GFS GRIB files use 0-360° longitude, so we normalize to -180/180
+    before computing distance (STATION_COORDS uses negative longitudes).
+    HRRR GRIBs already use negative longitudes, so this is safe for both.
+    """
     lat_grid, lon_grid = msg.latlons()
+    # Normalize 0-360 longitudes to -180/180 (GFS uses 0-360, HRRR uses -180/180)
+    lon_grid = np.where(lon_grid > 180, lon_grid - 360, lon_grid)
     cos_lat = np.cos(np.radians(lat))
     dist = np.abs(lat_grid - lat) + np.abs(lon_grid - lon) * cos_lat
     idx = np.unravel_index(np.argmin(dist), dist.shape)

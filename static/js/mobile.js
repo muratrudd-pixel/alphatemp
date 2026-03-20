@@ -21,13 +21,13 @@ function setMobileTab(tab) {
     if (tab === 'dashboard') {
         dashboardEl.classList.remove('hidden');
         tradeEl.classList.add('hidden');
-        btnDash.className = 'flex-1 py-2 text-sm font-bold uppercase tracking-wider rounded bg-slate-700 text-slate-100';
-        btnTrade.className = 'flex-1 py-2 text-sm font-bold uppercase tracking-wider rounded text-slate-400';
+        btnDash.className = 'flex-1 py-2 text-sm font-bold uppercase tracking-wider rounded bg-gray-900 text-white';
+        btnTrade.className = 'flex-1 py-2 text-sm font-bold uppercase tracking-wider rounded text-gray-500';
     } else {
         dashboardEl.classList.add('hidden');
         tradeEl.classList.remove('hidden');
-        btnDash.className = 'flex-1 py-2 text-sm font-bold uppercase tracking-wider rounded text-slate-400';
-        btnTrade.className = 'flex-1 py-2 text-sm font-bold uppercase tracking-wider rounded bg-slate-700 text-slate-100';
+        btnDash.className = 'flex-1 py-2 text-sm font-bold uppercase tracking-wider rounded text-gray-500';
+        btnTrade.className = 'flex-1 py-2 text-sm font-bold uppercase tracking-wider rounded bg-gray-900 text-white';
     }
 }
 
@@ -97,14 +97,14 @@ function refreshMobile() {
                 var arrow = s.change >= 0 ? '\u2191' : '\u2193';
                 var colorCls = s.change >= 0 ? 'text-emerald-400' : 'text-red-400';
                 var changeCents = Math.abs(Math.round(s.change * 100));
-                return '<div class="flex justify-between text-xs py-1 border-b border-slate-700/50">' +
-                    '<span class="text-slate-300">\u26a1 ' + s.bracket + '</span>' +
+                return '<div class="flex justify-between text-xs py-1 at-border-faint">' +
+                    '<span class="text-gray-700">\u26a1 ' + s.bracket + '</span>' +
                     '<span class="' + colorCls + '">' + arrow + ' ' + changeCents + '\u00a2</span>' +
                 '</div>';
             }).join('');
             alertsEl.innerHTML = alertHtml;
         } else {
-            alertsEl.innerHTML = '<p class="text-xs text-slate-500">No alerts</p>';
+            alertsEl.innerHTML = '<p class="text-xs text-gray-400">No alerts</p>';
         }
 
         // -----------------------------------------------------------
@@ -114,15 +114,15 @@ function refreshMobile() {
         if (obsData && obsData.observations && obsData.observations.length > 0) {
             var recent = obsData.observations.slice(0, 5);
             var obsHtml = recent.map(function(o) {
-                return '<div class="flex justify-between text-xs py-1 border-b border-slate-700/50">' +
-                    '<span class="text-slate-400">' + toET(o.observed_at) + '</span>' +
-                    '<span class="text-slate-400">' + (o.source || '--') + '</span>' +
-                    '<span class="text-slate-200">' + o.temp_f.toFixed(1) + '\u00b0F</span>' +
+                return '<div class="flex justify-between text-xs py-1 at-border-faint">' +
+                    '<span class="text-gray-500">' + toET(o.observed_at) + '</span>' +
+                    '<span class="text-gray-500">' + (o.source || '--') + '</span>' +
+                    '<span class="text-gray-800">' + o.temp_f.toFixed(1) + '\u00b0F</span>' +
                 '</div>';
             }).join('');
             obsFeedEl.innerHTML = obsHtml;
         } else {
-            obsFeedEl.innerHTML = '<p class="text-xs text-slate-500">No observations</p>';
+            obsFeedEl.innerHTML = '<p class="text-xs text-gray-400">No observations</p>';
         }
 
         // -----------------------------------------------------------
@@ -149,18 +149,18 @@ function refreshMobile() {
                     var askPrice = b.yes_ask != null ? (b.yes_ask * 100).toFixed(0) + '\u00a2' : '--';
                     var volume = b.volume != null ? b.volume : 0;
 
-                    var html = '<div class="bg-slate-700/50 rounded border border-slate-600 p-3 mb-2">';
+                    var html = '<div class="bg-gray-50 rounded border border-gray-200 p-3 mb-2">';
                     html += '<div class="flex justify-between items-center mb-2">';
-                    html += '<span class="text-slate-100 font-mono text-sm font-bold">' + label + ' BUY YES</span>';
+                    html += '<span class="text-gray-900 font-mono text-sm font-bold">' + label + ' BUY YES</span>';
                     html += '<span class="text-xs font-bold ' + confColor + '">' + confidence + '</span>';
                     html += '</div>';
                     html += '<div class="grid grid-cols-2 gap-1 text-[10px]">';
-                    html += '<div><span class="text-slate-500">Model:</span> <span class="text-slate-200">' + modelPct + '%</span></div>';
-                    html += '<div><span class="text-slate-500">Kalshi:</span> <span class="text-slate-200">' + kalshiPct + '%</span></div>';
-                    html += '<div><span class="text-slate-500">Edge:</span> <span class="text-emerald-400">' + edgePct + '%</span></div>';
-                    html += '<div><span class="text-slate-500">Net edge:</span> <span class="text-slate-200">' + netEdge + '%</span></div>';
-                    html += '<div><span class="text-slate-500">Ask:</span> <span class="text-slate-200">' + askPrice + '</span></div>';
-                    html += '<div><span class="text-slate-500">Vol:</span> <span class="text-slate-200">' + volume + '</span></div>';
+                    html += '<div><span class="text-gray-400">Model:</span> <span class="text-gray-800">' + modelPct + '%</span></div>';
+                    html += '<div><span class="text-gray-400">Kalshi:</span> <span class="text-gray-800">' + kalshiPct + '%</span></div>';
+                    html += '<div><span class="text-gray-400">Edge:</span> <span class="text-emerald-400">' + edgePct + '%</span></div>';
+                    html += '<div><span class="text-gray-400">Net edge:</span> <span class="text-gray-800">' + netEdge + '%</span></div>';
+                    html += '<div><span class="text-gray-400">Ask:</span> <span class="text-gray-800">' + askPrice + '</span></div>';
+                    html += '<div><span class="text-gray-400">Vol:</span> <span class="text-gray-800">' + volume + '</span></div>';
                     html += '</div>';
                     if (volume < 100) {
                         html += '<div class="text-[10px] text-amber-400 mt-1">\u26a0 Thin liquidity</div>';
@@ -170,10 +170,10 @@ function refreshMobile() {
                 }).join('');
                 suggestedEl.innerHTML = betsHtml;
             } else {
-                suggestedEl.innerHTML = '<p class="text-xs text-slate-500">No bets meeting threshold</p>';
+                suggestedEl.innerHTML = '<p class="text-xs text-gray-400">No bets meeting threshold</p>';
             }
         } else {
-            suggestedEl.innerHTML = '<p class="text-xs text-slate-500">No bets meeting threshold</p>';
+            suggestedEl.innerHTML = '<p class="text-xs text-gray-400">No bets meeting threshold</p>';
         }
 
         // -----------------------------------------------------------
@@ -184,14 +184,14 @@ function refreshMobile() {
             var nearHtml = posData.near_misses.map(function(nm) {
                 var edgePct = (nm.edge * 100).toFixed(1);
                 var threshPct = (nm.threshold * 100).toFixed(0);
-                return '<div class="flex justify-between text-xs py-1 border-b border-slate-700/50">' +
+                return '<div class="flex justify-between text-xs py-1 at-border-faint">' +
                     '<span class="text-amber-400 font-mono">' + nm.bracket + '</span>' +
                     '<span class="text-amber-400">' + edgePct + '% / ' + threshPct + '%</span>' +
                 '</div>';
             }).join('');
             nearEl.innerHTML = nearHtml;
         } else {
-            nearEl.innerHTML = '<p class="text-xs text-slate-500">No near-misses</p>';
+            nearEl.innerHTML = '<p class="text-xs text-gray-400">No near-misses</p>';
         }
 
         // -----------------------------------------------------------
@@ -201,14 +201,14 @@ function refreshMobile() {
         if (posData && posData.active && posData.active.length > 0) {
             var activeHtml = posData.active.map(function(bet) {
                 var entryStr = bet.entry_price != null ? (bet.entry_price * 100).toFixed(0) + '\u00a2' : '--';
-                return '<div class="flex justify-between text-xs py-1 border-b border-slate-700/50">' +
-                    '<span class="text-slate-100 font-mono">' + bet.bracket + ' ' + (bet.direction || '--') + '</span>' +
-                    '<span class="text-slate-400">Entry: ' + entryStr + '</span>' +
+                return '<div class="flex justify-between text-xs py-1 at-border-faint">' +
+                    '<span class="text-gray-900 font-mono">' + bet.bracket + ' ' + (bet.direction || '--') + '</span>' +
+                    '<span class="text-gray-500">Entry: ' + entryStr + '</span>' +
                 '</div>';
             }).join('');
             activeEl.innerHTML = activeHtml;
         } else {
-            activeEl.innerHTML = '<p class="text-xs text-slate-500">No active positions</p>';
+            activeEl.innerHTML = '<p class="text-xs text-gray-400">No active positions</p>';
         }
 
         // -----------------------------------------------------------
@@ -244,13 +244,13 @@ async function refreshMobileBlotter() {
     var positions = data.positions || [];
     var open = positions.filter(function(p) { return p.status === 'open'; });
     if (open.length === 0) {
-        el.innerHTML = '<div class="text-slate-600 text-xs">No open positions</div>';
+        el.innerHTML = '<div class="text-gray-300 text-xs">No open positions</div>';
         return;
     }
     var html = '';
     open.forEach(function(p) {
         var pnl = formatPnL(p.pnl || 0);
-        html += '<div class="flex justify-between py-1 border-b border-slate-800/50 text-xs">'
+        html += '<div class="flex justify-between py-1 at-border-faint text-xs">'
             + '<span>' + p.bracket_floor + '-' + p.bracket_cap + '\u00b0F ' + p.direction + '</span>'
             + '<span class="' + pnl.colorClass + '">' + pnl.text + '</span>'
             + '</div>';

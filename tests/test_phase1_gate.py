@@ -60,7 +60,7 @@ def _seed_full_data(db_path):
 
     # Market tick (for dedup check)
     con.execute(
-        "INSERT INTO market_ticks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO market_ticks (market_id, city, captured_at, yes_bid, yes_ask, no_bid, no_ask, last_trade, volume, floor_strike, cap_strike) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ["MKT1", "NYC", now, 0.5, 0.6, 0.4, 0.5, 0.55, 100, 70.0, 72.0],
     )
 
@@ -107,7 +107,7 @@ def test_gate_fails_missing_hrrr_hours():
         ["KJFK", datetime(2025, 6, 15, 12), 78.0, now, "metar"],
     )
     con.execute(
-        "INSERT INTO market_ticks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO market_ticks (market_id, city, captured_at, yes_bid, yes_ask, no_bid, no_ask, last_trade, volume, floor_strike, cap_strike) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ["MKT1", "NYC", now, 0.5, 0.6, 0.4, 0.5, 0.55, 100, 70.0, 72.0],
     )
     con.close()
@@ -170,7 +170,7 @@ def test_gate_fails_missing_gfs():
         ["KJFK", datetime(2025, 6, 15, 12), 78.0, now, "metar"],
     )
     con.execute(
-        "INSERT INTO market_ticks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO market_ticks (market_id, city, captured_at, yes_bid, yes_ask, no_bid, no_ask, last_trade, volume, floor_strike, cap_strike) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ["MKT1", "NYC", now, 0.5, 0.6, 0.4, 0.5, 0.55, 100, 70.0, 72.0],
     )
     con.close()
