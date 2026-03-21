@@ -49,9 +49,9 @@ function fmtCents(val) {
 }
 
 function sideClass(dir) {
-  if (dir === "YES") return "text-blue-600 font-medium";
-  if (dir === "NO") return "text-orange-600 font-medium";
-  return "text-gray-500";
+  if (dir === "YES") return "at-pill at-pill-info";
+  if (dir === "NO") return "at-pill at-pill-orange";
+  return "at-pill at-pill-neutral";
 }
 
 function todayET() {
@@ -163,8 +163,8 @@ function setBlotterRange(r) {
     if (!btn) return;
     btn.className =
       id === r
-        ? "px-3 py-1 text-xs rounded bg-gray-900 text-white"
-        : "px-3 py-1 text-xs rounded bg-gray-100 text-gray-500";
+        ? "at-filter-pill at-filter-pill-active"
+        : "at-filter-pill at-filter-pill-inactive";
   });
   refreshCalendar();
 }
@@ -248,36 +248,44 @@ function renderCalendar() {
     var isToday = dateStr === today;
     var isSelected = dateStr === selectedBlotterDate;
 
-    var bgClass = "";
+    var bgStyle = "";
     var pnlText = "";
-    if (dayData && dayData.net_pnl !== 0) {
+    if (isToday) {
+      bgStyle =
+        "background: #1f2937; color: #fff; box-shadow: 0 0 0 2px var(--info); border-radius: var(--radius-sm);";
+    } else if (dayData && dayData.net_pnl !== 0) {
       if (dayData.net_pnl > 0) {
-        bgClass = isSelected ? "bg-emerald-200" : "bg-emerald-50";
+        bgStyle =
+          "background: var(--profit-bg); border-radius: var(--radius-sm);";
         pnlText =
           '<div class="text-[9px] text-emerald-700 font-medium at-mono">+' +
           Math.abs(dayData.net_pnl).toFixed(0) +
           "</div>";
       } else {
-        bgClass = isSelected ? "bg-red-200" : "bg-red-50";
+        bgStyle =
+          "background: var(--loss-bg); border-radius: var(--radius-sm);";
         pnlText =
           '<div class="text-[9px] text-red-700 font-medium at-mono">\u2212' +
           Math.abs(dayData.net_pnl).toFixed(0) +
           "</div>";
       }
     } else if (isSelected) {
-      bgClass = "bg-gray-200";
+      bgStyle =
+        "background: var(--neutral-bg); border-radius: var(--radius-sm);";
+    } else {
+      bgStyle = "border-radius: var(--radius-sm);";
     }
 
-    var outline = isToday ? " ring-1 ring-gray-400" : "";
     html +=
-      '<div class="h-9 flex flex-col items-center justify-center rounded ' +
-      bgClass +
-      outline +
-      ' cursor-pointer hover:bg-gray-100"' +
+      '<div class="h-9 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-100" style="' +
+      bgStyle +
+      '"' +
       " onclick=\"selectCalendarDate('" +
       dateStr +
       "')\">" +
-      '<div class="text-xs text-gray-700">' +
+      '<div class="text-xs' +
+      (isToday ? " text-white" : " text-gray-700") +
+      '">' +
       day +
       "</div>" +
       pnlText +
@@ -343,33 +351,33 @@ function renderSettleBanner(cd) {
   closeTimeBlotter = cd.close_time;
 
   var settlementText = "Pending";
-  var settleBadge = "pill pill-neutral";
+  var settleBadge = "at-pill at-pill-neutral";
   if (cd.settlement && cd.settlement.source === "NWS_CLI") {
     settlementText = cd.settlement.temp + "\u00b0F (CLI)";
-    settleBadge = "pill pill-positive";
+    settleBadge = "at-pill at-pill-profit";
   } else if (cd.settlement && cd.settlement.source === "DSM") {
     settlementText = cd.settlement.temp + "\u00b0F (DSM)";
-    settleBadge = "pill pill-positive";
+    settleBadge = "at-pill at-pill-profit";
   }
 
   var obsMax =
     cd.running_obs_max != null ? cd.running_obs_max + "\u00b0F" : "--";
   el.innerHTML =
-    '<span class="text-gray-900 font-semibold">' +
+    '<span class="at-card-header font-semibold" style="color: var(--warning-text);">' +
     cd.event_date +
     "</span>" +
     '<span class="text-gray-400">|</span>' +
-    '<span class="text-gray-500">Max: <span class="text-gray-900 font-medium">' +
+    '<span class="at-card-header" style="color: var(--warning-text);">Max: <span class="font-medium" style="color: var(--warning-text);">' +
     obsMax +
     "</span></span>" +
     '<span class="text-gray-400">|</span>' +
-    '<span class="text-gray-500">Settlement: <span class="' +
+    '<span class="at-card-header" style="color: var(--warning-text);">Settlement: <span class="' +
     settleBadge +
     '">' +
     settlementText +
     "</span></span>" +
     '<span class="text-gray-400">|</span>' +
-    '<span class="text-gray-500">In: <span id="settle-countdown" class="text-gray-900 font-medium">--</span></span>';
+    '<span class="at-card-header" style="color: var(--warning-text);">In: <span id="settle-countdown" class="font-medium" style="color: var(--warning-text);">--</span></span>';
   startCountdownTicker();
 }
 
@@ -511,7 +519,7 @@ function renderLivePositions(positions, brackets) {
     var modelConf = p._computed.modelConf;
     var isPriorDay = p._computed.isPriorDay;
     var unrealPnl = p.unrealized_pnl || 0;
-    var rowClass = "at-border-faint";
+    var rowClass = "";
 
     html +=
       '<tr class="' +
@@ -520,11 +528,11 @@ function renderLivePositions(positions, brackets) {
       '<td class="py-2 text-gray-800 font-medium">' +
       label +
       "</td>" +
-      '<td class="py-2 text-center ' +
+      '<td class="py-2 text-center"><span class="' +
       sideClass(p.direction) +
       '">' +
       p.direction +
-      "</td>" +
+      "</span></td>" +
       '<td class="py-2 text-right text-gray-600">' +
       (modelConf != null ? (modelConf * 100).toFixed(1) + "%" : "--") +
       "</td>" +
@@ -613,24 +621,28 @@ function renderClosedPositions(positions) {
     var heldToSettle = p._computed.heldToSettle;
     var isPriorDay = p._computed.isPriorDay;
     // Subtle left border for held-to-settlement, dimmed for prior-day
-    var rowClass = "at-border-faint";
-    if (heldToSettle) rowClass += " border-l-2 border-l-amber-400";
+    var rowClass = "";
+    var rowStyle = heldToSettle
+      ? ' style="border-left: 3px solid var(--warning);"'
+      : "";
 
     html +=
       '<tr class="' +
       rowClass +
-      '">' +
+      '"' +
+      rowStyle +
+      ">" +
       '<td class="py-2 text-gray-800 font-medium">' +
       label +
       (heldToSettle
         ? ' <span class="text-[9px] text-amber-500 font-normal" title="Held to settlement">STL</span>'
         : "") +
       "</td>" +
-      '<td class="py-2 text-center ' +
+      '<td class="py-2 text-center"><span class="' +
       sideClass(p.direction) +
       '">' +
       p.direction +
-      "</td>" +
+      "</span></td>" +
       '<td class="py-2 text-right text-gray-600">' +
       (modelConf != null ? (modelConf * 100).toFixed(1) + "%" : "--") +
       "</td>" +
