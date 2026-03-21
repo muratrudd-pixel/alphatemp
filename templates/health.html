@@ -1,31 +1,30 @@
 {% extends "base.html" %}
 {% block title %}Health{% endblock %}
 {% block content %}
-<div class="p-4 space-y-4 max-w-5xl mx-auto">
-
-  <div class="at-card p-5">
-    <h2 class="text-base font-semibold text-gray-900 mb-3">Data Freshness</h2>
-    <div id="freshness-table" class="space-y-1 text-xs at-mono"></div>
-  </div>
-
-  <div class="at-card p-5">
-    <h2 class="text-base font-semibold text-gray-900 mb-3">Pipeline Status</h2>
-    <div id="pipeline-table" class="space-y-1 text-xs at-mono"></div>
-  </div>
-
-  <div class="at-card p-5">
-    <h2 class="text-base font-semibold text-gray-900 mb-3">Database</h2>
-    <div id="db-table" class="space-y-1 text-xs at-mono"></div>
-    <div id="db-size" class="text-xs text-gray-400 mt-2"></div>
-  </div>
-
-  <div class="at-card p-5">
-    <h2 class="text-base font-semibold text-gray-900 mb-3">Configuration</h2>
-    <div id="config-table" class="space-y-1 text-xs at-mono"></div>
-  </div>
-
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+    <!-- Data Freshness — TOP LEFT -->
+    <div class="at-card p-4">
+        <h2 class="at-card-header mb-3">Data Freshness</h2>
+        <div id="freshness-table" class="at-mono"></div>
+    </div>
+    <!-- Pipeline Status — TOP RIGHT -->
+    <div class="at-card p-4">
+        <h2 class="at-card-header mb-3">Pipeline Status</h2>
+        <div id="pipeline-table" class="at-mono"></div>
+    </div>
+    <!-- Database — BOTTOM LEFT -->
+    <div class="at-card p-4">
+        <h2 class="at-card-header mb-3">Database</h2>
+        <div id="db-table" class="at-mono"></div>
+        <div id="db-size" class="at-mono mt-2"></div>
+    </div>
+    <!-- Configuration — BOTTOM RIGHT -->
+    <div class="at-card p-4">
+        <h2 class="at-card-header mb-3">Configuration</h2>
+        <div id="config-table" class="at-mono"></div>
+    </div>
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="/static/js/health.js"></script>
+<script src="/static/js/health.js?v=3"></script>
 {% endblock %}
