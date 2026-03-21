@@ -9,14 +9,14 @@
 <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
     <!-- Temperature Curve (top left) -->
     <div class="lg:col-span-3 at-card p-5">
-        <h2 class="text-base font-semibold text-gray-900 mb-3">Temperature Curve</h2>
+        <h2 class="at-card-header">Temperature Curve</h2>
         <div id="temp-curve-chart" style="width:100%; min-height:400px;"></div>
         <div id="chart-legend" class="flex flex-wrap items-center justify-center gap-x-5 gap-y-1 mt-2 pt-2 text-[11px] text-gray-500"></div>
     </div>
 
     <!-- Observation Feed (top right) -->
     <div class="lg:col-span-2 at-card p-5">
-        <h2 class="text-base font-semibold text-gray-900 mb-3">Observation Feed</h2>
+        <h2 class="at-card-header">Observation Feed</h2>
         <div id="obs-feed" class="feed-scroll" style="max-height:420px;">
             <p class="text-xs text-gray-400">No observations</p>
         </div>
@@ -24,7 +24,7 @@
 
     <!-- Order Book Ladder (bottom left) -->
     <div class="lg:col-span-3 at-card p-5">
-        <h2 class="text-base font-semibold text-gray-900 mb-3">Order Book Ladder<span id="bracket-stale" class="hidden"></span></h2>
+        <h2 class="at-card-header">Order Book Ladder<span id="bracket-stale" class="hidden"></span></h2>
         <div id="bracket-chart" style="width:100%;"></div>
         <div id="liquidity-bar" class="mt-3"></div>
     </div>
@@ -32,7 +32,7 @@
     <!-- Forecast Runs (bottom right) -->
     <div class="lg:col-span-2 flex flex-col gap-4">
         <div class="at-card p-5">
-            <h2 class="text-base font-semibold text-gray-900 mb-3">Forecast Runs</h2>
+            <h2 class="at-card-header">Forecast Runs</h2>
             <div id="fcst-feed" class="feed-scroll" style="max-height:260px;">
                 <p class="text-xs text-gray-400">No forecast runs</p>
             </div>
@@ -42,7 +42,7 @@
         <div class="at-card p-5">
             <button onclick="document.getElementById('cli-body').classList.toggle('hidden'); this.querySelector('svg').classList.toggle('rotate-180');"
                     class="flex items-center justify-between w-full text-left">
-                <h2 class="text-base font-semibold text-gray-900">NWS CLI Report</h2>
+                <h2 class="at-card-header">NWS CLI Report</h2>
                 <svg class="w-4 h-4 text-gray-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
             </button>
             <div id="cli-body" class="hidden mt-3">

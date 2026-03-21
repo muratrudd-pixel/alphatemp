@@ -185,7 +185,7 @@ function refreshTempChart() {
           textfont: {
             size: 11,
             color: "#d97706",
-            family: "Inter, sans-serif",
+            family: "Space Mono, monospace",
             weight: 600,
           },
           name: settleName,
@@ -271,7 +271,7 @@ function refreshTempChart() {
           yref: "paper",
           text: "Now",
           showarrow: false,
-          font: { size: 10, color: "#9ca3af", family: "Inter, sans-serif" },
+          font: { size: 10, color: "#9ca3af", family: "Space Mono, monospace" },
           yanchor: "top",
           yshift: 5,
         },
@@ -385,7 +385,7 @@ function refreshObsFeed() {
       var obs = sorted.slice(0, 20);
 
       var header =
-        '<div class="grid grid-cols-[2fr_2fr_2fr_3fr] gap-x-2 text-[10px] text-gray-400 uppercase tracking-wider py-1.5 at-border-subtle at-mono">' +
+        '<div class="grid grid-cols-[2fr_2fr_2fr_3fr] gap-x-2 text-[10px] text-gray-400 uppercase tracking-wider py-1.5 at-mono">' +
         "<span>Rcvd</span><span>Obs</span><span>Temp</span><span>Details</span></div>";
 
       var rows = obs
@@ -414,7 +414,7 @@ function refreshObsFeed() {
           }
 
           return (
-            '<div class="grid grid-cols-[2fr_2fr_2fr_3fr] gap-x-2 text-xs py-1.5 at-border-faint items-center at-mono">' +
+            '<div class="grid grid-cols-[2fr_2fr_2fr_3fr] gap-x-2 text-xs py-1.5 items-center at-mono">' +
             '<span class="text-gray-500">' +
             rcvdTime +
             "</span>" +
@@ -424,7 +424,7 @@ function refreshObsFeed() {
             '<span class="text-gray-900 font-medium">' +
             o.temp_f.toFixed(1) +
             "\u00b0F</span>" +
-            '<span class="flex flex-wrap gap-1" style="font-family: Inter, sans-serif;">' +
+            '<span class="flex flex-wrap gap-1" style="font-family: \'Space Mono\', monospace;">' +
             badges +
             "</span>" +
             "</div>"
@@ -478,7 +478,7 @@ function refreshFcstFeed() {
       };
 
       var header =
-        '<div class="grid grid-cols-[2fr_2fr_2fr_2fr_1.5fr] gap-x-2 text-[10px] text-gray-400 uppercase tracking-wider py-1.5 at-border-subtle at-mono">' +
+        '<div class="grid grid-cols-[2fr_2fr_2fr_2fr_1.5fr] gap-x-2 text-[10px] text-gray-400 uppercase tracking-wider py-1.5 at-mono">' +
         "<span>Rcvd</span><span>Run (ET)</span><span>Model</span><span>High</span><span>\u0394</span></div>";
 
       var rows = fullRuns
@@ -512,7 +512,7 @@ function refreshFcstFeed() {
           }
 
           return (
-            '<div class="grid grid-cols-[2fr_2fr_2fr_2fr_1.5fr] gap-x-2 text-xs py-1.5 at-border-faint items-center at-mono">' +
+            '<div class="grid grid-cols-[2fr_2fr_2fr_2fr_1.5fr] gap-x-2 text-xs py-1.5 items-center at-mono">' +
             '<span class="text-gray-500">' +
             rcvdLabel +
             "</span>" +
@@ -595,7 +595,7 @@ function refreshBracketLadder() {
     // Build table
     var html =
       '<table class="w-full text-xs at-mono" style="border-collapse: separate; border-spacing: 0;">' +
-      '<thead><tr class="text-[10px] text-gray-400 uppercase tracking-wider at-border-subtle">' +
+      '<thead><tr class="text-[10px] text-gray-400 uppercase tracking-wider">' +
       '<th class="py-2 text-left font-medium">Bracket</th>' +
       '<th class="py-2 text-right font-medium">Volume</th>' +
       '<th class="py-2 text-right font-medium">Bid</th>' +
@@ -648,11 +648,11 @@ function refreshBracketLadder() {
       if (edgePct != null) {
         var edgePillClass;
         if (edgePct > 0 && clearsFees) {
-          edgePillClass = "pill pill-positive";
+          edgePillClass = "at-pill at-pill-profit";
         } else if (edgePct < 0) {
-          edgePillClass = "pill pill-negative";
+          edgePillClass = "at-pill at-pill-loss";
         } else {
-          edgePillClass = "pill pill-neutral";
+          edgePillClass = "at-pill at-pill-neutral";
         }
         edgePill =
           '<span class="' +
@@ -667,11 +667,11 @@ function refreshBracketLadder() {
       if (evCents != null) {
         var evPillClass;
         if (clearsFees) {
-          evPillClass = "pill pill-positive";
+          evPillClass = "at-pill at-pill-profit";
         } else if (evCents < 0) {
-          evPillClass = "pill pill-negative";
+          evPillClass = "at-pill at-pill-loss";
         } else {
-          evPillClass = "pill pill-neutral";
+          evPillClass = "at-pill at-pill-neutral";
         }
         evPill =
           '<span class="' +
@@ -684,7 +684,7 @@ function refreshBracketLadder() {
 
       // Row highlighting: model favorite vs market confirmed
       var rowStyle = "";
-      var rowClass = "at-border-faint";
+      var rowClass = "";
       if (idx === modelFavIdx) {
         // Check if market confirms (yes_bid >= 0.99)
         var marketConfirmed = b.yes_bid != null && b.yes_bid >= 0.99;
@@ -809,7 +809,7 @@ function refreshCLI() {
       ? " \u00B7 Received: " + toET(data.ingested_at)
       : "";
     statusEl.innerHTML =
-      '<span class="pill pill-positive">CLI</span> ' +
+      '<span class="at-pill at-pill-profit">CLI</span> ' +
       '<span class="text-gray-700 font-medium">' +
       data.max_temp_f +
       "\u00B0F</span>" +
