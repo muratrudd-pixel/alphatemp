@@ -8,10 +8,11 @@
     <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/design-system.css">
     <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
-<body class="min-h-screen" style="font-family: 'Inter', -apple-system, sans-serif; background: #f0f1f3; color: #374151;">
+<body class="min-h-screen" style="font-family: 'Space Mono', monospace; background: #f0f1f3; color: #374151;">
 
     <!-- Header Bar (stays dark) -->
     <header style="background: #1a1b2e;">
@@ -25,13 +26,13 @@
 
         <!-- KPI Scorecard -->
         <div class="flex items-center gap-5" style="font-family: 'JetBrains Mono', monospace;">
-          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Model High</span><strong id="kpi-model-high" class="text-white text-sm font-semibold">--</strong></div>
-          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Settlement</span><strong id="kpi-settlement" class="text-white text-sm font-semibold">--</strong></div>
-          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Consensus</span><strong id="kpi-consensus" class="text-gray-200 text-sm font-semibold">--</strong></div>
-          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Drift</span><strong id="kpi-drift" class="text-gray-200 text-sm font-semibold">--</strong></div>
-          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Open Positions</span><strong id="kpi-open-pos" class="text-white text-sm font-semibold">--</strong></div>
-          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Day P&L</span><strong id="kpi-day-pnl" class="text-emerald-400 text-sm font-semibold">--</strong></div>
-          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block">Total P&L</span><strong id="kpi-total-pnl" class="text-emerald-400 text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block" style="font-family: var(--font-ui);">Model High</span><strong id="kpi-model-high" class="text-white text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block" style="font-family: var(--font-ui);">Settlement</span><strong id="kpi-settlement" class="text-white text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block" style="font-family: var(--font-ui);">Consensus</span><strong id="kpi-consensus" class="text-gray-200 text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block" style="font-family: var(--font-ui);">Drift</span><strong id="kpi-drift" class="text-gray-200 text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block" style="font-family: var(--font-ui);">Open Positions</span><strong id="kpi-open-pos" class="text-white text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block" style="font-family: var(--font-ui);">Day P&L</span><strong id="kpi-day-pnl" class="text-emerald-400 text-sm font-semibold">--</strong></div>
+          <div class="text-center"><span class="text-gray-400 text-[10px] uppercase tracking-wider block" style="font-family: var(--font-ui);">Total P&L</span><strong id="kpi-total-pnl" class="text-emerald-400 text-sm font-semibold">--</strong></div>
         </div>
 
         <!-- Nav + Controls -->

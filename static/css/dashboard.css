@@ -1,7 +1,7 @@
 /* AlphaTemp Dashboard — Shared Styles (Light Theme) */
 
 body {
-    font-family: 'Inter', -apple-system, sans-serif;
+    font-family: var(--font-ui);
     background: #f0f1f3;
     color: #374151;
 }
@@ -9,14 +9,13 @@ body {
 /* Card panels — white on light gray page */
 .at-card {
     background: #ffffff;
-    border: 1px solid rgba(0,0,0,0.08);
-    border-radius: 12px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
 }
 
 /* Monospace for tabular data */
 .at-mono {
-    font-family: 'JetBrains Mono', 'Roboto Mono', monospace;
+    font-family: var(--font-data);
 }
 
 /* Status dot — green, pulsing */
@@ -97,6 +96,7 @@ body {
     100% { background-position: -200% 0; }
 }
 
+/* DEPRECATED — mobile only */
 /* Pill badges for Edge/EV values */
 .pill {
     display: inline-block;
