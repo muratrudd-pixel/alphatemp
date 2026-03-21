@@ -1,0 +1,157 @@
+/* AlphaTemp Design System */
+
+:root {
+  /* Page */
+  --page-bg: #f0f1f3;
+  --card-bg: #ffffff;
+  --card-bg-alt: #f7f8fa;
+  --header-bg: #1a1b2e;
+
+  /* Text */
+  --text-primary: #374151;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+
+  /* Status */
+  --profit: #10b981;
+  --loss: #ef4444;
+  --warning: #f59e0b;
+  --info: #3b82f6;
+  --purple: #8b5cf6;
+
+  /* Status backgrounds (tinted) */
+  --profit-bg: #dcfce7;
+  --profit-text: #16a34a;
+  --loss-bg: #fee2e2;
+  --loss-text: #dc2626;
+  --warning-bg: #fef3c7;
+  --warning-text: #92400e;
+  --info-bg: #dbeafe;
+  --info-text: #2563eb;
+  --orange-bg: #ffedd5;
+  --orange-text: #ea580c;
+  --neutral-bg: #f3f4f6;
+  --neutral-text: #6b7280;
+
+  /* Fonts */
+  --font-ui: 'Space Mono', monospace;
+  --font-data: 'JetBrains Mono', 'Roboto Mono', monospace;
+
+  /* Surfaces */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-pill: 9999px;
+}
+
+/* Card header labels */
+.at-card-header {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Stat cells (KPI grids) */
+.at-stat {
+  background: var(--card-bg);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  box-shadow: var(--shadow-sm);
+}
+.at-stat .at-card-header {
+  margin-bottom: 4px;
+}
+.at-stat-value {
+  font-family: var(--font-data);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* Tables */
+.at-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-data);
+  font-size: 11px;
+}
+.at-table thead tr {
+  background: var(--card-bg-alt);
+}
+.at-table th {
+  padding: 8px 14px;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}
+.at-table td {
+  padding: 10px 14px;
+  color: var(--text-primary);
+}
+.at-table tbody tr:nth-child(even) {
+  background: var(--card-bg-alt);
+}
+
+/* Pill badges */
+.at-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  line-height: 1.4;
+}
+.at-pill-profit { background: var(--profit-bg); color: var(--profit-text); }
+.at-pill-loss { background: var(--loss-bg); color: var(--loss-text); }
+.at-pill-warning { background: var(--warning-bg); color: var(--warning-text); }
+.at-pill-info { background: var(--info-bg); color: var(--info-text); }
+.at-pill-orange { background: var(--orange-bg); color: var(--orange-text); }
+.at-pill-neutral { background: var(--neutral-bg); color: var(--neutral-text); }
+
+/* Filter pills */
+.at-filter-pill {
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-family: var(--font-ui);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s;
+}
+.at-filter-pill-active {
+  background: #1f2937;
+  color: #ffffff;
+}
+.at-filter-pill-inactive {
+  background: var(--neutral-bg);
+  color: var(--text-secondary);
+}
+
+/* Key-value rows (health, config) */
+.at-kv-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-family: var(--font-data);
+  font-size: 11px;
+}
+.at-kv-row:nth-child(odd) {
+  background: var(--card-bg-alt);
+}
+.at-kv-label {
+  color: var(--text-primary);
+}
+.at-kv-value {
+  color: var(--text-primary);
+}
