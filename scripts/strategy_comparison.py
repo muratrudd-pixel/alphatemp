@@ -10,12 +10,23 @@ Usage:
     python scripts/strategy_comparison.py --quick --seed 42
 """
 import argparse
+import json
 import math
 import os
+import random
 import re
 import sys
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+
+import duckdb
+import numpy as np
+from tqdm import tqdm
+
+# Add project root to path for service imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from services.feature_builder import FeatureBuilder
+from services.model import QRModel
 
 
 # ── Pure utility functions ───────────────────────────────────────────────
@@ -315,6 +326,412 @@ def generate_signals(bracket_probs, market_prices, config, bankroll):
     return signals
 
 
+# ── DB Query Functions ───────────────────────────────────────────────────
+
+
+def get_candlestick_prices(con, event_date, update_hour):
+    # type: (duckdb.DuckDBPyConnection, date, int) -> Dict[Tuple, Dict]
+    """Get latest candlestick prices for each bracket at the given hour.
+
+    Returns {(floor, cap): {yes_ask, yes_bid, no_ask, no_bid}} in cents.
+    Converts ET update_hour to UTC for candlestick timestamp comparison.
+    """
+    # ET to UTC: EST = UTC-5 (conservative, matches NWS CLI convention)
+    utc_hour = update_hour + 5
+    if utc_hour >= 24:
+        lookup_date = event_date + timedelta(days=1)
+        utc_hour -= 24
+    else:
+        lookup_date = event_date
+    cutoff = datetime(lookup_date.year, lookup_date.month, lookup_date.day, utc_hour, 59, 59)
+
+    # Build event ticker pattern: KXHIGHNY-YYMMMDD
+    month_abbr = event_date.strftime("%b").upper()
+    yr = event_date.strftime("%y")
+    day = event_date.strftime("%d")
+    event_ticker = "KXHIGHNY-{}{}{}".format(yr, month_abbr, day)
+
+    rows = con.execute("""
+        WITH ranked AS (
+            SELECT market_ticker,
+                   yes_bid_close, yes_ask_close,
+                   ROW_NUMBER() OVER (PARTITION BY market_ticker ORDER BY end_period_ts DESC) as rn
+            FROM kalshi_candlesticks
+            WHERE market_ticker LIKE ? || '-%'
+              AND end_period_ts <= ?
+        )
+        SELECT market_ticker, yes_bid_close, yes_ask_close
+        FROM ranked WHERE rn = 1
+    """, [event_ticker, cutoff]).fetchall()
+
+    prices = {}
+    for ticker, yes_bid, yes_ask in rows:
+        if yes_bid is None or yes_ask is None:
+            continue
+        floor, cap = parse_ticker_bracket(ticker)
+        if floor is None and cap is None:
+            continue
+        # Candlestick prices are already in cents (0-100 range)
+        yb = int(round(yes_bid))
+        ya = int(round(yes_ask))
+        if ya <= 0 or ya >= 100:
+            continue
+        no_ask, no_bid = derive_no_prices(yb, ya)
+        prices[(floor, cap)] = {
+            "yes_ask": ya, "yes_bid": yb,
+            "no_ask": no_ask, "no_bid": no_bid,
+        }
+
+    # Resolve T-tickers: lowest strike T = lower tail, highest = upper tail
+    t_keys = [(f, c) for f, c in prices if f is None]
+    if len(t_keys) == 2:
+        strikes = sorted([c for _, c in t_keys])
+        low_data = prices.pop((None, strikes[0]))
+        high_data = prices.pop((None, strikes[1]))
+        prices[(None, strikes[0])] = low_data
+        prices[(strikes[1], None)] = high_data
+    elif len(t_keys) == 1:
+        interior_floors = [f for f, c in prices if f is not None and c is not None]
+        t_strike = t_keys[0][1]
+        if interior_floors and t_strike > max(interior_floors):
+            data = prices.pop((None, t_strike))
+            prices[(t_strike, None)] = data
+
+    return prices
+
+
+def get_settlement_data(con, event_date):
+    # type: (duckdb.DuckDBPyConnection, date) -> Optional[Dict]
+    """Get settlement outcomes from kalshi_settlements.
+
+    Returns {(floor, cap): settled_yes} or NWS fallback dict, or None.
+    """
+    rows = con.execute("""
+        SELECT market_ticker, floor_strike, cap_strike, settled_yes
+        FROM kalshi_settlements
+        WHERE event_date = ?
+    """, [event_date]).fetchall()
+
+    if rows:
+        result = {}
+        for ticker, floor_s, cap_s, settled in rows:
+            floor = int(floor_s) if floor_s is not None else None
+            cap = int(cap_s) if cap_s is not None else None
+            result[(floor, cap)] = bool(settled)
+        return result
+
+    # Fallback: NWS daily actual high + bracket logic
+    nws_row = con.execute("""
+        SELECT max_temp_f FROM nws_daily
+        WHERE station_id = 'KNYC' AND obs_date = ? AND max_temp_f IS NOT NULL
+        ORDER BY CASE source WHEN 'NWS_CLI' THEN 0 ELSE 1 END
+        LIMIT 1
+    """, [event_date]).fetchone()
+    if nws_row is None:
+        return None
+    return {"_nws_fallback": True, "_actual_high": int(nws_row[0])}
+
+
+def get_running_max(con, event_date, update_hour):
+    # type: (duckdb.DuckDBPyConnection, date, int) -> Optional[float]
+    """Max observed temp up to update_hour ET on event_date."""
+    row = con.execute("""
+        SELECT MAX(temp_f) FROM observations
+        WHERE station_id = 'KNYC' AND observed_at::DATE = ?
+          AND EXTRACT(HOUR FROM observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'EST')::INTEGER <= ?
+          AND temp_f IS NOT NULL
+    """, [event_date, update_hour]).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+# ── Metrics & Output ─────────────────────────────────────────────────────
+
+
+def compute_metrics(trades, starting_capital):
+    # type: (List[Dict], float) -> Dict
+    """Compute summary metrics for a list of trades."""
+    if not trades:
+        return {
+            "total_pnl": 0.0, "roi_pct": 0.0, "win_rate": 0.0,
+            "avg_edge": 0.0, "trade_count": 0, "max_drawdown": 0.0,
+            "sharpe": 0.0, "profit_factor": 0.0,
+        }
+
+    total_pnl = sum(t["net_pnl"] for t in trades)
+    wins = [t for t in trades if t["net_pnl"] > 0]
+    losses = [t for t in trades if t["net_pnl"] <= 0]
+    gross_win = sum(t["net_pnl"] for t in wins)
+    gross_loss = abs(sum(t["net_pnl"] for t in losses))
+
+    # Cumulative P&L for drawdown
+    cum_pnl = []
+    running = 0.0
+    for t in trades:
+        running += t["net_pnl"]
+        cum_pnl.append(running)
+    peak = cum_pnl[0]
+    max_dd = 0.0
+    for val in cum_pnl:
+        if val > peak:
+            peak = val
+        dd = val - peak
+        if dd < max_dd:
+            max_dd = dd
+
+    # Daily P&L for Sharpe
+    daily_pnl = {}  # type: Dict[str, float]
+    for t in trades:
+        d = str(t["event_date"])
+        daily_pnl[d] = daily_pnl.get(d, 0.0) + t["net_pnl"]
+    daily_vals = list(daily_pnl.values())
+    if len(daily_vals) > 1:
+        mean_d = sum(daily_vals) / len(daily_vals)
+        std_d = (sum((v - mean_d) ** 2 for v in daily_vals) / (len(daily_vals) - 1)) ** 0.5
+        sharpe = (mean_d / std_d * (252 ** 0.5)) if std_d > 0 else 0.0
+    else:
+        sharpe = 0.0
+
+    return {
+        "total_pnl": round(total_pnl, 2),
+        "roi_pct": round(total_pnl / starting_capital * 100, 2),
+        "win_rate": round(len(wins) / len(trades) * 100, 1),
+        "avg_edge": round(sum(t["edge_pct"] for t in trades) / len(trades), 2),
+        "trade_count": len(trades),
+        "max_drawdown": round(max_dd, 2),
+        "sharpe": round(sharpe, 2),
+        "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else float('inf'),
+    }
+
+
+def sample_dates(con, sample_size, seed):
+    # type: (duckdb.DuckDBPyConnection, int, Optional[int]) -> List[date]
+    """Season-stratified random sample of backtest dates."""
+    rows = con.execute("""
+        SELECT DISTINCT event_date FROM kalshi_settlements
+        WHERE event_date >= '2021-08-06' AND event_date <= '2026-02-23'
+        ORDER BY event_date
+    """).fetchall()
+    all_dates = [r[0] for r in rows]
+
+    seasons = {"DJF": [], "MAM": [], "JJA": [], "SON": []}
+    for d in all_dates:
+        m = d.month
+        if m in (12, 1, 2):
+            seasons["DJF"].append(d)
+        elif m in (3, 4, 5):
+            seasons["MAM"].append(d)
+        elif m in (6, 7, 8):
+            seasons["JJA"].append(d)
+        else:
+            seasons["SON"].append(d)
+
+    rng = random.Random(seed)
+    per_season = sample_size // 4
+    sampled = []
+    for name in ["DJF", "MAM", "JJA", "SON"]:
+        pool = seasons[name]
+        n = min(per_season, len(pool))
+        sampled.extend(rng.sample(pool, n))
+
+    return sorted(sampled)
+
+
+def all_backtest_dates(con):
+    # type: (duckdb.DuckDBPyConnection) -> List[date]
+    """All dates with settlement data."""
+    rows = con.execute("""
+        SELECT DISTINCT event_date FROM kalshi_settlements
+        WHERE event_date >= '2021-08-06' AND event_date <= '2026-02-23'
+        ORDER BY event_date
+    """).fetchall()
+    return [r[0] for r in rows]
+
+
+def print_results_table(results):
+    # type: (List[Tuple[str, Dict]]) -> None
+    """Print ranked strategy comparison table."""
+    results.sort(key=lambda x: x[1]["total_pnl"], reverse=True)
+
+    header = "{:<20s} {:>8s} {:>7s} {:>7s} {:>8s} {:>8s} {:>7s} {:>6s}".format(
+        "Strategy", "P&L($)", "ROI(%)", "Trades", "WinRate", "MaxDD", "Sharpe", "PF")
+    sep = "-" * len(header)
+    print()
+    print(header)
+    print(sep)
+    for name, m in results:
+        disq = " [DQ]" if m["max_drawdown"] < -20.0 else ""
+        print("{:<20s} {:>+8.2f} {:>6.1f}% {:>7d} {:>7.1f}% {:>+8.2f} {:>7.2f} {:>6.2f}{}".format(
+            name, m["total_pnl"], m["roi_pct"], m["trade_count"],
+            m["win_rate"], m["max_drawdown"], m["sharpe"], m["profit_factor"], disq))
+    print()
+
+
+def run_backtest(args):
+    # type: (argparse.Namespace) -> None
+    """Main walk-forward backtest loop."""
+    db_path = args.db
+    fb = FeatureBuilder(db_path)
+    model = QRModel()
+    config = {
+        "min_edge_pct": 5.0, "min_model_prob": 0.15, "min_ev_cents": 2,
+        "max_per_bracket": 10, "starting_capital": 100.0,
+    }
+
+    con = duckdb.connect(db_path, read_only=True)
+    try:
+        if args.quick:
+            dates = sample_dates(con, args.sample_size, args.seed)
+            mode_label = "{} sample days".format(len(dates))
+        else:
+            dates = all_backtest_dates(con)
+            mode_label = "{} days (full)".format(len(dates))
+    finally:
+        con.close()
+
+    # Filter strategies if specified
+    if args.strategies:
+        wanted = set(args.strategies.split(","))
+        strategies = [s for s in ALL_STRATEGIES if s.name in wanted]
+    else:
+        strategies = list(ALL_STRATEGIES)
+
+    print("Strategy Comparison — {} — {} strategies".format(mode_label, len(strategies)))
+
+    # Per-strategy state
+    ledgers = {s.name: [] for s in strategies}
+    bankrolls = {s.name: config["starting_capital"] for s in strategies}
+
+    for event_date in tqdm(dates, desc="Backtesting", unit="day"):
+        # Fetch settlement first, then close so FeatureBuilder can open its own connection
+        con = duckdb.connect(db_path, read_only=True)
+        try:
+            settlement = get_settlement_data(con, event_date)
+        finally:
+            con.close()
+        if settlement is None:
+            continue
+
+        held = {s.name: set() for s in strategies}
+        day_entries = {s.name: [] for s in strategies}
+
+        cached_run_hour = None
+        model_fitted = False
+        fit_date_key = None
+
+        for update_hour in range(24):
+            # 1. Train model (cache when run_hour unchanged)
+            # FeatureBuilder manages its own DuckDB connection internally
+            result = fb.get_training_data(event_date, update_hour)
+            if result is None:
+                continue
+            X, y, train_dates, run_hour = result
+
+            if run_hour != cached_run_hour:
+                fit_date_key = "{}-rh{}".format(event_date, run_hour)
+                fit_result = model.fit(X, y, run_hour=run_hour, date_key=fit_date_key)
+                if fit_result is None:
+                    continue
+                cached_run_hour = run_hour
+                model_fitted = True
+
+            if not model_fitted:
+                continue
+
+            # 2. Build live features
+            feat_result = fb.build_features(event_date, update_hour)
+            if feat_result is None:
+                continue
+            features, fcst_high, rh = feat_result
+
+            # 3. Predict + get market prices (read-only queries)
+            con = duckdb.connect(db_path, read_only=True)
+            try:
+                running_max = get_running_max(con, event_date, update_hour)
+                probs = model.predict_bracket_probs(features, fcst_high, rh, fit_date_key,
+                                                     running_max=running_max)
+                if not probs:
+                    continue
+
+                # 4. Get market prices
+                prices = get_candlestick_prices(con, event_date, update_hour)
+            finally:
+                con.close()
+            if not prices:
+                continue
+
+            model_median = compute_model_median(probs)
+
+            # 5. For each strategy: generate signals, filter, size, dedup, record
+            for strategy in strategies:
+                sname = strategy.name
+                raw_signals = generate_signals(probs, prices, config, bankrolls[sname])
+                filtered = strategy.filter(raw_signals, probs, model_median)
+
+                for sig in filtered:
+                    key = (sig["bracket_floor"], sig["bracket_cap"], sig["direction"])
+                    if key in held[sname]:
+                        continue
+                    held[sname].add(key)
+
+                    entry_fee = compute_fee(sig["contracts"], sig["market_price"])
+
+                    bracket_key = (sig["bracket_floor"], sig["bracket_cap"])
+                    if settlement.get("_nws_fallback"):
+                        actual = settlement["_actual_high"]
+                        settled_yes = resolve_settlement(
+                            sig["bracket_floor"], sig["bracket_cap"], actual)
+                    elif bracket_key in settlement:
+                        settled_yes = settlement[bracket_key]
+                    else:
+                        continue
+
+                    net = compute_pnl(settled_yes, sig["direction"],
+                                      sig["market_price"], sig["contracts"], entry_fee)
+
+                    day_entries[sname].append({
+                        "event_date": str(event_date),
+                        "bracket_floor": sig["bracket_floor"],
+                        "bracket_cap": sig["bracket_cap"],
+                        "direction": sig["direction"],
+                        "model_prob": sig["model_prob"],
+                        "market_price": sig["market_price"],
+                        "edge_pct": sig["edge_pct"],
+                        "contracts": sig["contracts"],
+                        "entry_fee": entry_fee,
+                        "settled_yes": settled_yes,
+                        "net_pnl": net,
+                    })
+
+        # End of day: update bankrolls
+        for strategy in strategies:
+            sname = strategy.name
+            ledgers[sname].extend(day_entries[sname])
+            day_pnl = sum(e["net_pnl"] for e in day_entries[sname])
+            bankrolls[sname] += day_pnl
+
+    # Output results
+    results = []
+    for strategy in strategies:
+        m = compute_metrics(ledgers[strategy.name], config["starting_capital"])
+        results.append((strategy.name, m))
+
+    print_results_table(results)
+
+    # Save detailed results
+    os.makedirs("data/backtest_results", exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    mode = "quick" if args.quick else "full"
+    out_path = "data/backtest_results/{}_{}.json".format(mode, ts)
+    output = {
+        "mode": mode, "dates": len(dates), "seed": args.seed,
+        "strategies": {s.name: {"metrics": m, "trades": ledgers[s.name]}
+                       for s, (_, m) in zip(strategies, results)},
+    }
+    with open(out_path, "w") as f:
+        json.dump(output, f, indent=2, default=str)
+    print("Detailed results saved to {}".format(out_path))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Strategy comparison backtest runner")
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -329,7 +746,7 @@ def main():
     parser.add_argument("--db", type=str, default="data/alphatemp.duckdb",
                         help="Path to DuckDB database")
     args = parser.parse_args()
-    print("Strategy comparison runner — not yet implemented (Tasks 4-5)")
+    run_backtest(args)
 
 
 if __name__ == "__main__":

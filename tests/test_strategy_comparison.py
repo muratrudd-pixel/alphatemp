@@ -238,3 +238,30 @@ class TestGenerateSignals:
         assert len(signals) == 1
         assert signals[0]["direction"] == "NO"
         assert signals[0]["edge_pct"] == pytest.approx(53.0, abs=0.1)
+
+
+# ── Metrics ─────────────────────────────────────────────────────────────
+
+class TestMetrics:
+    def test_compute_metrics(self):
+        from scripts.strategy_comparison import compute_metrics
+        trades = [
+            {"net_pnl": 0.50, "event_date": "2025-01-01", "edge_pct": 8.0},
+            {"net_pnl": -0.30, "event_date": "2025-01-02", "edge_pct": 6.0},
+            {"net_pnl": 0.40, "event_date": "2025-01-03", "edge_pct": 10.0},
+            {"net_pnl": 0.20, "event_date": "2025-01-04", "edge_pct": 7.0},
+        ]
+        m = compute_metrics(trades, starting_capital=100.0)
+        assert m["total_pnl"] == pytest.approx(0.80, abs=0.01)
+        assert m["roi_pct"] == pytest.approx(0.80, abs=0.01)
+        assert m["win_rate"] == pytest.approx(75.0, abs=0.1)
+        assert m["trade_count"] == 4
+        assert m["avg_edge"] == pytest.approx(7.75, abs=0.01)
+        assert m["max_drawdown"] <= 0
+        assert m["profit_factor"] > 1.0
+
+    def test_empty_trades(self):
+        from scripts.strategy_comparison import compute_metrics
+        m = compute_metrics([], starting_capital=100.0)
+        assert m["total_pnl"] == 0.0
+        assert m["trade_count"] == 0
