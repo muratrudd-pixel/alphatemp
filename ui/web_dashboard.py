@@ -862,8 +862,17 @@ async def forecast_curve(city: str, date: str = None):
 
     if nws_row and nws_row[0] is not None:
         observed_high = round(nws_row[0], 1)
-        # Place NWS settlement dot at noon ET for display purposes
-        observed_high_at = f"{nws_date}T17:00:00"  # noon ET = 17:00 UTC
+        # Place CLI dot at time of highest METAR observation (best proxy for when max occurred)
+        peak_row = con.execute("""
+            SELECT observed_at FROM observations
+            WHERE station_id = ? AND observed_at::DATE = ?
+              AND temp_f IS NOT NULL
+            ORDER BY temp_f DESC, observed_at ASC LIMIT 1
+        """, [station_id, nws_date]).fetchone()
+        if peak_row and peak_row[0] is not None:
+            observed_high_at = peak_row[0].strftime("%Y-%m-%dT%H:%M:%S")
+        else:
+            observed_high_at = f"{nws_date}T17:00:00"  # fallback: noon ET
         settlement_source = "nws_cli"
     elif running_high_f is not None:
         # Fallback: running max of settlement-station obs (including 6-hour maxes)
