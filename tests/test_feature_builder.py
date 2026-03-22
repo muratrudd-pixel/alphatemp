@@ -255,9 +255,9 @@ def builder(test_db):
 # ---------------------------------------------------------------------------
 
 def test_feature_names_count():
-    """FEATURE_NAMES must have exactly 23 entries."""
+    """FEATURE_NAMES must have exactly 25 entries."""
     from services.feature_builder import FeatureBuilder
-    assert len(FeatureBuilder.FEATURE_NAMES) == 23
+    assert len(FeatureBuilder.FEATURE_NAMES) == 25
 
 
 def test_feature_names_order():
@@ -271,6 +271,7 @@ def test_feature_names_order():
         'humidity', 'max_gusts', 'lag_error', 'cape',
         'dp_spread', 'gfs_precip', 'rain_day',
         'precip_agree', 'solar_spread', 'abs(lag_error)',
+        'temp_drop', 'forecast_upside',
     ]
     assert FeatureBuilder.FEATURE_NAMES == expected
 
@@ -283,7 +284,7 @@ def test_get_training_data_shapes(builder):
     """get_training_data returns (X, y, dates) with correct shapes.
 
     With 90 days of data, 4 update hours each, we expect up to 360 rows.
-    X should have 23 columns.
+    X should have 25 columns.
     """
     target_date = date(2026, 4, 15)
     result = builder.get_training_data(target_date, update_hour=0, window_days=180)
@@ -291,7 +292,7 @@ def test_get_training_data_shapes(builder):
     assert result is not None, "Should return data with 90 days in window"
     X, y, dates, _run_hour = result
     assert X.ndim == 2, "X should be 2D"
-    assert X.shape[1] == 23, f"X should have 23 features, got {X.shape[1]}"
+    assert X.shape[1] == 25, f"X should have 25 features, got {X.shape[1]}"
     assert len(y) == X.shape[0], "y length should match X rows"
     assert len(dates) == X.shape[0], "dates length should match X rows"
     assert X.shape[0] >= 60, f"Should have >= 60 samples, got {X.shape[0]}"
@@ -311,14 +312,14 @@ def test_get_training_data_returns_none_insufficient(builder):
 # ---------------------------------------------------------------------------
 
 def test_build_features_shape(builder, test_db):
-    """build_features returns (features_array, fcst_high) with 23 features."""
+    """build_features returns (features_array, fcst_high) with 25 features."""
     # Use a date we have data for
     target_date = date(2026, 2, 15)
     result = builder.build_features(target_date, update_hour=12)
 
     assert result is not None, "Should return features for a date with data"
     features, fcst_high, _run_hour = result
-    assert features.shape == (23,), f"features should be shape (23,), got {features.shape}"
+    assert features.shape == (25,), f"features should be shape (25,), got {features.shape}"
     assert isinstance(fcst_high, float), "fcst_high should be a float"
     assert fcst_high > 0, "fcst_high should be positive (temperature)"
 
@@ -478,8 +479,8 @@ def test_training_and_live_features_consistent(builder):
     assert live_result is not None
     live_features, _, _run_hour = live_result
 
-    # Compare all 23 features
-    for i in range(23):
+    # Compare all 25 features
+    for i in range(25):
         assert abs(train_features[i] - live_features[i]) < 1e-6, (
             f"Feature {i} ({builder.FEATURE_NAMES[i]}) mismatch: "
             f"training={train_features[i]:.6f} vs live={live_features[i]:.6f}"
