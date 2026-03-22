@@ -128,10 +128,14 @@ class StrategyEngine:
             return
         features, fcst_high, _feat_run_hour = feat_result
 
-        # 4b. Get observed running max as CDF floor
+        # 4b. Get running max — prefer CLI/DSM settlement high over METAR
         running_max = self._get_running_max(target_date)
-        if running_max is not None:
-            logger.info("Running max: {:.1f}°F", running_max)
+        cli_high = self._get_cli_high(target_date)
+        if cli_high is not None:
+            running_max = max(running_max or 0.0, cli_high)
+            logger.info("Running max: {:.1f}°F (CLI: {:.0f}°F)", running_max, cli_high)
+        elif running_max is not None:
+            logger.info("Running max: {:.1f}°F (METAR)", running_max)
 
         # 5. Predict bracket probabilities
         bracket_probs = self.model.predict_bracket_probs(
@@ -572,6 +576,25 @@ class StrategyEngine:
                 WHERE station_id = 'KNYC'
                   AND observed_at::DATE = ?
                   AND temp_f IS NOT NULL
+            """, [target_date.isoformat()]).fetchone()
+            if row and row[0] is not None:
+                return float(row[0])
+            return None
+        finally:
+            con.close()
+
+    def _get_cli_high(self, target_date):
+        # type: (date) -> Optional[float]
+        """Get CLI or DSM settlement high for today if available."""
+        con = duckdb.connect(self.db_path)
+        try:
+            row = con.execute("""
+                SELECT max_temp_f FROM nws_daily
+                WHERE station_id = 'KNYC' AND obs_date = ?
+                  AND source IN ('NWS_CLI', 'DSM')
+                  AND max_temp_f IS NOT NULL
+                ORDER BY CASE source WHEN 'NWS_CLI' THEN 0 ELSE 1 END
+                LIMIT 1
             """, [target_date.isoformat()]).fetchone()
             if row and row[0] is not None:
                 return float(row[0])
