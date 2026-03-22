@@ -147,8 +147,8 @@ class TestSettlementResolvesLosingYes:
         assert pos["gross_pnl"] == -0.40
         assert pos["exit_price"] == 0
 
-    def test_yes_loses_at_cap_boundary(self, service, test_db):
-        """YES loses when actual high equals the cap exactly (exclusive)."""
+    def test_yes_wins_at_cap_boundary(self, service, test_db):
+        """YES wins when actual high equals the cap exactly (inclusive per Kalshi CFTC)."""
         _insert_position(test_db, 1, "2026-03-10", 74, 76, "YES", 40)
         _insert_nws(test_db, "2026-03-10", 76.0, "NWS_CLI")
 
@@ -156,8 +156,8 @@ class TestSettlementResolvesLosingYes:
 
         pos = _get_position(test_db, 1)
         assert count == 1
-        assert pos["settled_yes"] is False
-        assert pos["gross_pnl"] == -0.40
+        assert pos["settled_yes"] is True
+        assert pos["gross_pnl"] == 0.60
 
 
 class TestSettlementResolvesWinningNo:
@@ -339,6 +339,60 @@ class TestGetUnsettledDates:
 
         dates = service._get_unsettled_dates()
         assert len(dates) == 0
+
+
+@pytest.mark.asyncio
+async def test_settlement_cap_inclusive(test_db):
+    """Interior brackets: [floor, cap] both inclusive."""
+    db_path = test_db
+    con = duckdb.connect(db_path)
+    con.execute("""
+        INSERT INTO paper_positions (id, city, event_date, bracket_floor, bracket_cap,
+            direction, model_prob, market_price, edge, entry_price, entry_time,
+            fees, status, contracts)
+        VALUES (999, 'NYC', '2026-01-15', 64, 66, 'YES', 0.5, 50, 5.0, 50,
+            '2026-01-15 12:00:00', 0.04, 'open', 1)
+    """)
+    con.execute("""
+        INSERT INTO nws_daily (station_id, obs_date, max_temp_f, min_temp_f, source, ingested_at)
+        VALUES ('KNYC', '2026-01-15', 66, 40, 'NWS_CLI', '2026-01-15 22:00:00')
+    """)
+    con.close()
+
+    svc = SettlementService(db_path)
+    await svc._settle_date('2026-01-15')
+
+    con = duckdb.connect(db_path, read_only=True)
+    row = con.execute("SELECT settled_yes, net_pnl FROM paper_positions WHERE id = 999").fetchone()
+    con.close()
+    assert row[0] is True, "Temp at cap boundary (66) should settle YES"
+
+
+@pytest.mark.asyncio
+async def test_settlement_lower_tail(test_db):
+    """Lower tail: temp < cap."""
+    db_path = test_db
+    con = duckdb.connect(db_path)
+    con.execute("""
+        INSERT INTO paper_positions (id, city, event_date, bracket_floor, bracket_cap,
+            direction, model_prob, market_price, edge, entry_price, entry_time,
+            fees, status, contracts)
+        VALUES (998, 'NYC', '2026-01-15', NULL, 50, 'YES', 0.5, 50, 5.0, 50,
+            '2026-01-15 12:00:00', 0.04, 'open', 1)
+    """)
+    con.execute("""
+        INSERT INTO nws_daily (station_id, obs_date, max_temp_f, min_temp_f, source, ingested_at)
+        VALUES ('KNYC', '2026-01-15', 48, 30, 'NWS_CLI', '2026-01-15 22:00:00')
+    """)
+    con.close()
+
+    svc = SettlementService(db_path)
+    await svc._settle_date('2026-01-15')
+
+    con = duckdb.connect(db_path, read_only=True)
+    row = con.execute("SELECT settled_yes FROM paper_positions WHERE id = 998").fetchone()
+    con.close()
+    assert row[0] is True, "Lower tail: 48 < 50 should settle YES"
 
 
 class TestDSMSourceSettles:

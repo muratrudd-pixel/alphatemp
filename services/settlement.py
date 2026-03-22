@@ -83,7 +83,9 @@ class SettlementService:
         Returns count of positions settled.
 
         Settlement logic (matches paper_trader._settle_positions):
-        - Bracket is [floor, cap) — floor inclusive, cap exclusive
+        - Interior brackets are [floor, cap] — both inclusive per Kalshi CFTC filing
+        - Lower tail (floor=NULL): settled_yes if actual_high < cap
+        - Upper tail (cap=NULL): settled_yes if actual_high > floor
         - YES wins if actual high is in the bracket
         - NO wins if actual high is outside the bracket
         - P&L in dollars (entry_price is in cents, divide by 100)
@@ -121,8 +123,12 @@ class SettlementService:
             for row in rows:
                 pos_id, direction, entry_price, contracts, floor_val, cap_val, entry_fee = row
 
-                # Bracket is [floor, cap) — floor inclusive, cap exclusive
-                settled_yes = floor_val <= actual_high < cap_val
+                if floor_val is None:
+                    settled_yes = actual_high < cap_val          # lower tail
+                elif cap_val is None:
+                    settled_yes = actual_high > floor_val         # upper tail
+                else:
+                    settled_yes = floor_val <= actual_high <= cap_val  # interior (both inclusive)
 
                 if direction == "YES":
                     won = settled_yes
@@ -161,6 +167,11 @@ class SettlementService:
             return settled_count
         finally:
             con.close()
+
+    async def _settle_date(self, market_date):
+        # type: (str) -> int
+        """Async wrapper around settle_date for use in async contexts."""
+        return self.settle_date(market_date)
 
     async def run(self):
         # type: () -> None

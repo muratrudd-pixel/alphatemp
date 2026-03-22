@@ -195,7 +195,7 @@ class PaperTrader:
         """Resolve open positions when NWS CLI settlement data arrives.
 
         Settlement logic:
-        - Bracket is [floor, cap) — floor inclusive, cap exclusive
+        - Bracket is [floor, cap] — both inclusive per Kalshi CFTC filing
         - YES wins if actual high is in the bracket
         - NO wins if actual high is outside the bracket
         - P&L: winners get (100 - entry) per contract, losers lose entry per contract
@@ -222,7 +222,7 @@ class PaperTrader:
                 elif cap_val is None:
                     settled_yes = actual_high > floor_val  # upper tail
                 else:
-                    settled_yes = floor_val <= actual_high < cap_val  # interior
+                    settled_yes = floor_val <= actual_high <= cap_val  # interior (both inclusive per Kalshi CFTC)
 
                 if direction == "YES":
                     won = settled_yes

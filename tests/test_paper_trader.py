@@ -266,15 +266,15 @@ class TestPositionLifecycle:
         assert row[0] == "open"  # Should NOT have settled
 
     @pytest.mark.asyncio
-    async def test_settle_bracket_boundary_exclusive_cap(self, trader, test_db):
-        """Bracket is [floor, cap) — cap value itself is NOT in the bracket."""
+    async def test_settle_bracket_boundary_inclusive_cap(self, trader, test_db):
+        """Bracket is [floor, cap] — cap value IS in the bracket (Kalshi CFTC spec)."""
         trader._record_entry(
             city="NYC", event_date="2026-02-28",
             bracket_floor=46, bracket_cap=48,
             direction="YES", model_prob=0.62,
             market_price=58, entry_price=57, contracts=1,
         )
-        # 48°F is exactly at cap — should NOT be in bracket [46, 48)
+        # 48°F is exactly at cap — IS in bracket [46, 48] per Kalshi CFTC filing
         con = duckdb.connect(test_db)
         con.execute("""
             INSERT INTO nws_daily (station_id, obs_date, max_temp_f, source)
@@ -290,7 +290,7 @@ class TestPositionLifecycle:
         ).fetchone()
         con.close()
         assert row[0] == "closed"
-        assert row[1] is False  # 48 is NOT in [46, 48)
+        assert row[1] is True  # 48 IS in [46, 48] per Kalshi CFTC filing
 
 
 class TestUnrealizedPnL:
@@ -467,3 +467,31 @@ class TestEntryExitMethods:
         """exit_position() on non-existent ID should raise ValueError."""
         with pytest.raises(ValueError, match="Position 999 not found"):
             await trader.exit_position(position_id=999, exit_price=50, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_settlement_cap_inclusive(test_db):
+    """Kalshi CFTC filing: interior brackets are [floor, cap] — both inclusive."""
+    db_path = test_db
+    con = duckdb.connect(db_path)
+    con.execute("""
+        INSERT INTO paper_positions (id, city, event_date, bracket_floor, bracket_cap,
+            direction, model_prob, market_price, edge, entry_price, entry_time,
+            fees, status, contracts)
+        VALUES (999, 'NYC', '2026-01-15', 64, 66, 'YES', 0.5, 50, 5.0, 50,
+            '2026-01-15 12:00:00', 0.04, 'open', 1)
+    """)
+    con.execute("""
+        INSERT INTO nws_daily (station_id, obs_date, max_temp_f, min_temp_f, source, ingested_at)
+        VALUES ('KNYC', '2026-01-15', 66, 40, 'NWS_CLI', '2026-01-15 22:00:00')
+    """)
+    con.close()
+
+    pt = PaperTrader(db_path)
+    await pt._settle_positions()
+
+    con = duckdb.connect(db_path, read_only=True)
+    row = con.execute("SELECT settled_yes, net_pnl FROM paper_positions WHERE id = 999").fetchone()
+    con.close()
+    assert row[0] is True, "Temp at cap boundary (66) should settle YES"
+    assert row[1] > 0, "Should be a winning trade"
