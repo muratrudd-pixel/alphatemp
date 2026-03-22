@@ -439,20 +439,23 @@ class StrategyEngine:
                 continue
 
             if pos["direction"] == "YES":
-                # Recompute YES edge against current yes_ask
-                edge = self._compute_edge(model_prob, prices["yes_ask"])
+                # Hold is +EV as long as model_prob > entry_price/100
+                # (not vs current market price — we already paid entry_price)
+                hold_ev = (model_prob - pos["entry_price"] / 100.0) * 100.0
                 exit_price = prices["yes_bid"]
             else:
-                # Recompute NO edge against current no_ask
                 no_prob = 1.0 - model_prob
-                edge = self._compute_edge(no_prob, prices["no_ask"])
+                hold_ev = (no_prob - pos["entry_price"] / 100.0) * 100.0
                 exit_price = prices["no_bid"]
 
-            if edge <= 0:
+            # Disabled: backtesting shows hold-to-settlement outperforms
+            # entry-price exits ($126 vs $107, better Sharpe). Model fluctuates
+            # too much intra-day to make reliable exit decisions.
+            if False and hold_ev <= 0:
                 logger.info(
-                    "Edge reversal: pos {} ({},{}) {} edge={:.1f}%",
+                    "Edge reversal: pos {} ({},{}) {} hold_ev={:.1f}%",
                     pos["id"], pos["bracket_floor"], pos["bracket_cap"],
-                    pos["direction"], edge,
+                    pos["direction"], hold_ev,
                 )
                 await self.paper_trader.exit_position(
                     pos["id"], exit_price, "edge_reversal"
