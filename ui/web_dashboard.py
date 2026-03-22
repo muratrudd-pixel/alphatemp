@@ -1542,11 +1542,10 @@ async def get_review_incidents(time_range: str = Query("30d", alias="range"),
         if sd is None or sd["temp"] is None:
             continue
         settlement_temp = sd["temp"]
-        # Settlement bracket is [floor, floor + BRACKET_WIDTH) — exclusive cap
-        # cap_strike from Kalshi is floor + 1, but settlement uses floor + 2
+        # Settlement bracket is [floor, cap] — both inclusive (per Kalshi CFTC)
         bracket_cap = bracket_floor + 2
         # Did this bracket settle YES?
-        if not (bracket_floor <= settlement_temp < bracket_cap):
+        if not (bracket_floor <= settlement_temp <= bracket_cap):
             continue
         # Did we already trade this bracket?
         if (date_str, bracket_floor, bracket_cap) in traded_keys:
@@ -1654,8 +1653,8 @@ async def get_review_incidents(time_range: str = Query("30d", alias="range"),
         incidents = [i for i in incidents if i["type"] == "missed_edge"]
     # "all" — no filtering
 
-    # Sort by severity descending, limit to 50
-    incidents.sort(key=lambda i: i["severity"], reverse=True)
+    # Sort by date descending (newest first), limit to 50
+    incidents.sort(key=lambda i: i["date"], reverse=True)
     incidents = incidents[:50]
 
     return {
