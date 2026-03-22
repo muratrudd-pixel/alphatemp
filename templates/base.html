@@ -47,10 +47,7 @@
             {% endfor %}
           </nav>
           <div class="flex items-center gap-3 text-xs">
-            <div class="toggle-pill">
-              <button onclick="setDateToggle('today')" id="btn-today" class="active">Today</button>
-              <button onclick="setDateToggle('tomorrow')" id="btn-tomorrow">Tomorrow</button>
-            </div>
+            <!-- Tomorrow toggle removed — strategy only trades same-day -->
             <span class="text-gray-500" id="countdown-display" style="font-family: 'JetBrains Mono', monospace;">60s</span>
             <span id="et-clock" class="text-gray-400" style="font-family: 'JetBrains Mono', monospace;">--:-- ET</span>
           </div>
