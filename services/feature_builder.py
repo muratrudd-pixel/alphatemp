@@ -1,9 +1,9 @@
-"""Feature Builder — constructs the 25-feature vector from live DB state.
+"""Feature Builder — constructs the 23-feature vector from live DB state.
 
 Replicates the EXACT feature engineering from autoresearch/experiment.py:get_training_data().
 Both batch (training) and single-day (live prediction) modes produce identical features.
 
-The 25 features in order:
+The 23 features in order:
  0. update_hour          — hour of ET when model evaluates
  1. fcst_high            — HRRR forecast high for the target day
  2. sin_month            — sin(2pi * month/12) seasonality
@@ -27,8 +27,6 @@ The 25 features in order:
 20. precip_agree         — binary: GFS and ECMWF agree on rain
 21. solar_spread         — GFS radiation minus ECMWF radiation
 22. abs(lag_error)       — absolute value of lag_error
-23. temp_drop            — running_max minus current temp (how far below peak)
-24. forecast_upside      — max(0, max remaining HRRR temp - running_max)
 
 Python 3.9 compatible (no subscripted builtins).
 """
@@ -95,8 +93,6 @@ class FeatureBuilder:
         'precip_agree',
         'solar_spread',
         'abs(lag_error)',
-        'temp_drop',
-        'forecast_upside',
     ]
 
     def __init__(self, db_path):
@@ -425,18 +421,6 @@ class FeatureBuilder:
 
                     cum_div = sum(divs) / len(divs) if divs else 0.0
 
-                    # temp_drop: how far current temp has fallen below running max
-                    current_temp = obs_up_to[-1][1]  # latest obs at or before uh
-                    temp_drop = rm - current_temp
-
-                # forecast_upside: max HRRR temp for hours AFTER uh minus running max
-                future_fc_temps = [fc_by_hour[h] for h in fc_by_hour if h > uh]
-                if future_fc_temps and len(obs_up_to) >= 2:
-                    rm = rm_by_hour.get(uh, obs_up_to[-1][1])
-                    forecast_upside = max(0.0, max(future_fc_temps) - rm)
-                else:
-                    forecast_upside = 0.0
-
                 features = [
                     float(uh),
                     float(fcst_high),
@@ -461,8 +445,6 @@ class FeatureBuilder:
                     precip_agree,
                     solar_spread,
                     abs(lag_error),
-                    temp_drop,
-                    forecast_upside,
                 ]
 
                 X_rows.append(features)
@@ -664,9 +646,6 @@ class FeatureBuilder:
             et_hour = valid_at.replace(tzinfo=timezone.utc).astimezone(_ET).hour
             fc_by_hour[et_hour] = temp
 
-        temp_drop = 0.0
-        forecast_upside = 0.0
-
         if len(obs_by_hour_et) >= 2:
             # Running max across all observations up to update_hour
             running_max = max(t for _, t in obs_by_hour_et)
@@ -682,15 +661,6 @@ class FeatureBuilder:
                 running_max_div = running_max - fc_at_last
                 if len(divs) >= 2:
                     slope_div = (divs[-1] - divs[0]) / max(len(divs) - 1, 1)
-
-            # temp_drop: how far current temp has fallen below running max
-            current_temp = obs_by_hour_et[-1][1]
-            temp_drop = running_max - current_temp
-
-            # forecast_upside: max HRRR temp for hours AFTER update_hour minus running max
-            future_fc_temps = [fc_by_hour[h] for h in fc_by_hour if h > update_hour]
-            if future_fc_temps:
-                forecast_upside = max(0.0, max(future_fc_temps) - running_max)
 
         features = np.array([
             float(update_hour),
@@ -716,8 +686,6 @@ class FeatureBuilder:
             precip_agree,
             solar_spread,
             abs(lag_error),
-            temp_drop,
-            forecast_upside,
         ], dtype=np.float64)
 
         return features, fcst_high, run_hour

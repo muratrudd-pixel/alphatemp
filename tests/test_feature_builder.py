@@ -257,7 +257,7 @@ def builder(test_db):
 def test_feature_names_count():
     """FEATURE_NAMES must have exactly 25 entries."""
     from services.feature_builder import FeatureBuilder
-    assert len(FeatureBuilder.FEATURE_NAMES) == 25
+    assert len(FeatureBuilder.FEATURE_NAMES) == 23
 
 
 def test_feature_names_order():
@@ -271,7 +271,6 @@ def test_feature_names_order():
         'humidity', 'max_gusts', 'lag_error', 'cape',
         'dp_spread', 'gfs_precip', 'rain_day',
         'precip_agree', 'solar_spread', 'abs(lag_error)',
-        'temp_drop', 'forecast_upside',
     ]
     assert FeatureBuilder.FEATURE_NAMES == expected
 
@@ -292,7 +291,7 @@ def test_get_training_data_shapes(builder):
     assert result is not None, "Should return data with 90 days in window"
     X, y, dates, _run_hour = result
     assert X.ndim == 2, "X should be 2D"
-    assert X.shape[1] == 25, f"X should have 25 features, got {X.shape[1]}"
+    assert X.shape[1] == 23, f"X should have 25 features, got {X.shape[1]}"
     assert len(y) == X.shape[0], "y length should match X rows"
     assert len(dates) == X.shape[0], "dates length should match X rows"
     assert X.shape[0] >= 60, f"Should have >= 60 samples, got {X.shape[0]}"
@@ -319,7 +318,7 @@ def test_build_features_shape(builder, test_db):
 
     assert result is not None, "Should return features for a date with data"
     features, fcst_high, _run_hour = result
-    assert features.shape == (25,), f"features should be shape (25,), got {features.shape}"
+    assert features.shape == (23,), f"features should be shape (25,), got {features.shape}"
     assert isinstance(fcst_high, float), "fcst_high should be a float"
     assert fcst_high > 0, "fcst_high should be positive (temperature)"
 
@@ -479,8 +478,8 @@ def test_training_and_live_features_consistent(builder):
     assert live_result is not None
     live_features, _, _run_hour = live_result
 
-    # Compare all 25 features
-    for i in range(25):
+    # Compare all 23 features
+    for i in range(23):
         assert abs(train_features[i] - live_features[i]) < 1e-6, (
             f"Feature {i} ({builder.FEATURE_NAMES[i]}) mismatch: "
             f"training={train_features[i]:.6f} vs live={live_features[i]:.6f}"

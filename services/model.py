@@ -287,3 +287,42 @@ class QRModel:
         if total > 0:
             probs = {k: round(v / total, 4) for k, v in probs.items()}
         return probs
+
+
+def clamp_late_day(bracket_probs, running_max, temp_drop, forecast_upside):
+    # type: (Dict[int, float], Optional[float], float, float) -> Dict[int, float]
+    """Post-model ceiling: collapse distribution when daily high is clearly set.
+
+    Applied AFTER QRModel.predict_bracket_probs(). When temps have dropped
+    significantly below the running max AND HRRR shows no remaining warming
+    potential, clamp probability above running_max + margin to near-zero.
+
+    Args:
+        bracket_probs: {int: float} from QRModel
+        running_max: observed running max temp today (or None)
+        temp_drop: running_max - current_temp (how far below peak)
+        forecast_upside: max(0, remaining HRRR max - running_max)
+
+    Returns:
+        Clamped and re-normalized bracket probabilities.
+    """
+    if running_max is None or forecast_upside > 2.0 or temp_drop < 3.0:
+        # Don't clamp: no running max, HRRR still sees warming, or temps near peak
+        return bracket_probs
+
+    # Margin shrinks as temp_drop grows and forecast_upside shrinks
+    # At temp_drop=3, margin=3; at temp_drop=10, margin=1
+    margin = max(1.0, 4.0 - temp_drop / 3.0) + forecast_upside
+    ceiling = running_max + margin
+
+    clamped = {}
+    for k, p in bracket_probs.items():
+        if k > ceiling:
+            continue  # drop brackets above ceiling
+        clamped[k] = p
+
+    # Re-normalize
+    total = sum(clamped.values())
+    if total > 0:
+        return {k: round(v / total, 4) for k, v in clamped.items()}
+    return bracket_probs  # fallback: return original if everything got clamped

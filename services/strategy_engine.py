@@ -141,6 +141,15 @@ class StrategyEngine:
         if bracket_probs is None:
             logger.warning("Prediction failed for {}", target_date)
             return
+
+        # 5a. Post-model late-day clamp: collapse distribution when high is set
+        if running_max is not None:
+            current_temp = self._get_current_temp(target_date)
+            temp_drop = (running_max - current_temp) if current_temp is not None else 0.0
+            forecast_upside = self._get_forecast_upside(target_date, update_hour, running_max)
+            from services.model import clamp_late_day
+            bracket_probs = clamp_late_day(bracket_probs, running_max, temp_drop, forecast_upside)
+
         logger.info(
             "Predicted {} brackets, center ~{}°F",
             len(bracket_probs),
@@ -567,6 +576,51 @@ class StrategyEngine:
             if row and row[0] is not None:
                 return float(row[0])
             return None
+        finally:
+            con.close()
+
+    def _get_current_temp(self, target_date):
+        # type: (date) -> Optional[float]
+        """Get the most recent observed temperature for today."""
+        con = duckdb.connect(self.db_path)
+        try:
+            row = con.execute("""
+                SELECT temp_f FROM observations
+                WHERE station_id = 'KNYC'
+                  AND observed_at::DATE = ?
+                  AND temp_f IS NOT NULL
+                ORDER BY observed_at DESC LIMIT 1
+            """, [target_date.isoformat()]).fetchone()
+            if row and row[0] is not None:
+                return float(row[0])
+            return None
+        finally:
+            con.close()
+
+    def _get_forecast_upside(self, target_date, update_hour, running_max):
+        # type: (date, int, float) -> float
+        """Max remaining HRRR forecast temp minus running max.
+
+        Returns 0 if HRRR shows no warming beyond current running max.
+        """
+        con = duckdb.connect(self.db_path)
+        try:
+            # Get HRRR forecast temps for hours AFTER current update_hour
+            # Convert ET update_hour to UTC for valid_at comparison
+            utc_cutoff_hour = update_hour + 5  # EST approximation
+            row = con.execute("""
+                SELECT MAX(temp_f) FROM forecasts
+                WHERE station_id = 'KNYC'
+                  AND model_run::DATE = ?
+                  AND model_name = 'hrrr'
+                  AND temp_f IS NOT NULL
+                  AND EXTRACT(HOUR FROM valid_at) > ?
+                  AND valid_at::DATE = ?
+            """, [target_date.isoformat(), utc_cutoff_hour,
+                  target_date.isoformat()]).fetchone()
+            if row and row[0] is not None:
+                return max(0.0, float(row[0]) - running_max)
+            return 0.0
         finally:
             con.close()
 
