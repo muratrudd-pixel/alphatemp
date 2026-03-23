@@ -19,7 +19,7 @@ NYC only — settlement station is KNYC (Central Park).
 - **Drift:** `services/bias.py` generates drift signals (obs vs forecast divergence)
 - **Dashboard:** Flask + Plotly at port 8050 (`ui/web_dashboard.py`)
   - Forecast + obs chart with neighbor toggle, sidebar tables, Today/Tomorrow
-- **Deployment:** Docker on DigitalOcean droplet via `deploy.sh`
+- **Deployment:** Mac Mini (M4 Pro) via launchd + `scripts/deploy.sh`. Public at https://alphatemp.net via Cloudflare Tunnel.
 
 ## What's Broken / In Progress
 - Probability engine (`services/probability.py`) is pinned for rework — edge columns zeroed out
