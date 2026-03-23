@@ -6,7 +6,9 @@ HRRR publishes hourly; data typically lands on AWS ~45-90 min after run time.
 """
 
 import asyncio
+
 import signal as _signal
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
@@ -40,6 +42,11 @@ def _alarm_handler(signum, frame):
 # How many hours back to look on cold start — 24h ensures today's 00z
 # is always captured even if the system starts late in the day
 COLD_START_LOOKBACK_HOURS = 24
+
+# Max hours back to attempt fetching — AWS NOMADS purges HRRR after ~48h.
+# If the gap is larger than this, skip expired runs to avoid the
+# consecutive-empty heuristic killing every fetch cycle.
+MAX_FETCH_LOOKBACK_HOURS = 48
 
 # Minimum distinct fxx hours for a run to be considered "complete enough"
 # to skip on retry. Feature builder needs fxx 5-18 for 00z, so 10 is a
@@ -138,6 +145,17 @@ class HRRRFetcher:
             # Start from the hour after the latest stored run
             start_hour = latest_stored + timedelta(hours=1)
 
+        # Cap lookback — AWS NOMADS purges HRRR after ~48h, so older runs
+        # will always 404 and poison the consecutive-empty heuristic.
+        earliest_fetchable = current_hour - timedelta(hours=MAX_FETCH_LOOKBACK_HOURS)
+        if start_hour < earliest_fetchable:
+            logger.warning(
+                f"HRRR gap detected: last stored run {latest_stored}, "
+                f"skipping {int((earliest_fetchable - start_hour).total_seconds() / 3600)} "
+                f"expired hours"
+            )
+            start_hour = earliest_fetchable
+
         # Build list of candidate runs from start_hour up to current_hour
         runs = []
         candidate = start_hour
@@ -173,23 +191,10 @@ class HRRRFetcher:
                     product="sfc",
                     fxx=fxx,
                 )
-                # Set alarm to prevent indefinite hang on missing GRIB
-                old_handler = _signal.signal(_signal.SIGALRM, _alarm_handler)
-                _signal.alarm(HERBIE_TIMEOUT_SECONDS)
-                try:
-                    grib_path = H.download("TMP:2 m")
-                finally:
-                    _signal.alarm(0)  # cancel alarm
-                    _signal.signal(_signal.SIGALRM, old_handler)
+                grib_path = H.download("TMP:2 m")
                 grbs = pygrib.open(str(grib_path))
                 msg = grbs.select(name="2 metre temperature")[0]
                 consecutive_misses = 0
-            except _HerbieTimeout:
-                consecutive_misses += 1
-                logger.warning(f"HRRR fxx={fxx} timed out after {HERBIE_TIMEOUT_SECONDS}s for {model_run}")
-                if consecutive_misses >= 2:
-                    break
-                continue
             except Exception as e:
                 consecutive_misses += 1
                 if consecutive_misses >= 2:
@@ -235,7 +240,14 @@ class HRRRFetcher:
         loop = asyncio.get_event_loop()
         consecutive_empty = 0
         for run in runs:
-            count = await loop.run_in_executor(None, self.fetch_run, run)
+            try:
+                count = await asyncio.wait_for(
+                    loop.run_in_executor(None, self.fetch_run, run),
+                    timeout=HERBIE_TIMEOUT_SECONDS * 20,  # generous per-run timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"HRRR {run.strftime('%Hz')} timed out, skipping")
+                count = 0
             if count == 0:
                 consecutive_empty += 1
                 if consecutive_empty >= 3:

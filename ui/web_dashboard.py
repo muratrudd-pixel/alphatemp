@@ -484,9 +484,17 @@ async def observation_feed(city: str, date: str = None):
         [station_id, nws_date],
     ).fetchone()
     if nws_row and nws_row[0] is not None:
+        # Use time of peak METAR obs as proxy for when CLI max occurred
+        cli_peak_row = con.execute("""
+            SELECT observed_at FROM observations
+            WHERE station_id = ? AND observed_at::DATE = ?
+              AND temp_f IS NOT NULL
+            ORDER BY temp_f DESC, observed_at ASC LIMIT 1
+        """, [station_id, nws_date]).fetchone()
+        cli_time = cli_peak_row[0].isoformat() if cli_peak_row and cli_peak_row[0] else f"{nws_date}T17:00:00"
         feed.append({
             "station_id": station_id,
-            "observed_at": f"{nws_date}T17:00:00",  # noon ET = 17:00 UTC
+            "observed_at": cli_time,
             "ingested_at": nws_row[1].isoformat() if nws_row[1] else None,
             "source": "NWS CLI",
             "temp_f": round(nws_row[0], 1),
@@ -861,18 +869,24 @@ async def forecast_curve(city: str, date: str = None):
     ).fetchone()
 
     if nws_row and nws_row[0] is not None:
-        observed_high = round(nws_row[0], 1)
-        # Place CLI dot at time of highest METAR observation (best proxy for when max occurred)
-        peak_row = con.execute("""
-            SELECT observed_at FROM observations
-            WHERE station_id = ? AND observed_at::DATE = ?
-              AND temp_f IS NOT NULL
-            ORDER BY temp_f DESC, observed_at ASC LIMIT 1
-        """, [station_id, nws_date]).fetchone()
-        if peak_row and peak_row[0] is not None:
-            observed_high_at = peak_row[0].strftime("%Y-%m-%dT%H:%M:%S")
+        cli_high = round(nws_row[0], 1)
+        # Use whichever is higher: CLI or running obs max (6hr obs can exceed CLI)
+        if running_high_f is not None and running_high_f > cli_high:
+            observed_high = round(running_high_f, 1)
+            observed_high_at = running_high_at
         else:
-            observed_high_at = f"{nws_date}T17:00:00"  # fallback: noon ET
+            observed_high = cli_high
+            # Place CLI dot at time of highest METAR observation (best proxy for when max occurred)
+            peak_row = con.execute("""
+                SELECT observed_at FROM observations
+                WHERE station_id = ? AND observed_at::DATE = ?
+                  AND temp_f IS NOT NULL
+                ORDER BY temp_f DESC, observed_at ASC LIMIT 1
+            """, [station_id, nws_date]).fetchone()
+            if peak_row and peak_row[0] is not None:
+                observed_high_at = peak_row[0].strftime("%Y-%m-%dT%H:%M:%S")
+            else:
+                observed_high_at = f"{nws_date}T17:00:00"  # fallback: noon ET
         settlement_source = "nws_cli"
     elif running_high_f is not None:
         # Fallback: running max of settlement-station obs (including 6-hour maxes)
