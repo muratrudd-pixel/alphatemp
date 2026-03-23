@@ -160,13 +160,13 @@ function refreshTempChart() {
         var src = data.settlement_source;
         var settleName, settleHover;
         if (src === "nws_cli") {
-          settleName = "NWS Settlement (CLI)";
-          settleHover = "NWS Settlement: ";
+          settleName = "Running High";
+          settleHover = "Running High: ";
         } else if (src === "dsm") {
-          settleName = "Settlement (DSM)";
-          settleHover = "DSM Settlement: ";
+          settleName = "Running High";
+          settleHover = "Running High: ";
         } else {
-          settleName = "Running High (est)";
+          settleName = "Running High";
           settleHover = "Running High: ";
         }
         traceSettlement = {
