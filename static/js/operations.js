@@ -454,13 +454,11 @@ function refreshFcstFeed() {
         return;
       }
 
-      var fullRuns = data.runs.filter(function (r) {
-        return r.coverage === "full";
-      });
+      var fullRuns = data.runs;
 
       if (fullRuns.length === 0) {
         container.innerHTML =
-          '<p class="text-xs text-gray-400">No full-coverage runs</p>';
+          '<p class="text-xs text-gray-400">No forecast runs</p>';
         return;
       }
 
@@ -511,8 +509,11 @@ function refreshFcstFeed() {
             deltaColor = "text-gray-300";
           }
 
+          var rowOpacity = r.coverage === "full" ? "" : " opacity-40";
           return (
-            '<div class="grid grid-cols-[2fr_2fr_2fr_2fr_1.5fr] gap-x-2 text-xs py-1.5 items-center at-mono">' +
+            '<div class="grid grid-cols-[2fr_2fr_2fr_2fr_1.5fr] gap-x-2 text-xs py-1.5 items-center at-mono' +
+            rowOpacity +
+            '">' +
             '<span class="text-gray-500">' +
             rcvdLabel +
             "</span>" +
