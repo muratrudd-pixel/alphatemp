@@ -193,6 +193,25 @@ function refreshTempChart() {
         };
       }
 
+      // CLI report marker (small diamond, distinct from running high)
+      var traceCli = null;
+      if (data.cli_report_high != null && data.cli_report_at) {
+        traceCli = {
+          x: [toETIso(data.cli_report_at)],
+          y: [data.cli_report_high],
+          type: "scatter",
+          mode: "markers",
+          marker: {
+            size: 10,
+            color: "#f59e0b",
+            symbol: "diamond",
+            line: { color: "#b45309", width: 1.5 },
+          },
+          name: "NWS CLI Report",
+          hovertemplate: "NWS CLI: %{y:.1f}\u00b0F<extra></extra>",
+        };
+      }
+
       // Model prediction band (p25-p75 shaded, median line)
       var traceModelBandUpper = null;
       var traceModelBandLower = null;
@@ -238,6 +257,7 @@ function refreshTempChart() {
       if (traceModelBandLower) allTraces.push(traceModelBandLower);
       if (traceModelMedian) allTraces.push(traceModelMedian);
       if (trace6hMax) allTraces.push(trace6hMax);
+      if (traceCli) allTraces.push(traceCli);
       if (traceSettlement) allTraces.push(traceSettlement);
 
       // --- Layout ---
@@ -314,7 +334,12 @@ function refreshTempChart() {
           {
             color: "#f59e0b",
             symbol: "&#9679;",
-            label: traceSettlement ? traceSettlement.name : "Settlement",
+            label: traceSettlement ? traceSettlement.name : "Running High",
+          },
+          {
+            color: "#f59e0b",
+            symbol: "&#9670;",
+            label: "NWS CLI Report",
           },
           { color: "#9ca3af", symbol: "&#9650;", label: "6hr High" },
         ];
