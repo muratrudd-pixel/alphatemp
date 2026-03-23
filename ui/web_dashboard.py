@@ -383,8 +383,36 @@ async def kpi_summary(city: str = "nyc"):
             int(bracket_row[0]), int(bracket_row[1])
         ) if bracket_row and bracket_row[0] is not None and bracket_row[1] is not None else None
 
+        # Running high (max of obs including 6hr maxes)
+        station_id = CITIES[city_upper]["settlement"]
+        rh_row = con.execute("""
+            SELECT MAX(val) FROM (
+                SELECT MAX(temp_f) as val FROM observations
+                WHERE station_id = ? AND observed_at::DATE = ?
+                UNION ALL
+                SELECT MAX((six_hr_max_c * 9.0/5.0) + 32.0) as val FROM observations
+                WHERE station_id = ? AND observed_at::DATE = ? AND six_hr_max_c IS NOT NULL
+            )
+        """, [station_id, today_et, station_id, today_et]).fetchone()
+        running_high = round(rh_row[0], 1) if rh_row and rh_row[0] is not None else None
+
+        # HRRR forecast high (latest full-coverage run's predicted high)
+        hrrr_high_row = con.execute("""
+            SELECT MAX(temp_f) FROM forecasts
+            WHERE station_id = ? AND model_name = 'hrrr'
+            AND model_run = (
+                SELECT MAX(model_run) FROM forecasts
+                WHERE station_id = ? AND model_name = 'hrrr'
+                AND valid_at::DATE = ?
+            )
+            AND valid_at::DATE = ?
+        """, [station_id, station_id, today_et, today_et]).fetchone()
+        hrrr_forecast_high = round(hrrr_high_row[0], 1) if hrrr_high_row and hrrr_high_row[0] is not None else None
+
         return {
             "system_status": system_status,
+            "running_high": running_high,
+            "hrrr_forecast_high": hrrr_forecast_high,
             "model_high": model_high,
             "settlement": settlement,
             "market_consensus": market_consensus,

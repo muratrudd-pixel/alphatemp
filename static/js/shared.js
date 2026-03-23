@@ -224,20 +224,20 @@ async function refreshKPI() {
   }
 
   setText(
+    "kpi-running-high",
+    data.running_high != null ? data.running_high + "\u00B0F" : "--",
+  );
+  setText(
+    "kpi-hrrr-high",
+    data.hrrr_forecast_high != null
+      ? data.hrrr_forecast_high + "\u00B0F"
+      : "--",
+  );
+  setText("kpi-consensus", data.market_consensus || "--");
+  setText(
     "kpi-model-high",
     data.model_high ? data.model_high + "\u00B0F" : "--",
   );
-
-  var stl = data.settlement || {};
-  if (stl.source === "NWS_CLI") {
-    setText("kpi-settlement", stl.temp + "\u00B0F (CLI)");
-  } else if (stl.source === "DSM") {
-    setText("kpi-settlement", stl.temp + "\u00B0F (DSM)");
-  } else {
-    setText("kpi-settlement", "Pending");
-  }
-
-  setText("kpi-consensus", data.market_consensus || "--");
   setText(
     "kpi-drift",
     data.drift !== null
