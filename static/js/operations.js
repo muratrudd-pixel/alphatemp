@@ -212,39 +212,17 @@ function refreshTempChart() {
         };
       }
 
-      // Model prediction band (p25-p75 shaded, median line)
-      var traceModelBandUpper = null;
-      var traceModelBandLower = null;
+      // Model median line (thick purple)
       var traceModelMedian = null;
       if (data.model_band && data.model_band.median != null) {
         var mb = data.model_band;
         var bandX = [fcstX[0], fcstX[fcstX.length - 1]];
-        traceModelBandUpper = {
-          x: bandX,
-          y: [mb.p75, mb.p75],
-          type: "scatter",
-          mode: "lines",
-          line: { color: "transparent", width: 0 },
-          showlegend: false,
-          hoverinfo: "skip",
-        };
-        traceModelBandLower = {
-          x: bandX,
-          y: [mb.p25, mb.p25],
-          type: "scatter",
-          mode: "lines",
-          line: { color: "transparent", width: 0 },
-          fill: "tonexty",
-          fillcolor: "rgba(168,85,247,0.05)",
-          name: "Model 25-75%",
-          hoverinfo: "skip",
-        };
         traceModelMedian = {
           x: bandX,
           y: [mb.median, mb.median],
           type: "scatter",
           mode: "lines",
-          line: { color: "rgba(168,85,247,0.3)", width: 1.5, dash: "dashdot" },
+          line: { color: "rgba(168,85,247,0.5)", width: 3 },
           name: "Model Median (" + mb.median + "\u00b0F)",
           hovertemplate:
             "Model Median: " + mb.median + "\u00b0F<extra></extra>",
@@ -253,8 +231,6 @@ function refreshTempChart() {
 
       // --- Assemble traces ---
       var allTraces = [traceFcstCenter, traceObs];
-      if (traceModelBandUpper) allTraces.push(traceModelBandUpper);
-      if (traceModelBandLower) allTraces.push(traceModelBandLower);
       if (traceModelMedian) allTraces.push(traceModelMedian);
       if (trace6hMax) allTraces.push(trace6hMax);
       if (traceCli) allTraces.push(traceCli);
@@ -346,15 +322,8 @@ function refreshTempChart() {
         if (traceModelMedian) {
           items.push({
             color: "rgba(168,85,247,0.5)",
-            symbol: "- -",
+            symbol: "&#9644;",
             label: traceModelMedian.name,
-          });
-        }
-        if (traceModelBandLower) {
-          items.push({
-            color: "rgba(168,85,247,0.12)",
-            symbol: "&#9632;",
-            label: "Model 25-75%",
           });
         }
         items.push({ color: "#3b82f6", symbol: "&#9644;", label: "Observed" });
