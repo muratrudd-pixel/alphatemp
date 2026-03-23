@@ -57,7 +57,7 @@ SOURCE_PRIORITY: Dict[str, int] = {
 }
 
 # Regex for temperature lines in CLI product text
-TEMP_MAX_RE = re.compile(r"^\s+MAXIMUM\s+(\d+)", re.MULTILINE)
+TEMP_MAX_RE = re.compile(r"^\s+MAXIMUM\s+(\d+)\s+(\d{1,2}:\d{2}\s*[AP]M)?", re.MULTILINE)
 TEMP_MIN_RE = re.compile(r"^\s+MINIMUM\s+(\d+)", re.MULTILINE)
 
 # DSM data line regex — extracts the encoded temperature data
@@ -219,6 +219,7 @@ class NWSFetcher:
                     continue  # MM or missing — skip
 
                 max_temp = float(max_match.group(1))
+                max_temp_time = max_match.group(2).strip() if max_match.group(2) else None
 
                 min_match = TEMP_MIN_RE.search(section_body)
                 min_temp = float(min_match.group(1)) if min_match else None
@@ -228,6 +229,7 @@ class NWSFetcher:
                     "obs_date": obs_date.isoformat(),
                     "max_temp_f": max_temp,
                     "min_temp_f": min_temp,
+                    "max_temp_time": max_temp_time,
                     "source": "NWS_CLI",
                     "ingested_at": now_utc.replace(tzinfo=None),
                     "raw_text": text,
@@ -266,11 +268,11 @@ class NWSFetcher:
                 [row["station_id"], row["obs_date"]],
             )
             con.execute(
-                """INSERT INTO nws_daily (station_id, obs_date, max_temp_f, min_temp_f, source, ingested_at, raw_text)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO nws_daily (station_id, obs_date, max_temp_f, min_temp_f, source, ingested_at, raw_text, max_temp_time)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 [row["station_id"], row["obs_date"], row["max_temp_f"],
                  row["min_temp_f"], row["source"], row["ingested_at"],
-                 row.get("raw_text")],
+                 row.get("raw_text"), row.get("max_temp_time")],
             )
             return True
         finally:

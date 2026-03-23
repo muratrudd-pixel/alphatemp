@@ -480,18 +480,30 @@ async def observation_feed(city: str, date: str = None):
     from core.timezone import ET as _ET
     nws_date = date if date else datetime.now(_ET).strftime("%Y-%m-%d")
     nws_row = con.execute(
-        "SELECT max_temp_f, ingested_at FROM nws_daily WHERE station_id = ? AND obs_date = ?",
+        "SELECT max_temp_f, ingested_at, max_temp_time FROM nws_daily WHERE station_id = ? AND obs_date = ?",
         [station_id, nws_date],
     ).fetchone()
     if nws_row and nws_row[0] is not None:
-        # Use time of peak METAR obs as proxy for when CLI max occurred
-        cli_peak_row = con.execute("""
-            SELECT observed_at FROM observations
-            WHERE station_id = ? AND observed_at::DATE = ?
-              AND temp_f IS NOT NULL
-            ORDER BY temp_f DESC, observed_at ASC LIMIT 1
-        """, [station_id, nws_date]).fetchone()
-        cli_time = cli_peak_row[0].isoformat() if cli_peak_row and cli_peak_row[0] else f"{nws_date}T17:00:00"
+        # Use CLI's reported time-of-max if available, else METAR peak
+        cli_time_str = nws_row[2] if len(nws_row) > 2 else None
+        if cli_time_str:
+            try:
+                import pytz
+                ct = datetime.strptime(cli_time_str, "%I:%M %p")
+                cli_dt = datetime.strptime(nws_date, "%Y-%m-%d").replace(hour=ct.hour, minute=ct.minute)
+                et_tz = pytz.timezone("America/New_York")
+                cli_dt_utc = et_tz.localize(cli_dt).astimezone(pytz.utc)
+                cli_time = cli_dt_utc.strftime("%Y-%m-%dT%H:%M:%S")
+            except (ValueError, Exception):
+                cli_time = f"{nws_date}T17:00:00"
+        else:
+            cli_peak_row = con.execute("""
+                SELECT observed_at FROM observations
+                WHERE station_id = ? AND observed_at::DATE = ?
+                  AND temp_f IS NOT NULL
+                ORDER BY temp_f DESC, observed_at ASC LIMIT 1
+            """, [station_id, nws_date]).fetchone()
+            cli_time = cli_peak_row[0].isoformat() if cli_peak_row and cli_peak_row[0] else f"{nws_date}T17:00:00"
         feed.append({
             "station_id": station_id,
             "observed_at": cli_time,
@@ -864,7 +876,7 @@ async def forecast_curve(city: str, date: str = None):
         nws_date = datetime.now(_ET).strftime("%Y-%m-%d")
 
     nws_row = con.execute(
-        "SELECT max_temp_f FROM nws_daily WHERE station_id = ? AND obs_date = ?",
+        "SELECT max_temp_f, max_temp_time FROM nws_daily WHERE station_id = ? AND obs_date = ?",
         [station_id, nws_date],
     ).fetchone()
 
@@ -876,17 +888,35 @@ async def forecast_curve(city: str, date: str = None):
             observed_high_at = running_high_at
         else:
             observed_high = cli_high
-            # Place CLI dot at time of highest METAR observation (best proxy for when max occurred)
-            peak_row = con.execute("""
-                SELECT observed_at FROM observations
-                WHERE station_id = ? AND observed_at::DATE = ?
-                  AND temp_f IS NOT NULL
-                ORDER BY temp_f DESC, observed_at ASC LIMIT 1
-            """, [station_id, nws_date]).fetchone()
-            if peak_row and peak_row[0] is not None:
-                observed_high_at = peak_row[0].strftime("%Y-%m-%dT%H:%M:%S")
+            # Use CLI's reported time-of-max if available
+            cli_time_str = nws_row[1] if len(nws_row) > 1 else None
+            if cli_time_str:
+                try:
+                    from core.timezone import ET as _ET
+                    cli_time = datetime.strptime(cli_time_str, "%I:%M %p")
+                    cli_dt = datetime.strptime(nws_date, "%Y-%m-%d").replace(
+                        hour=cli_time.hour, minute=cli_time.minute
+                    )
+                    # Convert ET to UTC for chart
+                    import pytz
+                    et_tz = pytz.timezone("America/New_York")
+                    cli_dt_et = et_tz.localize(cli_dt)
+                    cli_dt_utc = cli_dt_et.astimezone(pytz.utc)
+                    observed_high_at = cli_dt_utc.strftime("%Y-%m-%dT%H:%M:%S")
+                except (ValueError, Exception):
+                    observed_high_at = f"{nws_date}T17:00:00"
             else:
-                observed_high_at = f"{nws_date}T17:00:00"  # fallback: noon ET
+                # Fallback: METAR peak time
+                peak_row = con.execute("""
+                    SELECT observed_at FROM observations
+                    WHERE station_id = ? AND observed_at::DATE = ?
+                      AND temp_f IS NOT NULL
+                    ORDER BY temp_f DESC, observed_at ASC LIMIT 1
+                """, [station_id, nws_date]).fetchone()
+                if peak_row and peak_row[0] is not None:
+                    observed_high_at = peak_row[0].strftime("%Y-%m-%dT%H:%M:%S")
+                else:
+                    observed_high_at = f"{nws_date}T17:00:00"
         settlement_source = "nws_cli"
     elif running_high_f is not None:
         # Fallback: running max of settlement-station obs (including 6-hour maxes)

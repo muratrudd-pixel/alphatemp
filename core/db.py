@@ -114,6 +114,12 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     except Exception:
         pass  # Column already exists
 
+    # Migration: add max_temp_time column to nws_daily for CLI time-of-max
+    try:
+        con.execute("ALTER TABLE nws_daily ADD COLUMN max_temp_time VARCHAR")
+    except Exception:
+        pass  # Column already exists
+
     # Migration: add UNIQUE constraint to market_ticks
     _migrate_market_ticks_unique(con)
 
@@ -147,12 +153,14 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS nws_daily (
-            station_id   VARCHAR NOT NULL,
-            obs_date     DATE NOT NULL,
-            max_temp_f   DOUBLE,
-            min_temp_f   DOUBLE,
-            source       VARCHAR DEFAULT 'ACIS',
-            ingested_at  TIMESTAMP NOT NULL,
+            station_id     VARCHAR NOT NULL,
+            obs_date       DATE NOT NULL,
+            max_temp_f     DOUBLE,
+            min_temp_f     DOUBLE,
+            source         VARCHAR DEFAULT 'ACIS',
+            ingested_at    TIMESTAMP NOT NULL,
+            raw_text       TEXT,
+            max_temp_time  VARCHAR,
             UNIQUE (station_id, obs_date)
         )
     """)
